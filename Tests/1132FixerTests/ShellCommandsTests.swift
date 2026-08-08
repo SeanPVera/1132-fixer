@@ -12,7 +12,7 @@ struct ShellCommandsTests {
 
     @Test func shellSingleQuoteWithSingleQuote() {
         let result = ShellCommands.shellSingleQuote("it's")
-        #expect(result.contains("'\"'\"'"))
+        #expect(result.contains(#"'\''"#))
     }
 
     @Test func shellSingleQuoteEmpty() {
