@@ -163,7 +163,7 @@ enum BugReportService {
         return body
     }
 
-    private static func escapedHeaderValue(_ value: String) -> String {
+    static func escapedHeaderValue(_ value: String) -> String {
         value
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
