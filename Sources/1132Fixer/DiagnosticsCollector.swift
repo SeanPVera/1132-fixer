@@ -93,15 +93,15 @@ enum DiagnosticsCollector {
         }
     }
 
-    private static func yesNo(_ value: Bool) -> String {
+    static func yesNo(_ value: Bool) -> String {
         value ? "yes" : "no"
     }
 
-    private static func formatBytes(_ bytes: UInt64) -> String {
+    static func formatBytes(_ bytes: UInt64) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)
     }
 
-    private static func formatDuration(_ seconds: TimeInterval) -> String {
+    static func formatDuration(_ seconds: TimeInterval) -> String {
         let hours = Int(seconds) / 3_600
         let minutes = (Int(seconds) % 3_600) / 60
         return "\(hours)h \(minutes)m"
