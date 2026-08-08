@@ -172,11 +172,7 @@ enum ShellCommands {
 
         let mac = bytes.map { String(format: "%02x", $0) }.joined(separator: ":")
         guard isValidMACAddress(mac) else {
-            throw NSError(
-                domain: "1132Fixer",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Generate MAC address: Failed to generate a valid MAC address."]
-            )
+            throw AppError.general("Generate MAC address: Failed to generate a valid MAC address.")
         }
         return mac
     }
@@ -214,13 +210,13 @@ enum ShellCommands {
 
             let value = line.dropFirst("interface:".count).trimmingCharacters(in: .whitespaces)
             guard isSafeInterfaceName(value) else {
-                throw NSError(domain: "1132Fixer", code: 1, userInfo: [NSLocalizedDescriptionKey: "Detect active network interface: Invalid interface name '\(value)'."])
+                throw AppError.general("Detect active network interface: Invalid interface name '\(value)'.")
             }
             try ensureVPNIsNotActive(interfaceName: value)
             return value
         }
 
-        throw NSError(domain: "1132Fixer", code: 1, userInfo: [NSLocalizedDescriptionKey: "Detect active network interface: No default route interface was found. Make sure you are connected to Wi-Fi or Ethernet. If you just disconnected a VPN, wait a few seconds for your connection to restore and try again."])
+        throw AppError.general("Detect active network interface: No default route interface was found. Make sure you are connected to Wi-Fi or Ethernet. If you just disconnected a VPN, wait a few seconds for your connection to restore and try again.")
     }
 
     static func ensureVPNIsNotActive(interfaceName: String) throws {
@@ -228,11 +224,11 @@ enum ShellCommands {
         let vpnPrefixes = ["utun", "ipsec", "ppp", "tun", "tap"]
 
         if vpnPrefixes.contains(where: normalized.hasPrefix) {
-            throw NSError(domain: "1132Fixer", code: 1, userInfo: [NSLocalizedDescriptionKey: """
+            throw AppError.general("""
 VPN detected on interface '\(interfaceName)'. \
 MAC spoofing cannot work while a VPN is active because the VPN tunnel hides your real network interface. \
 Turn off your VPN, wait a few seconds for your normal connection to restore, and run Start Zoom again.
-"""])
+""")
         }
     }
 
@@ -272,7 +268,7 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
             return .ethernet
         }
 
-        throw NSError(domain: "1132Fixer", code: 1, userInfo: [NSLocalizedDescriptionKey: "Detect active network interface: Active interface '\(hardwarePortName)' is not supported. Only Wi-Fi and Ethernet are supported."])
+        throw AppError.general("Detect active network interface: Active interface '\(hardwarePortName)' is not supported. Only Wi-Fi and Ethernet are supported.")
     }
 
     static func parseNetworkServiceOrder(from output: String) -> [String: String] {
