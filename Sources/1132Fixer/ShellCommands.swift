@@ -69,11 +69,9 @@ enum ShellCommands {
     }
 
     static func appleScriptDoShellScript(_ command: String, administratorPrivileges: Bool) -> String {
-        let escapedCommand = command
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
+        let base64Command = Data(command.utf8).base64EncodedString()
         let privilegeClause = administratorPrivileges ? " with administrator privileges" : ""
-        return "do shell script \"\(escapedCommand)\"\(privilegeClause)"
+        return "do shell script \"/bin/bash -c \\\"$(/bin/echo '\(base64Command)' | /usr/bin/base64 --decode)\\\"\"\(privilegeClause)"
     }
 
     // MARK: - Command Strings

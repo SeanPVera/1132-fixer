@@ -166,17 +166,26 @@ struct ShellCommandsTests {
 
     @Test func appleScriptDoShellScript() {
         let result = ShellCommands.appleScriptDoShellScript("echo hello", administratorPrivileges: false)
-        #expect(result == #"do shell script "echo hello""#)
+        // "echo hello" encoded in base64 is ZWNobyBoZWxsbw==
+        #expect(result == #"do shell script "/bin/bash -c \"$(/bin/echo 'ZWNobyBoZWxsbw==' | /usr/bin/base64 --decode)\"""#)
     }
 
     @Test func appleScriptDoShellScriptAdmin() {
         let result = ShellCommands.appleScriptDoShellScript("echo hello", administratorPrivileges: true)
-        #expect(result == #"do shell script "echo hello" with administrator privileges"#)
+        #expect(result == #"do shell script "/bin/bash -c \"$(/bin/echo 'ZWNobyBoZWxsbw==' | /usr/bin/base64 --decode)\"" with administrator privileges"#)
     }
 
     @Test func appleScriptEscapesBackslashes() {
         let result = ShellCommands.appleScriptDoShellScript(#"echo \"test\""#, administratorPrivileges: false)
-        #expect(result.contains("\\\\"))
+        // 'echo \"test\"' encoded in base64 is ZWNobyBcInRlc3RcIg==
+        #expect(result == #"do shell script "/bin/bash -c \"$(/bin/echo 'ZWNobyBcInRlc3RcIg==' | /usr/bin/base64 --decode)\"""#)
+    }
+
+    @Test func appleScriptComplexPayload() {
+        let payload = #"echo "hello \n world" 'test'"#
+        let result = ShellCommands.appleScriptDoShellScript(payload, administratorPrivileges: true)
+        // payload encoded in base64 is ZWNobyAiaGVsbG8gXG4gd29ybGQiICd0ZXN0Jw==
+        #expect(result == #"do shell script "/bin/bash -c \"$(/bin/echo 'ZWNobyAiaGVsbG8gXG4gd29ybGQiICd0ZXN0Jw==' | /usr/bin/base64 --decode)\"" with administrator privileges"#)
     }
 
     // MARK: - VPN Detection
