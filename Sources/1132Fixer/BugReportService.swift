@@ -8,7 +8,7 @@ enum BugReportService {
     private static let defaultEndpoint = "https://1132-bug-report-production.up.railway.app/api/bug-report"
     private static let uploadFieldName = "file"
 
-    private static func resolveConfigValue(envVar: String, fallback: String = "") -> String {
+    private static func resolveConfigValue(envVar: String, fallback: String = "") async -> String {
         let envValue = ProcessInfo.processInfo.environment[envVar]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !envValue.isEmpty {
             return envValue
@@ -35,8 +35,14 @@ enum BugReportService {
         bundlesToSearch.append(Bundle.main)
 
         for bundle in bundlesToSearch {
-            guard let resourceURL = bundle.url(forResource: envVar, withExtension: nil),
-                  let data = try? Data(contentsOf: resourceURL),
+            guard let resourceURL = bundle.url(forResource: envVar, withExtension: nil) else { continue }
+
+            // Offload synchronous I/O to avoid blocking the Swift concurrency thread pool
+            let data = await Task.detached {
+                try? Data(contentsOf: resourceURL)
+            }.value
+
+            guard let data,
                   let bundledValue = String(data: data, encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines),
                   !bundledValue.isEmpty else {
@@ -56,8 +62,8 @@ enum BugReportService {
         diagnosticsFileName: String,
         diagnosticsData: Data
     ) async throws {
-        let endpoint = resolveConfigValue(envVar: endpointEnvVar, fallback: defaultEndpoint)
-        let token = resolveConfigValue(envVar: tokenEnvVar)
+        let endpoint = await resolveConfigValue(envVar: endpointEnvVar, fallback: defaultEndpoint)
+        let token = await resolveConfigValue(envVar: tokenEnvVar)
 
         guard !token.isEmpty else {
             throw NSError(
