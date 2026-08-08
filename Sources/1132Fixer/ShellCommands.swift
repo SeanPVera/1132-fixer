@@ -202,16 +202,35 @@ enum ShellCommands {
     }
 
     static func parseDefaultRouteInterface(from output: String) throws -> String {
-        for rawLine in output.split(whereSeparator: \.isNewline) {
+        var foundInterface: String?
+        var parseError: Error?
+
+        output.enumerateLines { rawLine, stop in
             let line = rawLine.trimmingCharacters(in: .whitespaces)
-            guard line.hasPrefix("interface:") else { continue }
+            guard line.hasPrefix("interface:") else { return }
 
             let value = line.dropFirst("interface:".count).trimmingCharacters(in: .whitespaces)
             guard isSafeInterfaceName(value) else {
-                throw AppError.general("Detect active network interface: Invalid interface name '\(value)'.")
+                parseError = AppError.general("Detect active network interface: Invalid interface name '\(value)'.")
+                stop = true
+                return
             }
-            try ensureVPNIsNotActive(interfaceName: value)
-            return value
+
+            do {
+                try ensureVPNIsNotActive(interfaceName: value)
+                foundInterface = value
+            } catch {
+                parseError = error
+            }
+            stop = true
+        }
+
+        if let parseError {
+            throw parseError
+        }
+
+        if let foundInterface {
+            return foundInterface
         }
 
         throw AppError.general("Detect active network interface: No default route interface was found. Make sure you are connected to Wi-Fi or Ethernet. If you just disconnected a VPN, wait a few seconds for your connection to restore and try again.")
