@@ -1,5 +1,5 @@
 import Testing
-@testable import _132Fixer
+@testable import _1132Fixer
 
 @Suite("SemVer & UpdateChecker")
 struct SemVerTests {
