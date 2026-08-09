@@ -514,9 +514,10 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
 
     static func makeLaunchZoomCommand(zoomBinaryPath: String, zoomBinaryExists: Bool) -> String {
         guard zoomBinaryExists else {
+            let safeBinaryPath = shellSingleQuote(zoomBinaryPath)
             return """
             echo "Launch mode: sandboxRequiredMissingBinary"
-            echo "Error: Zoom must be launched in sandbox mode, but the Zoom binary was not found at \(zoomBinaryPath). Install Zoom from https://zoom.us/download, or pick the correct Zoom location in 1132 Fixer, and try again."
+            echo "Error: Zoom must be launched in sandbox mode, but the Zoom binary was not found at" \(safeBinaryPath)". Install Zoom from https://zoom.us/download, or pick the correct Zoom location in 1132 Fixer, and try again."
             exit 1
             """
         }
