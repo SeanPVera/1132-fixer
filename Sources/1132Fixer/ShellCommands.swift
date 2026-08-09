@@ -295,28 +295,28 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         let pattern = #"\(Hardware Port: .*?, Device: ([^)]+)\)"#
         let regex = try? NSRegularExpression(pattern: pattern)
 
-        for rawLine in output.split(whereSeparator: \.isNewline) {
+        output.enumerateLines { rawLine, _ in
             let line = rawLine.trimmingCharacters(in: .whitespaces)
-            guard !line.isEmpty else { continue }
+            guard !line.isEmpty else { return }
 
             if line.hasPrefix("("), let closingParen = line.firstIndex(of: ")"), line.index(after: closingParen) < line.endIndex {
                 let nameStart = line.index(after: closingParen)
                 let serviceName = line[nameStart...].trimmingCharacters(in: .whitespaces)
                 if !serviceName.isEmpty && !serviceName.hasPrefix("*") {
-                    pendingServiceName = serviceName
+                    pendingServiceName = String(serviceName)
                 } else {
                     pendingServiceName = nil
                 }
-                continue
+                return
             }
 
-            guard line.hasPrefix("(Hardware Port:"), let serviceName = pendingServiceName, let regex else { continue }
+            guard line.hasPrefix("(Hardware Port:"), let serviceName = pendingServiceName, let regex else { return }
             let nsLine = line as NSString
             let range = NSRange(location: 0, length: nsLine.length)
-            guard let match = regex.firstMatch(in: line, options: [], range: range), match.numberOfRanges > 1 else { continue }
+            guard let match = regex.firstMatch(in: line, options: [], range: range), match.numberOfRanges > 1 else { return }
 
             let deviceRange = match.range(at: 1)
-            guard deviceRange.location != NSNotFound else { continue }
+            guard deviceRange.location != NSNotFound else { return }
 
             let device = nsLine.substring(with: deviceRange).trimmingCharacters(in: .whitespaces)
             if isSafeInterfaceName(device) {
@@ -361,10 +361,18 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
     }
 
     static func normalizePrivateAddressModeOutput(_ output: String) -> String {
-        let normalizedLines = output
-            .split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-            .filter { !$0.isEmpty }
+        var normalizedLines: [String] = []
+        var containsNotRecognizedOrUnsupported = false
+
+        output.enumerateLines { rawLine, _ in
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !line.isEmpty {
+                normalizedLines.append(line)
+                if line.contains("not recognized") || line.contains("unsupported") || line.contains("networksetup -printcommands") {
+                    containsNotRecognizedOrUnsupported = true
+                }
+            }
+        }
 
         for mode in ["rotating", "fixed", "static", "off"] {
             if normalizedLines.contains(mode) {
@@ -372,13 +380,11 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
             }
         }
 
-        let normalizedOutput = normalizedLines.joined(separator: "\n")
-        if normalizedOutput.contains("not recognized")
-            || normalizedOutput.contains("unsupported")
-            || normalizedOutput.contains("networksetup -printcommands") {
+        if containsNotRecognizedOrUnsupported {
             return "unsupported"
         }
 
+        let normalizedOutput = normalizedLines.joined(separator: "\n")
         for mode in ["rotating", "fixed", "static", "off"] {
             if normalizedOutput.contains(mode) {
                 return mode
