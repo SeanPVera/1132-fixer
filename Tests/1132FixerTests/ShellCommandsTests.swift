@@ -304,6 +304,15 @@ struct ShellCommandsTests {
         #expect(!cmd.contains("/usr/bin/sandbox-exec"))
     }
 
+    @Test func makeLaunchZoomCommandMissingBinaryEscapesCustomPath() {
+        let maliciousBinaryPath = "$(echo pwned)"
+        let cmd = ShellCommands.makeLaunchZoomCommand(zoomBinaryPath: maliciousBinaryPath, zoomBinaryExists: false)
+        #expect(cmd.contains("Launch mode: sandboxRequiredMissingBinary"))
+        // The path should be escaped with single quotes to prevent command substitution inside the bash command.
+        #expect(cmd.contains("'$(echo pwned)'"))
+        #expect(cmd.contains("echo \"Error: Zoom must be launched in sandbox mode, but the Zoom binary was not found at\" "))
+    }
+
     // MARK: - Machine Architecture
 
     @Test func machineArchitecture() {
