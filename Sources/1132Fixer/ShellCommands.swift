@@ -236,12 +236,12 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         var result: [String: String] = [:]
         var currentHardwarePort: String?
 
-        for rawLine in output.split(whereSeparator: \.isNewline) {
+        output.enumerateLines { rawLine, _ in
             let line = rawLine.trimmingCharacters(in: .whitespaces)
 
             if line.hasPrefix("Hardware Port:") {
                 currentHardwarePort = String(line.dropFirst("Hardware Port:".count)).trimmingCharacters(in: .whitespaces)
-                continue
+                return
             }
 
             if line.hasPrefix("Device:"), let hardwarePort = currentHardwarePort {
