@@ -60,9 +60,11 @@ enum UpdateChecker {
         }
 
         let version = normalizeVersion(decoded.tagName)
+        // Exact host match: `contains("github.com")` would also accept hosts such as
+        // github.com.example.net.
         guard let htmlURL = URL(string: decoded.htmlURL),
               htmlURL.scheme == "https",
-              htmlURL.host?.contains("github.com") == true else {
+              isGitHubHost(htmlURL.host) else {
             throw NSError(
                 domain: errorDomain,
                 code: 2,
@@ -71,6 +73,11 @@ enum UpdateChecker {
         }
 
         return ReleaseInfo(version: version, htmlURL: htmlURL, releaseNotes: decoded.body)
+    }
+
+    static func isGitHubHost(_ host: String?) -> Bool {
+        guard let host = host?.lowercased() else { return false }
+        return host == "github.com" || host == "www.github.com"
     }
 
     static func normalizeVersion(_ raw: String) -> String {

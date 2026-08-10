@@ -26,6 +26,36 @@ struct DiagnosticsCollectorTests {
         #expect(gbString.contains("GB"))
     }
 
+    @Test("redactingHomeDirectory replaces the home path with ~")
+    func redactingHomeDirectory() {
+        let text = """
+        Zoom app path: /Users/jane/Applications/zoom.us.app
+        OK Backup State: Saved to /Users/jane/Library/Application Support/1132Fixer/Backups/2026-01-01T00-00-00Z
+        """
+        let redacted = DiagnosticsCollector.redactingHomeDirectory(text, homeDirectory: "/Users/jane")
+
+        #expect(!redacted.contains("jane"))
+        #expect(redacted.contains("~/Applications/zoom.us.app"))
+        #expect(redacted.contains("~/Library/Application Support/1132Fixer/Backups/"))
+    }
+
+    @Test("redactingHomeDirectory tolerates a trailing slash")
+    func redactingHomeDirectoryTrailingSlash() {
+        let redacted = DiagnosticsCollector.redactingHomeDirectory(
+            "path: /Users/jane/Library/Logs",
+            homeDirectory: "/Users/jane/"
+        )
+        #expect(redacted == "path: ~/Library/Logs")
+    }
+
+    @Test("redactingHomeDirectory leaves text alone for degenerate home paths")
+    func redactingHomeDirectoryDegenerateHome() {
+        // Replacing "" or "/" would corrupt every path in the report.
+        let text = "path: /Users/jane/Library/Logs"
+        #expect(DiagnosticsCollector.redactingHomeDirectory(text, homeDirectory: "") == text)
+        #expect(DiagnosticsCollector.redactingHomeDirectory(text, homeDirectory: "/") == text)
+    }
+
     @Test("formatDuration formats correctly")
     func formatDuration() {
         #expect(DiagnosticsCollector.formatDuration(0) == "0h 0m")

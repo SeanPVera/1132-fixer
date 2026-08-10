@@ -230,6 +230,52 @@ struct ShellCommandsTests {
         #expect(cmd.contains("exit \"$remaining\""))
     }
 
+    @Test func makeResetZoomDataCommandRefusesEmptyHome() {
+        // An empty home would rewrite every target to a system-level /Library path.
+        let cmd = ShellCommands.makeResetZoomDataCommand(homeDirectory: "")
+        #expect(cmd.contains(#"if [ -z "$home" ]; then"#))
+        #expect(cmd.contains("refusing to delete system-level paths"))
+    }
+
+    // MARK: - Backup Pruning
+
+    @Test func backupCommandPrunesOlderSnapshots() {
+        let cmd = ShellCommands.makeBackupZoomDataCommand()
+        // Default retention of 5 keeps entries 1...5 and deletes from entry 6 on.
+        #expect(cmd.contains("/usr/bin/tail -n +6"))
+        #expect(cmd.contains(#"/bin/rm -rf "$backup_root/$stale""#))
+    }
+
+    @Test func backupCommandRetentionIsConfigurable() {
+        #expect(ShellCommands.makeBackupZoomDataCommand(retainedBackupCount: 1).contains("/usr/bin/tail -n +2"))
+        #expect(ShellCommands.makeBackupZoomDataCommand(retainedBackupCount: 10).contains("/usr/bin/tail -n +11"))
+        // A zero/negative count must still keep the snapshot just written.
+        #expect(ShellCommands.makeBackupZoomDataCommand(retainedBackupCount: 0).contains("/usr/bin/tail -n +2"))
+    }
+
+    @Test func backupCommandEchoesOnlyTheBackupPath() {
+        // AppViewModel consumes stdout as the backup path, so nothing else may print.
+        let cmd = ShellCommands.makeBackupZoomDataCommand()
+        let echoLines = cmd.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.hasPrefix("echo ") }
+        #expect(echoLines == [#"echo "$backup_dir""#])
+    }
+
+    // MARK: - Updaters
+
+    @Test func stopZoomUpdatersDoesNotPersistentlyDisableUpdates() {
+        // `launchctl disable` survives reboots and is never undone, which would leave
+        // Zoom permanently without security updates.
+        #expect(!ShellCommands.stopZoomUpdaters.contains("launchctl disable"))
+        #expect(ShellCommands.stopZoomUpdaters.contains("launchctl bootout"))
+    }
+
+    @Test func stopZoomUpdatersUsesValidDomainTargets() {
+        // "user" without a UID is not a valid launchctl domain target.
+        #expect(ShellCommands.stopZoomUpdaters.contains(#"for domain in "gui/$uid" "user/$uid"; do"#))
+    }
+
     @Test func zoomSandboxProfileAllowsCameraAndMicrophone() {
         #expect(ShellCommands.zoomSandboxProfile.contains("(allow device-camera)"))
         #expect(ShellCommands.zoomSandboxProfile.contains("(allow device-microphone)"))

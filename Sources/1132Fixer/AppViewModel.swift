@@ -228,12 +228,12 @@ final class AppViewModel: ObservableObject {
             self.markStepRunning("resetData")
             self.appendLog("Step: Reset Zoom data")
             do {
+                // Runs unprivileged: every path is inside the user's own home directory.
                 let resetCommand = ShellCommands.makeResetZoomDataCommand(homeDirectory: NSHomeDirectory())
-                let resetScript = ShellCommands.appleScriptDoShellScript(resetCommand, administratorPrivileges: true)
                 let output = try await self.runProcess(
                     stepName: "Reset Zoom data",
-                    executable: Constants.osascriptPath,
-                    arguments: ["-e", resetScript]
+                    executable: Constants.bashPath,
+                    arguments: ["-c", resetCommand]
                 )
                 self.markStepDone("resetData", succeeded: true)
                 results.append(.init(id: "resetData", name: "Clear Local State", succeeded: true, detail: output.isEmpty ? nil : output))
@@ -609,7 +609,9 @@ Last action status: \(lastStatus)
         lines.append("--- Activity Log (\(logLines.count) entries) ---")
         lines.append(contentsOf: logLines)
 
-        return (Self.diagnosticsFileName, lines.joined(separator: "\n"))
+        // This content is uploaded with bug reports, so strip the local account name.
+        let content = DiagnosticsCollector.redactingHomeDirectory(lines.joined(separator: "\n"))
+        return (Self.diagnosticsFileName, content)
     }
 
     private func runTask(

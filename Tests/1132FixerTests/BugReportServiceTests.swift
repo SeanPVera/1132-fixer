@@ -36,6 +36,15 @@ struct BugReportServiceTests {
         #expect(result == expected)
     }
 
+    @Test("escapedHeaderValue strips CR and LF so headers cannot be injected")
+    func escapedHeaderValue_stripsNewlines() {
+        let input = "file\r\nContent-Disposition: form-data; name=\"injected\"\r\n\r\nevil.txt"
+        let result = BugReportService.escapedHeaderValue(input)
+        #expect(!result.contains("\r"))
+        #expect(!result.contains("\n"))
+        #expect(result == "fileContent-Disposition: form-data; name=\\\"injected\\\"evil.txt")
+    }
+
     @Test("escapedHeaderValue handles string with only quotes and backslashes")
     func escapedHeaderValue_onlySpecialChars() {
         let input = "\\\"\\\""

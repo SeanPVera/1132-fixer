@@ -163,10 +163,15 @@ enum BugReportService {
         return body
     }
 
+    /// Escapes a value for use inside a quoted MIME header parameter. CR and LF are
+    /// removed outright: escaping cannot make them safe, and leaving them in would let
+    /// a value terminate the header and inject further multipart headers.
     static func escapedHeaderValue(_ value: String) -> String {
         value
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\r", with: "")
+            .replacingOccurrences(of: "\n", with: "")
     }
 }
 

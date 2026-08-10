@@ -93,6 +93,17 @@ enum DiagnosticsCollector {
         }
     }
 
+    /// Replaces the user's home directory prefix with `~`.
+    ///
+    /// Diagnostics are uploaded with bug reports, and several lines embed absolute
+    /// paths (the backup destination, a custom Zoom location), each of which carries
+    /// the local account name. The account name has no diagnostic value.
+    static func redactingHomeDirectory(_ text: String, homeDirectory: String = NSHomeDirectory()) -> String {
+        let home = homeDirectory.hasSuffix("/") ? String(homeDirectory.dropLast()) : homeDirectory
+        guard !home.isEmpty, home != "/" else { return text }
+        return text.replacingOccurrences(of: home, with: "~")
+    }
+
     static func yesNo(_ value: Bool) -> String {
         value ? "yes" : "no"
     }
