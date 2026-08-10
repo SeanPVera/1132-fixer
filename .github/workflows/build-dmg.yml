@@ -1,0 +1,176 @@
+name: Build DMG
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag, or commit SHA to build (blank = the ref this run was started from)"
+        required: false
+        type: string
+      notarize:
+        description: "Notarize the DMG (Developer ID builds only)"
+        required: false
+        default: true
+        type: boolean
+  push:
+    # The packaging script is not covered by the test suite, so re-run it
+    # whenever it changes to prove it still produces a DMG.
+    paths:
+      - ".github/workflows/build-dmg.yml"
+      - "scripts/build-universal-dmg.sh"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-dmg-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dmg:
+    name: Universal DMG (macOS)
+    # Same image as the CI workflow so the packaged build uses the same toolchain.
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Toolchain versions
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Resolve build metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          sha="$(git rev-parse --short=12 HEAD)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Building $version from $sha"
+
+      - name: Select signing mode
+        id: signing
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Notarization takes minutes on Apple's side, so only do it for
+          # deliberate, on-demand builds.
+          NOTARIZE_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.notarize }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$APPLE_CERTIFICATE" && -n "$APPLE_CERTIFICATE_PASSWORD" ]]; then
+            mode="developer-id"
+          else
+            mode="adhoc"
+            echo "::warning::No APPLE_CERTIFICATE secret configured; building an ad-hoc signed DMG that Gatekeeper will block on other Macs."
+          fi
+
+          notarize=0
+          if [[ "$mode" == "developer-id" && "$NOTARIZE_REQUESTED" == "true" ]]; then
+            if [[ -n "$APPLE_ID" && -n "$APPLE_PASSWORD" && -n "$APPLE_TEAM_ID" ]]; then
+              notarize=1
+            else
+              echo "::warning::Notarization requested but APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID are not all set; skipping it."
+            fi
+          fi
+
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "notarize=$notarize" >> "$GITHUB_OUTPUT"
+
+      - name: Build universal DMG
+        env:
+          # Empty for a Developer ID build so the script imports the certificate
+          # into a temporary keychain; "-" selects an ad-hoc signature.
+          SIGN_IDENTITY: ${{ steps.signing.outputs.mode == 'adhoc' && '-' || '' }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          FIXER_BUG_REPORT_ENDPOINT: ${{ secrets.FIXER_BUG_REPORT_ENDPOINT }}
+          FIXER_BUG_REPORT_TOKEN: ${{ secrets.FIXER_BUG_REPORT_TOKEN }}
+          NOTARIZE: ${{ steps.signing.outputs.notarize }}
+          APP_BUILD: ${{ github.run_number }}
+        run: ./scripts/build-universal-dmg.sh
+
+      - name: Name the DMG for this commit
+        id: package
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          SHA: ${{ steps.meta.outputs.sha }}
+          MODE: ${{ steps.signing.outputs.mode }}
+        run: |
+          set -euo pipefail
+
+          source_dmg="dist/1132 Fixer-v$VERSION-universal.dmg"
+          if [[ ! -f "$source_dmg" ]]; then
+            echo "Expected DMG not found: $source_dmg" >&2
+            ls -la dist >&2
+            exit 1
+          fi
+
+          suffix=""
+          if [[ "$MODE" == "adhoc" ]]; then
+            suffix="-adhoc-signed"
+          fi
+
+          name="1132-Fixer-v$VERSION-$SHA-universal$suffix"
+          mv "$source_dmg" "dist/$name.dmg"
+          ( cd dist && shasum -a 256 "$name.dmg" > "$name.dmg.sha256" )
+
+          codesign --verify --verbose=2 "dist/$name.dmg"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: |
+            dist/*.dmg
+            dist/*.dmg.sha256
+          if-no-files-found: error
+
+      - name: Summary
+        env:
+          NAME: ${{ steps.package.outputs.name }}
+          SHA: ${{ steps.meta.outputs.sha }}
+          MODE: ${{ steps.signing.outputs.mode }}
+          NOTARIZED: ${{ steps.signing.outputs.notarize }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### $NAME.dmg"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Commit | \`$SHA\` |"
+            echo "| Architectures | arm64 + x86_64 (universal) |"
+            echo "| Signing | $MODE |"
+            if [[ "$NOTARIZED" == "1" ]]; then
+              echo "| Notarized | yes (ticket stapled) |"
+            else
+              echo "| Notarized | no |"
+            fi
+            echo
+            echo "Download it from the **Artifacts** section of this run page."
+            if [[ "$MODE" == "adhoc" ]]; then
+              echo
+              echo "> This build is signed ad-hoc, so Gatekeeper blocks it by default."
+              echo "> After opening the DMG and copying the app to /Applications, allow it under"
+              echo "> **System Settings → Privacy & Security → Open Anyway**."
+              echo ">"
+              echo "> To produce a distributable build instead, add the \`APPLE_CERTIFICATE\`,"
+              echo "> \`APPLE_CERTIFICATE_PASSWORD\`, \`APPLE_ID\`, \`APPLE_PASSWORD\`, and"
+              echo "> \`APPLE_TEAM_ID\` repository secrets and re-run this workflow."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
