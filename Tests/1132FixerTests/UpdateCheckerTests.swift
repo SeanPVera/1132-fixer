@@ -1,5 +1,5 @@
 import XCTest
-@testable import _1132Fixer
+@testable import _132Fixer
 
 class MockURLProtocol: URLProtocol {
     static var requestHandler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
@@ -161,6 +161,43 @@ final class UpdateCheckerTests: XCTestCase {
         do {
             _ = try await UpdateChecker.fetchLatestRelease(session: session)
             XCTFail("Expected fetchLatestRelease to throw an error for invalid URL")
+        } catch let error as NSError {
+            XCTAssertEqual(error.domain, UpdateChecker.errorDomain)
+            XCTAssertEqual(error.code, 2)
+        }
+    }
+
+    func testIsGitHubHost() {
+        XCTAssertTrue(UpdateChecker.isGitHubHost("github.com"))
+        XCTAssertTrue(UpdateChecker.isGitHubHost("GitHub.com"))
+        XCTAssertTrue(UpdateChecker.isGitHubHost("www.github.com"))
+        // A substring check would have accepted all of these.
+        XCTAssertFalse(UpdateChecker.isGitHubHost("github.com.example.net"))
+        XCTAssertFalse(UpdateChecker.isGitHubHost("evil-github.com.attacker.io"))
+        XCTAssertFalse(UpdateChecker.isGitHubHost("notgithub.com"))
+        XCTAssertFalse(UpdateChecker.isGitHubHost(nil))
+    }
+
+    func testFetchLatestRelease_LookalikeHostRejected() async {
+        let jsonString = """
+        {
+            "tag_name": "v9.9.9",
+            "html_url": "https://github.com.attacker.example/releases/tag/v9.9.9",
+            "body": "Release notes",
+            "draft": false,
+            "prerelease": false
+        }
+        """
+        let data = jsonString.data(using: .utf8)!
+
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, data)
+        }
+
+        do {
+            _ = try await UpdateChecker.fetchLatestRelease(session: session)
+            XCTFail("Expected fetchLatestRelease to reject a github.com lookalike host")
         } catch let error as NSError {
             XCTAssertEqual(error.domain, UpdateChecker.errorDomain)
             XCTAssertEqual(error.code, 2)

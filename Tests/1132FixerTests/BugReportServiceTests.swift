@@ -1,5 +1,5 @@
 import Testing
-@testable import _1132Fixer
+@testable import _132Fixer
 
 @Suite("BugReportService")
 struct BugReportServiceTests {
@@ -34,6 +34,15 @@ struct BugReportServiceTests {
         let expected = "file\\\\name\\\"with\\\"quotes.txt"
         let result = BugReportService.escapedHeaderValue(input)
         #expect(result == expected)
+    }
+
+    @Test("escapedHeaderValue strips CR and LF so headers cannot be injected")
+    func escapedHeaderValue_stripsNewlines() {
+        let input = "file\r\nContent-Disposition: form-data; name=\"injected\"\r\n\r\nevil.txt"
+        let result = BugReportService.escapedHeaderValue(input)
+        #expect(!result.contains("\r"))
+        #expect(!result.contains("\n"))
+        #expect(result == "fileContent-Disposition: form-data; name=\\\"injected\\\"evil.txt")
     }
 
     @Test("escapedHeaderValue handles string with only quotes and backslashes")
