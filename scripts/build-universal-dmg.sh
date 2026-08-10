@@ -55,6 +55,8 @@ DMG_PATH="$DIST_DIR/$APP_NAME-v$APP_VERSION-universal.dmg"
 DMG_STAGING_DIR="$TEMP_BUILD_ROOT/dmg-staging"
 
 # Required for distribution: Developer ID Application identity.
+# Set to "-" for an ad-hoc signature: a local/test build that is not
+# distributable (Gatekeeper blocks it on other Macs) and cannot be notarized.
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"
 
 # Set NOTARIZE=0 to skip notarization.
@@ -195,6 +197,18 @@ if [[ -n "$KEYCHAIN_PATH" ]]; then
   codesign_args+=(--keychain "$KEYCHAIN_PATH")
 fi
 
+# Ad-hoc signatures cannot carry a secure timestamp and cannot be notarized.
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+  if [[ "$NOTARIZE" == "1" ]]; then
+    echo "Ad-hoc signing cannot be notarized. Set NOTARIZE=0 or provide a Developer ID identity." >&2
+    exit 1
+  fi
+  echo "WARNING: signing ad-hoc. This build is NOT notarized and Gatekeeper will block it on other Macs." >&2
+  codesign_args+=(--timestamp=none)
+else
+  codesign_args+=(--timestamp)
+fi
+
 echo "==> Building arm64 release binary"
 swift build -c release --arch arm64 --scratch-path "$ARM64_BUILD_DIR"
 
@@ -275,7 +289,7 @@ if [[ ! -f "$ENTITLEMENTS_FILE" ]]; then
 fi
 
 echo "==> Signing app bundle ($SIGN_IDENTITY)"
-codesign --force --deep --options runtime --timestamp --identifier "$BUNDLE_ID" --entitlements "$ENTITLEMENTS_FILE" --sign "${SIGN_IDENTITY_HASH:-$SIGN_IDENTITY}" "${codesign_args[@]}" "$APP_BUNDLE_DIR"
+codesign --force --deep --options runtime --identifier "$BUNDLE_ID" --entitlements "$ENTITLEMENTS_FILE" --sign "${SIGN_IDENTITY_HASH:-$SIGN_IDENTITY}" "${codesign_args[@]}" "$APP_BUNDLE_DIR"
 codesign --verify --strict --verbose=2 "$APP_BUNDLE_DIR"
 echo "==> Entitlements embedded in signature:"
 codesign -d --entitlements :- "$APP_BUNDLE_DIR" 2>/dev/null | grep -iE 'camera|audio-input|apple-events' || echo "WARNING: camera/mic entitlements not found after signing"
@@ -288,7 +302,7 @@ ln -s /Applications "$DMG_STAGING_DIR/Applications"
 hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGING_DIR" -ov -format UDZO "$DMG_PATH"
 
 echo "==> Signing DMG ($SIGN_IDENTITY)"
-codesign --force --timestamp --sign "${SIGN_IDENTITY_HASH:-$SIGN_IDENTITY}" "${codesign_args[@]}" "$DMG_PATH"
+codesign --force --sign "${SIGN_IDENTITY_HASH:-$SIGN_IDENTITY}" "${codesign_args[@]}" "$DMG_PATH"
 codesign --verify --verbose=2 "$DMG_PATH"
 
 if [[ "$NOTARIZE" == "1" ]]; then
