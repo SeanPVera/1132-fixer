@@ -1,5 +1,5 @@
 import XCTest
-@testable import _1132Fixer
+@testable import _132Fixer
 
 class MockURLProtocol: URLProtocol {
     static var requestHandler: ((URLRequest) throws -> (HTTPURLResponse, Data))?

@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 @testable import _132Fixer
 
 @Suite("ShellCommands")
@@ -277,6 +278,85 @@ struct ShellCommandsTests {
         #expect(cmd.contains("Zoom must be launched in sandbox mode"))
         #expect(!cmd.contains(#"/usr/bin/open -a "zoom.us""#))
         #expect(!cmd.contains("/usr/bin/sandbox-exec"))
+    }
+
+    // MARK: - Launch Command Quoting
+    //
+    // The launch script is executed by the caller as `/bin/bash -c <script>`. If the
+    // script wraps itself in a second `/bin/bash -c '...'`, the single quotes emitted by
+    // shellSingleQuote close that wrapper and the Zoom path reaches the outer shell
+    // unquoted — a path with a space silently truncates the script (exiting 0 without
+    // launching Zoom) and a path containing `$(...)` executes.
+
+    @Test func launchCommandDoesNotNestASecondShell() {
+        let cmd = ShellCommands.makeLaunchZoomCommand(zoomBinaryExists: true)
+        #expect(!cmd.contains("/bin/bash -c"))
+    }
+
+    @Test func launchCommandQuotesPathContainingSpaces() {
+        let path = "/Volumes/My Disk/zoom.us.app/Contents/MacOS/zoom.us"
+        let cmd = ShellCommands.makeLaunchZoomCommand(zoomBinaryPath: path, zoomBinaryExists: true)
+        #expect(cmd.contains("zoom_binary='\(path)'"))
+    }
+
+    @Test func launchCommandQuotesPathContainingShellMetacharacters() {
+        let path = "/tmp/a$(touch /tmp/pwned)`id`;echo.app/Contents/MacOS/zoom.us"
+        let cmd = ShellCommands.makeLaunchZoomCommand(zoomBinaryPath: path, zoomBinaryExists: true)
+        #expect(cmd.contains("zoom_binary='\(path)'"))
+        // The path must appear only inside the single-quoted assignment.
+        #expect(cmd.components(separatedBy: path).count == 2)
+    }
+
+    @Test func launchCommandEscapesSingleQuotesInPath() {
+        let path = "/tmp/it's/zoom.us.app/Contents/MacOS/zoom.us"
+        let cmd = ShellCommands.makeLaunchZoomCommand(zoomBinaryPath: path, zoomBinaryExists: true)
+        #expect(cmd.contains(#"zoom_binary='/tmp/it'\''s/zoom.us.app/Contents/MacOS/zoom.us'"#))
+    }
+
+    @Test func missingBinaryCommandQuotesPathInsteadOfInterpolatingIt() {
+        let path = "/tmp/a$(touch /tmp/pwned).app/Contents/MacOS/zoom.us"
+        let cmd = ShellCommands.makeLaunchZoomCommand(zoomBinaryPath: path, zoomBinaryExists: false)
+        #expect(cmd.contains("zoom_binary='\(path)'"))
+        // The message must reference the shell variable, not the raw path.
+        #expect(cmd.contains("not found at $zoom_binary"))
+        #expect(!cmd.contains("not found at \(path)"))
+    }
+
+    // MARK: - Network Identity Strategy
+
+    @Test func rotatingPrivateWiFiAddressIsReachableOnBlockedWiFi() {
+        // Apple Silicon + macOS 14+ on Wi-Fi: the rotating-address path must win. Testing
+        // isMacSpoofingDisabledForCurrentOS first would make this branch unreachable.
+        let strategy = ShellCommands.networkIdentityStrategy(
+            isWiFi: true,
+            isMacSpoofingBlockedOnWiFi: true,
+            isMacSpoofingDisabledForCurrentOS: true
+        )
+        #expect(strategy == .rotatingPrivateWiFiAddress)
+    }
+
+    @Test func ethernetOnModernMacOSIsUnsupported() {
+        let strategy = ShellCommands.networkIdentityStrategy(
+            isWiFi: false,
+            isMacSpoofingBlockedOnWiFi: true,
+            isMacSpoofingDisabledForCurrentOS: true
+        )
+        #expect(strategy == .unsupported)
+    }
+
+    @Test func legacyMACSpoofUsedWhenNotDisabled() {
+        let wifi = ShellCommands.networkIdentityStrategy(
+            isWiFi: true,
+            isMacSpoofingBlockedOnWiFi: false,
+            isMacSpoofingDisabledForCurrentOS: false
+        )
+        let ethernet = ShellCommands.networkIdentityStrategy(
+            isWiFi: false,
+            isMacSpoofingBlockedOnWiFi: false,
+            isMacSpoofingDisabledForCurrentOS: false
+        )
+        #expect(wifi == .legacyMACSpoof)
+        #expect(ethernet == .legacyMACSpoof)
     }
 
     // MARK: - Custom Zoom Location

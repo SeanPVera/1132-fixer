@@ -350,6 +350,44 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 14
     }
 
+    // MARK: - Network Identity Strategy
+
+    /// How the workflow can change the machine's network identity on this OS and interface.
+    enum NetworkIdentityStrategy: Equatable {
+        /// `ifconfig lladdr` spoofing, which only works reliably before macOS 14.
+        case legacyMACSpoof
+        /// macOS 14+ replacement on Apple Silicon Wi-Fi: cycle the rotating Private Wi-Fi Address.
+        case rotatingPrivateWiFiAddress
+        /// No usable mechanism on this OS/interface combination.
+        case unsupported
+    }
+
+    /// Decides the strategy. The Wi-Fi case is checked *first*: it only ever applies on
+    /// macOS 14+, so testing `isMacSpoofingDisabledForCurrentOS` before it would make the
+    /// rotating-address path unreachable.
+    static func networkIdentityStrategy(
+        isWiFi: Bool,
+        isMacSpoofingBlockedOnWiFi: Bool,
+        isMacSpoofingDisabledForCurrentOS: Bool
+    ) -> NetworkIdentityStrategy {
+        if isWiFi && isMacSpoofingBlockedOnWiFi {
+            return .rotatingPrivateWiFiAddress
+        }
+        if isMacSpoofingDisabledForCurrentOS {
+            return .unsupported
+        }
+        return .legacyMACSpoof
+    }
+
+    /// Strategy for the running system.
+    static func networkIdentityStrategy(isWiFi: Bool) -> NetworkIdentityStrategy {
+        networkIdentityStrategy(
+            isWiFi: isWiFi,
+            isMacSpoofingBlockedOnWiFi: isMacSpoofingBlockedOnWiFi(),
+            isMacSpoofingDisabledForCurrentOS: isMacSpoofingDisabledForCurrentOS()
+        )
+    }
+
     // MARK: - Private Wi-Fi Address (Rotating MAC)
 
     static func makeGetPrivateAddressModeCommand(networkService: String) -> String {
@@ -512,21 +550,29 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         makeLaunchZoomCommand(zoomBinaryPath: zoomBinaryPath, zoomBinaryExists: zoomBinaryExists)
     }
 
+    /// Builds the launch script that the caller hands to `/bin/bash -c`.
+    ///
+    /// The script must never wrap itself in another `/bin/bash -c '...'`: the single
+    /// quotes produced by `shellSingleQuote` would close that wrapper's quoting, so the
+    /// interpolated Zoom path would reach the outer shell unquoted. Interpolate paths
+    /// only through `shellSingleQuote`, and reference them as `"$zoom_binary"`.
     static func makeLaunchZoomCommand(zoomBinaryPath: String, zoomBinaryExists: Bool) -> String {
+        let quotedBinaryPath = shellSingleQuote(zoomBinaryPath)
+
         guard zoomBinaryExists else {
             return """
+            zoom_binary=\(quotedBinaryPath)
             echo "Launch mode: sandboxRequiredMissingBinary"
-            echo "Error: Zoom must be launched in sandbox mode, but the Zoom binary was not found at \(zoomBinaryPath). Install Zoom from https://zoom.us/download, or pick the correct Zoom location in 1132 Fixer, and try again."
+            echo "Error: Zoom must be launched in sandbox mode, but the Zoom binary was not found at $zoom_binary. Install Zoom from https://zoom.us/download, or pick the correct Zoom location in 1132 Fixer, and try again."
             exit 1
             """
         }
 
         let encodedProfile = Data(zoomSandboxProfile.utf8).base64EncodedString()
         return """
-        /bin/bash -c '
         set -u
 
-        zoom_binary=\(shellSingleQuote(zoomBinaryPath))
+        zoom_binary=\(quotedBinaryPath)
         encoded_profile=\(shellSingleQuote(encodedProfile))
         profile_path="$(/usr/bin/mktemp "/tmp/1132fixer.zoom-sandbox.XXXXXX")" || exit 1
 
@@ -606,7 +652,6 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
 
         echo "Heuristic: sandbox launch stabilized = no"
         exit 1
-        '
         """
     }
 }

@@ -418,12 +418,13 @@ final class AppViewModel: ObservableObject {
 
                 if let kind = try? ShellCommands.classifySupportedInterface(hardwarePortName: portName) {
                     results.append("Interface type: \(kind.rawValue)")
-                    if ShellCommands.isMacSpoofingDisabledForCurrentOS() {
-                        results.append("MAC spoofing: Disabled on macOS 14+")
-                    } else if kind == .wifi && ShellCommands.isMacSpoofingBlockedOnWiFi() {
-                        results.append("MAC spoofing: BLOCKED (Apple Silicon + macOS 14+)")
-                    } else {
-                        results.append("MAC spoofing: Available")
+                    switch ShellCommands.networkIdentityStrategy(isWiFi: kind == .wifi) {
+                    case .rotatingPrivateWiFiAddress:
+                        results.append("Network identity: Rotating Private Wi-Fi Address (Apple Silicon + macOS 14+)")
+                    case .unsupported:
+                        results.append("Network identity: UNAVAILABLE — MAC spoofing is disabled on macOS 14+")
+                    case .legacyMACSpoof:
+                        results.append("Network identity: MAC spoofing available")
                     }
                 }
             } catch {
@@ -466,6 +467,7 @@ final class AppViewModel: ObservableObject {
             checks.append(.init(id: "zoom", label: "Zoom App", value: zoomValue, isWarning: !zoomInstalled))
 
             // Active interface & VPN
+            var activeInterfaceKind: ShellCommands.InterfaceKind?
             do {
                 let routeOutput = try await runProcess(
                     stepName: "Preflight: detect interface",
@@ -481,6 +483,7 @@ final class AppViewModel: ObservableObject {
                 )
                 let portMap = ShellCommands.parseHardwarePorts(from: portsOutput)
                 let portName = portMap[device] ?? "Unknown"
+                activeInterfaceKind = try? ShellCommands.classifySupportedInterface(hardwarePortName: portName)
 
                 checks.append(.init(id: "iface", label: "Active Interface", value: "\(portName) (\(device))", isWarning: false))
                 checks.append(.init(id: "vpn", label: "VPN", value: "Not detected", isWarning: false))
@@ -496,11 +499,14 @@ final class AppViewModel: ObservableObject {
             // Admin prompts expected (DNS flush needs admin; MAC spoofing on supported macOS also needs admin)
             checks.append(.init(id: "admin", label: "Admin Prompts", value: "Expected", isWarning: false))
 
-            // MAC spoofing availability
-            if ShellCommands.isMacSpoofingDisabledForCurrentOS() {
-                checks.append(.init(id: "macspoof", label: "MAC Spoofing", value: "Disabled on macOS 14+", isWarning: false))
-            } else if ShellCommands.isMacSpoofingBlockedOnWiFi() {
-                checks.append(.init(id: "macspoof", label: "MAC Spoofing", value: "Blocked on Wi-Fi (Apple Silicon + macOS 14+)", isWarning: true))
+            // How the workflow can change network identity on this OS and interface.
+            switch ShellCommands.networkIdentityStrategy(isWiFi: activeInterfaceKind == .wifi) {
+            case .rotatingPrivateWiFiAddress:
+                checks.append(.init(id: "macspoof", label: "Network Identity", value: "Rotating Private Wi-Fi Address", isWarning: false))
+            case .unsupported:
+                checks.append(.init(id: "macspoof", label: "Network Identity", value: "Unavailable — MAC spoofing is disabled on macOS 14+", isWarning: true))
+            case .legacyMACSpoof:
+                checks.append(.init(id: "macspoof", label: "Network Identity", value: "MAC spoofing available", isWarning: false))
             }
 
             preflight = PreflightInfo(status: .ready, checks: checks)
@@ -667,16 +673,17 @@ Last action status: \(lastStatus)
     private func spoofMACAndReconnectActiveInterface() async throws -> MACSpoofResult {
         let interface = try await resolveActiveSupportedInterface()
 
-        if ShellCommands.isMacSpoofingDisabledForCurrentOS() {
+        switch ShellCommands.networkIdentityStrategy(isWiFi: interface.kind == .wifi) {
+        case .rotatingPrivateWiFiAddress:
+            return try await resetPrivateWiFiAddressAndReconnect(networkService: interface.networkService, device: interface.device)
+        case .unsupported:
             return MACSpoofResult(
                 summary: "MAC spoofing is disabled on macOS 14 and later because the old spoofing method no longer works reliably. Active network: \(interface.kind.rawValue) (\(interface.device), service: \(interface.networkService)).",
                 hasWarning: false,
                 wasSkipped: true
             )
-        }
-
-        if interface.kind == .wifi && ShellCommands.isMacSpoofingBlockedOnWiFi() {
-            return try await resetPrivateWiFiAddressAndReconnect(networkService: interface.networkService, device: interface.device)
+        case .legacyMACSpoof:
+            break
         }
 
         let spoofedMAC = try ShellCommands.generateRandomMACAddress()
