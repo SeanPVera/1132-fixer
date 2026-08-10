@@ -931,46 +931,132 @@ If your network connection is disrupted after this step:
         runPreflight()
     }
 
+    /// How long to wait for an answer to a camera/microphone prompt before
+    /// giving up on it and continuing to the Zoom launch.
+    private static let mediaAccessPromptTimeout: TimeInterval = 60
+
+    private struct MediaAccessResult {
+        let isGranted: Bool
+        let message: String
+    }
+
     private func ensureMediaAccessForSandboxedZoom() async throws -> String {
-        let cameraStatus = try await ensureMediaAccess(
+        // macOS only presents a privacy prompt while the requesting app is
+        // frontmost. The admin (SecurityAgent) prompts in the earlier steps leave
+        // another process in front, so without this the prompt is deferred and
+        // the step waits on a dialog the user never gets to answer.
+        await bringAppToFront()
+
+        // Both media types are always evaluated: a camera problem must not skip
+        // the microphone request, otherwise the microphone stays "not determined"
+        // and every later run stops at the same never-shown prompt.
+        let camera = await ensureMediaAccess(
             mediaType: .video,
             displayName: "Camera",
             usageDescriptionKey: "NSCameraUsageDescription"
         )
-        let microphoneStatus = try await ensureMediaAccess(
+        let microphone = await ensureMediaAccess(
             mediaType: .audio,
             displayName: "Microphone",
             usageDescriptionKey: "NSMicrophoneUsageDescription"
         )
 
-        return "\(cameraStatus); \(microphoneStatus)"
+        let results = [camera, microphone]
+        let summary = results.map(\.message).joined(separator: "; ")
+        guard results.allSatisfy(\.isGranted) else {
+            throw appError(summary)
+        }
+        return summary
     }
 
     private func ensureMediaAccess(
         mediaType: AVMediaType,
         displayName: String,
         usageDescriptionKey: String
-    ) async throws -> String {
+    ) async -> MediaAccessResult {
+        let settingsHint = "Open System Settings > Privacy & Security > \(displayName), enable 1132 Fixer, then run Start Zoom again."
+
         guard Bundle.main.object(forInfoDictionaryKey: usageDescriptionKey) != nil else {
-            throw appError("\(displayName) access cannot be requested because \(usageDescriptionKey) is missing from the app bundle.")
+            return MediaAccessResult(
+                isGranted: false,
+                message: "\(displayName) access cannot be requested because \(usageDescriptionKey) is missing from the app bundle."
+            )
         }
 
         switch AVCaptureDevice.authorizationStatus(for: mediaType) {
         case .authorized:
-            return "\(displayName) access already granted"
+            return MediaAccessResult(isGranted: true, message: "\(displayName) access already granted")
         case .notDetermined:
-            let granted = await AVCaptureDevice.requestAccess(for: mediaType)
-            if granted {
-                return "\(displayName) access granted"
+            let timeoutSeconds = Int(Self.mediaAccessPromptTimeout)
+            appendLog("Waiting for the macOS \(displayName) prompt — click Allow (continuing without it after \(timeoutSeconds)s).")
+            switch await requestMediaAccess(for: mediaType) {
+            case .answered(let granted):
+                guard granted else {
+                    return MediaAccessResult(isGranted: false, message: "\(displayName) access was denied. \(settingsHint)")
+                }
+                return MediaAccessResult(isGranted: true, message: "\(displayName) access granted")
+            case .unanswered:
+                return MediaAccessResult(
+                    isGranted: false,
+                    message: "\(displayName) prompt went unanswered for \(timeoutSeconds)s. If no prompt appeared: \(settingsHint)"
+                )
             }
-            throw appError("\(displayName) access was denied. Enable 1132 Fixer in System Settings > Privacy & Security > \(displayName), then run Start Zoom again.")
         case .denied:
-            throw appError("\(displayName) access is denied. Enable 1132 Fixer in System Settings > Privacy & Security > \(displayName), then run Start Zoom again.")
+            return MediaAccessResult(isGranted: false, message: "\(displayName) access is denied. \(settingsHint)")
         case .restricted:
-            throw appError("\(displayName) access is restricted by macOS or device management policy.")
+            return MediaAccessResult(isGranted: false, message: "\(displayName) access is restricted by macOS or device management policy.")
         @unknown default:
-            throw appError("\(displayName) access is in an unknown authorization state.")
+            return MediaAccessResult(isGranted: false, message: "\(displayName) access is in an unknown authorization state.")
         }
+    }
+
+    /// Requests access to `mediaType`, giving up once the prompt has gone
+    /// unanswered for `mediaAccessPromptTimeout` seconds.
+    ///
+    /// `AVCaptureDevice.requestAccess` has no timeout of its own: when macOS
+    /// never shows the prompt, its completion handler is never called and the
+    /// workflow would wait forever with nothing on screen to click. The timeout
+    /// keeps the step moving — camera/mic denial is already non-fatal, so Zoom
+    /// still launches and the 1132 fix still applies.
+    private func requestMediaAccess(for mediaType: AVMediaType) async -> MediaAccessOutcome {
+        // Never raise a new prompt for a workflow the user already canceled.
+        guard !Task.isCancelled else { return .unanswered }
+
+        let waiter = MediaAccessWaiter()
+
+        let timer = DispatchSource.makeTimerSource(queue: .global())
+        timer.schedule(deadline: .now() + Self.mediaAccessPromptTimeout)
+        timer.setEventHandler { waiter.finish(.unanswered) }
+        timer.resume()
+
+        AVCaptureDevice.requestAccess(for: mediaType) { granted in
+            timer.cancel()
+            waiter.finish(.answered(granted))
+        }
+
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<MediaAccessOutcome, Never>) in
+                waiter.attach(continuation)
+            }
+        } onCancel: {
+            timer.cancel()
+            waiter.finish(.unanswered)
+        }
+    }
+
+    /// Makes 1132 Fixer the frontmost app so macOS presents its privacy prompts
+    /// instead of deferring them behind whatever ran last.
+    private func bringAppToFront() async {
+        let app = NSApplication.shared
+        if #available(macOS 14.0, *) {
+            app.activate()
+        } else {
+            app.activate(ignoringOtherApps: true)
+        }
+        app.windows.first { $0.canBecomeKey }?.makeKeyAndOrderFront(nil)
+
+        // Activation is asynchronous; let it land before asking for the prompt.
+        try? await Task.sleep(nanoseconds: 300_000_000)
     }
 
     private func appError(_ message: String) -> AppError {
@@ -1085,4 +1171,51 @@ If your network connection is disrupted after this step:
         }
     }
 
+}
+
+/// The result of a single `AVCaptureDevice.requestAccess` call.
+enum MediaAccessOutcome: Equatable {
+    /// The user answered the macOS privacy prompt.
+    case answered(Bool)
+    /// No answer arrived: the prompt was never shown, was left open past the
+    /// timeout, or the workflow was canceled while waiting.
+    case unanswered
+}
+
+/// Bridges `AVCaptureDevice.requestAccess` to `async`/`await` so that whichever
+/// comes first — the user's answer, the timeout, or workflow cancellation —
+/// resumes the caller exactly once. Later outcomes are discarded, and an outcome
+/// that lands before the caller starts awaiting is buffered.
+final class MediaAccessWaiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<MediaAccessOutcome, Never>?
+    private var outcome: MediaAccessOutcome?
+
+    /// Records the first outcome and hands it to the waiting caller, if any.
+    func finish(_ outcome: MediaAccessOutcome) {
+        lock.lock()
+        guard self.outcome == nil else {
+            lock.unlock()
+            return
+        }
+        self.outcome = outcome
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+
+        pending?.resume(returning: outcome)
+    }
+
+    /// Suspends the caller until `finish` is called, or resumes it immediately
+    /// when an outcome has already been recorded.
+    func attach(_ continuation: CheckedContinuation<MediaAccessOutcome, Never>) {
+        lock.lock()
+        if let outcome = self.outcome {
+            lock.unlock()
+            continuation.resume(returning: outcome)
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
 }
