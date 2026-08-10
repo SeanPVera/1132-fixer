@@ -68,6 +68,17 @@ enum ShellCommands {
         "'" + value.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
     }
 
+    /// Quotes a value for use as a sandbox profile (SBPL) string literal.
+    /// Backslash and double quote are the only characters SBPL treats specially
+    /// inside a string; an unescaped one would end the literal early and change
+    /// which paths a rule matches.
+    static func sandboxStringLiteral(_ value: String) -> String {
+        let escaped = value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
+    }
+
     static func appleScriptDoShellScript(_ command: String, administratorPrivileges: Bool) -> String {
         let base64Command = Data(command.utf8).base64EncodedString()
         let privilegeClause = administratorPrivileges ? " with administrator privileges" : ""
@@ -506,12 +517,144 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
 
     // Zoom must stay inside sandbox-exec for this app. Do not replace this
     // profile-backed launch with /usr/bin/open or any other normal Zoom launch.
-    static let zoomSandboxProfile = """
+
+    /// Sandbox profile for the running user.
+    static var zoomSandboxProfile: String {
+        makeZoomSandboxProfile(homeDirectory: NSHomeDirectory())
+    }
+
+    /// Home-relative directories Zoom is denied read access to. Zoom needs none of
+    /// them, and macOS treats 1132 Fixer as the TCC *responsible* process for the
+    /// sandboxed session, so without these rules Zoom would inherit this app's
+    /// standing when it reaches for TCC-protected data.
+    ///
+    /// `Application Support/1132Fixer` holds this app's own backups of Zoom's
+    /// previous local state — readable, that is a copy of the very identity the
+    /// workflow just cleared.
+    private static let deniedHomeReadSubpaths = [
+        ".ssh",
+        ".gnupg",
+        ".aws",
+        ".kube",
+        ".docker",
+        ".config",
+        "Library/Keychains",
+        "Library/Containers",
+        "Library/Mail",
+        "Library/Messages",
+        "Library/Safari",
+        "Library/Calendars",
+        "Library/IdentityServices",
+        "Library/Application Support/1132Fixer",
+        "Library/Application Support/AddressBook",
+        "Library/Application Support/BraveSoftware",
+        "Library/Application Support/Firefox",
+        "Library/Application Support/Google/Chrome",
+        "Library/Application Support/Microsoft Edge",
+        "Library/Application Support/MobileSync",
+        "Library/Application Support/com.apple.sharedfilelist",
+        "Pictures/Photos Library.photoslibrary"
+    ]
+
+    private static let deniedHomeReadLiterals = [
+        ".netrc",
+        ".bash_history",
+        ".zsh_history"
+    ]
+
+    /// Home-relative directories Zoom is denied write access to. `Library/LaunchAgents`
+    /// stops the sandboxed session from reinstating the updater agents the workflow
+    /// just unloaded. This lasts only as long as the sandboxed process: the agent
+    /// files are untouched, so Zoom still updates outside this app.
+    private static let deniedHomeWriteSubpaths = [
+        ".ssh",
+        ".gnupg",
+        ".aws",
+        "Library/Keychains",
+        "Library/LaunchAgents",
+        "Library/Application Support/1132Fixer"
+    ]
+
+    /// Returns an absolute home path with trailing slashes trimmed, or `nil` when the
+    /// value cannot anchor a `subpath` rule. `/` is rejected on purpose: anchoring
+    /// these rules at the filesystem root would deny Zoom most of the disk.
+    static func normalizedSandboxHome(_ homeDirectory: String) -> String? {
+        var path = homeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        while path.count > 1 && path.hasSuffix("/") {
+            path.removeLast()
+        }
+        guard path.hasPrefix("/"), path != "/" else { return nil }
+        return path
+    }
+
+    /// Builds the sandbox profile Zoom runs under.
+    ///
+    /// The base stays `(allow default)`. Zoom is closed source, spawns its own capture
+    /// helpers, and this app has no non-sandbox launch path to fall back on, so a
+    /// `(deny default)` profile could not be kept working across Zoom and macOS updates
+    /// — a single missing allow rule would leave users unable to start Zoom at all.
+    /// Everything below is therefore a denylist, and it is written to be exhaustive
+    /// about the two things worth containing:
+    ///
+    /// 1. **Stable hardware identity.** Error 1132 is a device-level ban, so every
+    ///    channel that lets Zoom re-derive the same machine fingerprint is closed:
+    ///    IOKit properties, the `sysctl` identifiers, the command-line tools that
+    ///    report them, and the on-disk files that record network identity.
+    /// 2. **Private user data.** See `deniedHomeReadSubpaths`.
+    ///
+    /// SBPL resolves the *last* matching rule, so the denies below override the blanket
+    /// allows above them, and the home allow-back overrides the `/Users` deny. Rule
+    /// order in this profile is load-bearing.
+    static func makeZoomSandboxProfile(homeDirectory: String) -> String {
+        var profile = zoomSandboxProfilePrefix
+
+        guard let home = normalizedSandboxHome(homeDirectory) else {
+            return profile
+        }
+
+        let homeLiteral = sandboxStringLiteral(home)
+        let readSubpaths = deniedHomeReadSubpaths
+            .map { "    (subpath \(sandboxStringLiteral("\(home)/\($0)")))" }
+            .joined(separator: "\n")
+        let readLiterals = deniedHomeReadLiterals
+            .map { "    (literal \(sandboxStringLiteral("\(home)/\($0)")))" }
+            .joined(separator: "\n")
+        let writeSubpaths = deniedHomeWriteSubpaths
+            .map { "    (subpath \(sandboxStringLiteral("\(home)/\($0)")))" }
+            .joined(separator: "\n")
+
+        profile += """
+
+
+        ; Other users' files. Allowed back for this user's own home immediately
+        ; below, so the deny only covers accounts Zoom has no business reading.
+        (deny file-read* (subpath "/Users"))
+        (allow file-read* (subpath \(homeLiteral)))
+        (allow file-read* (subpath "/Users/Shared"))
+
+        ; Private data inside this user's own home.
+        (deny file-read*
+        \(readSubpaths)
+        \(readLiterals)
+        )
+
+        (deny file-write*
+        \(writeSubpaths)
+        )
+        """
+
+        return profile
+    }
+
+    private static let zoomSandboxProfilePrefix = """
     (version 1)
     (allow default)
 
     ; Camera and microphone access must remain explicit because Zoom runs under
     ; sandbox-exec for the full session, including helper-based video capture.
+    ; These allows are redundant while the default is `allow`; they stay because
+    ; they record the exact set the capture path needs, and the denies further
+    ; down must never grow to cover any of it.
     (allow device-camera)
     (allow device-microphone)
     (allow iokit-get-properties)
@@ -562,14 +705,85 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         (global-name "com.apple.windowserver.active")
     )
 
+    ; Stable hardware identity, which is what a 1132 device ban keys on.
+    ;
+    ; Every key below lives on the platform-expert or device-tree node, so denying
+    ; it costs Zoom nothing. Generic keys that also appear on peripherals --
+    ; "model", "manufacturer", "SerialNumber" -- are deliberately absent: an
+    ; iokit-property filter matches on every registry entry, so denying those
+    ; would break camera and USB device enumeration.
     (deny iokit-get-properties
         (iokit-property "IOPlatformSerialNumber")
         (iokit-property "IOPlatformUUID")
-        (iokit-property "board-id")
         (iokit-property "IOMACAddress")
+        (iokit-property "board-id")
+        (iokit-property "chip-id")
+        (iokit-property "die-id")
+        (iokit-property "local-mac-address")
+        (iokit-property "mlb-serial-number")
+        (iokit-property "model-number")
+        (iokit-property "nvram-proxy-data")
+        (iokit-property "platform-uuid")
+        (iokit-property "region-info")
+        (iokit-property "regulatory-model-number")
+        (iokit-property "serial-number")
+        (iokit-property "system-serial-number")
+        (iokit-property "target-type")
+        (iokit-property "unique-chip-id")
     )
-    (deny file-read-data
+
+    ; Per-machine sysctl identifiers. Low-entropy ones such as hw.model and
+    ; machdep.cpu.brand_string stay readable: they are shared by millions of
+    ; machines and Zoom uses them to pick codecs.
+    (deny sysctl-read
+        (sysctl-name "hw.serialnumber")
+        (sysctl-name "hw.uuid")
+        (sysctl-name "kern.uuid")
+    )
+
+    ; The command-line tools that report the same identifiers. Zoom has no reason
+    ; to shell out to any of them, and the in-process equivalents are already
+    ; denied above.
+    (deny process-exec
+        (literal "/bin/hostname")
+        (literal "/sbin/ifconfig")
+        (literal "/usr/bin/dscl")
+        (literal "/usr/libexec/remotectl")
+        (literal "/usr/sbin/arp")
+        (literal "/usr/sbin/diskutil")
+        (literal "/usr/sbin/ioreg")
+        (literal "/usr/sbin/netstat")
+        (literal "/usr/sbin/networksetup")
+        (literal "/usr/sbin/nvram")
+        (literal "/usr/sbin/scutil")
+        (literal "/usr/sbin/sysctl")
+        (literal "/usr/sbin/system_profiler")
+    )
+
+    ; On-disk records of network and machine identity. The airport and network
+    ; identification plists are the strongest of these: they hold the history of
+    ; every Wi-Fi network and router this Mac has joined.
+    (deny file-read*
         (literal "/Library/Preferences/SystemConfiguration/NetworkInterfaces.plist")
+        (literal "/Library/Preferences/SystemConfiguration/com.apple.airport.preferences.plist")
+        (literal "/Library/Preferences/SystemConfiguration/com.apple.network.identification.plist")
+        (literal "/Library/Preferences/SystemConfiguration/preferences.plist")
+        (literal "/Library/Preferences/com.apple.Bluetooth.plist")
+        (literal "/private/var/db/SystemKey")
+        (subpath "/Library/Application Support/CrashReporter")
+        (subpath "/private/var/db/ConfigurationProfiles")
+        (subpath "/private/var/db/dslocal")
+    )
+
+    ; System-wide credentials and persistence.
+    (deny file-read*
+        (subpath "/Library/Keychains")
+        (subpath "/private/etc/ssh")
+    )
+    (deny file-write*
+        (subpath "/Library/Keychains")
+        (subpath "/Library/LaunchAgents")
+        (subpath "/Library/LaunchDaemons")
     )
     """
 
@@ -612,7 +826,11 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
 
         zoom_binary=\(quotedBinaryPath)
         encoded_profile=\(shellSingleQuote(encodedProfile))
-        profile_path="$(/usr/bin/mktemp "/tmp/1132fixer.zoom-sandbox.XXXXXX")" || exit 1
+
+        # The per-user TMPDIR (mode 0700) rather than /tmp, which every local
+        # account can write to and list.
+        tmp_dir="${TMPDIR:-/tmp}"
+        profile_path="$(/usr/bin/mktemp "${tmp_dir%/}/1132fixer.zoom-sandbox.XXXXXX")" || exit 1
 
         cleanup() {
           /bin/rm -f "$profile_path"
@@ -661,6 +879,15 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
 
         trap cleanup EXIT
         /bin/echo "$encoded_profile" | /usr/bin/base64 --decode > "$profile_path" || exit 1
+
+        # Compile the profile before touching the running Zoom. A rejected rule
+        # would otherwise surface as an unexplained failure to launch, and Zoom
+        # would already have been killed by then. This fails closed: there is no
+        # unsandboxed retry.
+        if ! profile_error="$(/usr/bin/sandbox-exec -f "$profile_path" /usr/bin/true 2>&1)"; then
+          echo "Error: macOS rejected the Zoom sandbox profile, so Zoom was not started. Details: $profile_error" >&2
+          exit 1
+        fi
 
         # Sandbox mode is required for 1132 Fixer. Normal Zoom launch mode does
         # not work for this workflow, so there is intentionally no open -a
