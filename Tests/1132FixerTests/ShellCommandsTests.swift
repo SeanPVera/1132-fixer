@@ -300,6 +300,185 @@ struct ShellCommandsTests {
         #expect(ShellCommands.zoomSandboxProfile.contains(#""com.apple.videoconference.camera""#))
     }
 
+    // MARK: - Sandbox Profile Hardening
+    //
+    // The profile is a denylist over `(allow default)`. SBPL resolves the *last*
+    // matching rule, so both the denies below the blanket allows and the ordering
+    // of the /Users deny against the home allow-back are load-bearing.
+
+    private func testProfile(home: String = "/Users/tester") -> String {
+        ShellCommands.makeZoomSandboxProfile(homeDirectory: home)
+    }
+
+    @Test func zoomSandboxProfileDeniesHardwareIdentityProperties() {
+        let profile = testProfile()
+        for property in [
+            "IOPlatformSerialNumber",
+            "IOPlatformUUID",
+            "IOMACAddress",
+            "board-id",
+            "chip-id",
+            "die-id",
+            "local-mac-address",
+            "mlb-serial-number",
+            "nvram-proxy-data",
+            "platform-uuid",
+            "serial-number",
+            "system-serial-number",
+            "unique-chip-id"
+        ] {
+            #expect(profile.contains(#"(iokit-property "\#(property)")"#), "missing deny for \(property)")
+        }
+    }
+
+    @Test func zoomSandboxProfileKeepsPeripheralPropertiesReadable() {
+        // An iokit-property filter matches every registry entry, not just the
+        // platform node, so denying these generic keys would break camera and USB
+        // device enumeration — which sandbox mode has to preserve.
+        let profile = testProfile()
+        #expect(!profile.contains(#"(iokit-property "model")"#))
+        #expect(!profile.contains(#"(iokit-property "manufacturer")"#))
+        #expect(!profile.contains(#"(iokit-property "SerialNumber")"#))
+    }
+
+    @Test func zoomSandboxProfileDeniesFingerprintingCommandLineTools() {
+        let profile = testProfile()
+        #expect(profile.contains("(deny process-exec"))
+        for tool in [
+            "/bin/hostname",
+            "/sbin/ifconfig",
+            "/usr/bin/dscl",
+            "/usr/libexec/remotectl",
+            "/usr/sbin/ioreg",
+            "/usr/sbin/networksetup",
+            "/usr/sbin/nvram",
+            "/usr/sbin/scutil",
+            "/usr/sbin/system_profiler"
+        ] {
+            #expect(profile.contains(#"(literal "\#(tool)")"#), "missing exec deny for \(tool)")
+        }
+    }
+
+    @Test func zoomSandboxProfileDeniesUniqueSysctlIdentifiers() {
+        let profile = testProfile()
+        #expect(profile.contains(#"(sysctl-name "kern.uuid")"#))
+        // hw.model is shared by millions of machines and Zoom uses it to pick
+        // codecs, so it stays readable.
+        #expect(!profile.contains(#"(sysctl-name "hw.model")"#))
+    }
+
+    @Test func zoomSandboxProfileDeniesNetworkIdentityFiles() {
+        let profile = testProfile()
+        for path in [
+            "/Library/Preferences/SystemConfiguration/NetworkInterfaces.plist",
+            "/Library/Preferences/SystemConfiguration/com.apple.airport.preferences.plist",
+            "/Library/Preferences/SystemConfiguration/com.apple.network.identification.plist",
+            "/Library/Preferences/com.apple.Bluetooth.plist"
+        ] {
+            #expect(profile.contains(#"(literal "\#(path)")"#), "missing read deny for \(path)")
+        }
+    }
+
+    @Test func zoomSandboxProfileScopesPrivateDataRulesToTheGivenHome() {
+        let profile = testProfile()
+        #expect(profile.contains(#"(subpath "/Users/tester/.ssh")"#))
+        #expect(profile.contains(#"(subpath "/Users/tester/Library/Keychains")"#))
+        #expect(profile.contains(#"(subpath "/Users/tester/Library/Application Support/1132Fixer")"#))
+        #expect(profile.contains(#"(literal "/Users/tester/.zsh_history")"#))
+        // The profile is not run through a shell, so nothing may rely on expansion.
+        #expect(!profile.contains("$HOME"))
+        #expect(!profile.contains("~/"))
+    }
+
+    @Test func zoomSandboxProfileOrdersUsersDenyBeforeHomeAllowBack() {
+        // Last matching rule wins: the allow-back must follow the /Users deny or
+        // Zoom cannot read its own data, and the private-data denies must follow
+        // the allow-back or they are undone by it.
+        let profile = testProfile()
+        guard
+            let othersDeny = profile.range(of: #"(deny file-read* (subpath "/Users"))"#)?.lowerBound,
+            let homeAllow = profile.range(of: #"(allow file-read* (subpath "/Users/tester"))"#)?.lowerBound,
+            let privateDeny = profile.range(of: #"(subpath "/Users/tester/.ssh")"#)?.lowerBound
+        else {
+            Issue.record("Profile is missing the /Users deny, the home allow-back, or the private-data denies")
+            return
+        }
+        #expect(othersDeny < homeAllow)
+        #expect(homeAllow < privateDeny)
+    }
+
+    @Test func zoomSandboxProfileDeniesWritesToPersistenceAndBackupPaths() {
+        let profile = testProfile()
+        #expect(profile.contains("(deny file-write*"))
+        // Stops the sandboxed session from reinstating the updater agents the
+        // workflow just unloaded, and from tampering with this app's own backups
+        // of Zoom's previous identity.
+        #expect(profile.contains(#"(subpath "/Users/tester/Library/LaunchAgents")"#))
+        #expect(profile.contains(#"(subpath "/Library/LaunchDaemons")"#))
+    }
+
+    @Test func zoomSandboxProfileNormalizesTrailingSlashInHome() {
+        let profile = testProfile(home: "/Users/tester/")
+        #expect(profile.contains(#"(subpath "/Users/tester/.ssh")"#))
+        #expect(!profile.contains("//"))
+        #expect(ShellCommands.normalizedSandboxHome("/Users/tester//") == "/Users/tester")
+    }
+
+    @Test func zoomSandboxProfileOmitsHomeRulesWhenHomeCannotAnchorSubpaths() {
+        // Anchoring these rules at "/" would deny Zoom most of the filesystem, so
+        // an unusable home drops them rather than widening them.
+        #expect(ShellCommands.normalizedSandboxHome("/") == nil)
+        #expect(ShellCommands.normalizedSandboxHome("") == nil)
+        #expect(ShellCommands.normalizedSandboxHome("relative/path") == nil)
+
+        for home in ["", "   ", "relative/path", "/"] {
+            let profile = testProfile(home: home)
+            #expect(!profile.contains(#"(deny file-read* (subpath "/Users"))"#))
+            #expect(profile.contains("(allow device-camera)"))
+            #expect(profile.contains(#"(iokit-property "IOPlatformSerialNumber")"#))
+        }
+    }
+
+    @Test func sandboxStringLiteralEscapesQuotesAndBackslashes() {
+        // An unescaped quote or backslash would end the SBPL string early and
+        // silently change which paths the rule matches.
+        #expect(ShellCommands.sandboxStringLiteral("/Users/plain") == #""/Users/plain""#)
+        #expect(ShellCommands.sandboxStringLiteral(#"/Users/a"b"#) == #""/Users/a\"b""#)
+        #expect(ShellCommands.sandboxStringLiteral(#"/Users/a\b"#) == #""/Users/a\\b""#)
+    }
+
+    @Test func zoomSandboxProfileEscapesHomePathsContainingQuotes() {
+        let profile = testProfile(home: #"/Users/a"b"#)
+        #expect(profile.contains(#"(subpath "/Users/a\"b/.ssh")"#))
+    }
+
+    @Test func zoomSandboxProfileIsAcceptedBySandboxExec() throws {
+        // The app has no unsandboxed launch path, so a profile macOS refuses to
+        // compile means Zoom cannot start at all. Compile it for real.
+        let fileManager = FileManager.default
+        let sandboxExec = "/usr/bin/sandbox-exec"
+        guard fileManager.isExecutableFile(atPath: sandboxExec) else { return }
+
+        let profileURL = fileManager.temporaryDirectory
+            .appendingPathComponent("1132fixer-profile-\(UUID().uuidString).sb")
+        try ShellCommands.zoomSandboxProfile.write(to: profileURL, atomically: true, encoding: .utf8)
+        defer { try? fileManager.removeItem(at: profileURL) }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: sandboxExec)
+        process.arguments = ["-f", profileURL.path, "/usr/bin/true"]
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+        process.standardOutput = Pipe()
+        try process.run()
+        // Drain before waiting so a verbose rejection cannot fill the pipe buffer.
+        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        let details = String(data: errorData, encoding: .utf8) ?? ""
+        #expect(process.terminationStatus == 0, "sandbox-exec rejected the profile: \(details)")
+    }
+
     @Test func stopZoomCommandsClearCaptureHelpers() {
         #expect(ShellCommands.stopZoom.contains(#""caphost""#))
         #expect(ShellCommands.stopZoom.contains(#""CptHost""#))
@@ -316,6 +495,29 @@ struct ShellCommandsTests {
         #expect(!cmd.contains(#"/usr/bin/open -a "zoom.us""#))
         #expect(!cmd.contains("launch_normal_zoom"))
         #expect(!cmd.contains("normalOpen"))
+    }
+
+    @Test func launchCommandCompilesTheProfileBeforeTouchingZoom() {
+        // A rejected rule would otherwise surface as an unexplained failure to
+        // launch, after Zoom had already been killed.
+        let cmd = ShellCommands.makeLaunchZoomCommand(zoomBinaryExists: true)
+        guard
+            let validate = cmd.range(of: #"/usr/bin/sandbox-exec -f "$profile_path" /usr/bin/true"#)?.lowerBound,
+            let launch = cmd.range(of: #"/usr/bin/sandbox-exec -f "$profile_path" "$zoom_binary""#)?.lowerBound
+        else {
+            Issue.record("Launch script is missing the profile validation or the sandboxed launch")
+            return
+        }
+        #expect(validate < launch)
+        #expect(cmd.contains("macOS rejected the Zoom sandbox profile"))
+    }
+
+    @Test func launchCommandWritesProfileToThePerUserTempDirectory() {
+        // /tmp is writable and listable by every local account.
+        let cmd = ShellCommands.makeLaunchZoomCommand(zoomBinaryExists: true)
+        #expect(cmd.contains(#"tmp_dir="${TMPDIR:-/tmp}""#))
+        #expect(cmd.contains(#"/usr/bin/mktemp "${tmp_dir%/}/1132fixer.zoom-sandbox.XXXXXX""#))
+        #expect(!cmd.contains(#"/usr/bin/mktemp "/tmp/"#))
     }
 
     @Test func makeLaunchZoomCommandFailsWhenZoomBinaryIsMissing() {

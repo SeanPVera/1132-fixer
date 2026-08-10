@@ -30,6 +30,25 @@ versions but never makes the value confidential.
 Please do not file this as a vulnerability; it is a known property of shipping a
 client-side credential.
 
+### The Zoom sandbox profile is a denylist, not a deny-by-default sandbox
+
+Zoom is launched through `sandbox-exec` with a profile whose base is
+`(allow default)`. Zoom is closed source and spawns its own capture helpers, so a
+`(deny default)` profile could not be kept working across Zoom and macOS updates
+— and because sandbox mode is the app's only launch path, a single missing allow
+rule would leave users unable to start Zoom at all.
+
+The profile therefore denies specific things rather than permitting specific
+things. It closes the channels that expose stable hardware identity (IOKit
+platform properties, the unique `sysctl` identifiers, the command-line tools that
+report them, and the plists recording network identity), and it blocks the
+sandboxed session from reading private user data such as SSH keys, keychains,
+browser profiles, and other accounts' home directories.
+
+Anything not named in the profile is still allowed. Treat it as identity and
+privacy containment for the Zoom session, not as a general confinement boundary
+for untrusted code.
+
 ### Elevated privileges
 
 The app requests administrator access for two operations only: flushing system
