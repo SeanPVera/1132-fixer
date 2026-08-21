@@ -18,32 +18,26 @@ struct ActionCard: View {
 
                     VStack(alignment: .leading, spacing: 8) {
                         Text(title)
-                            .font(.system(size: 19, weight: .bold, design: .rounded))
-                            .foregroundStyle(.white)
+                            .font(.system(size: 19, weight: .bold, design: .monospaced))
+                            .foregroundStyle(tint)
 
                         Text(subtitle)
-                            .font(.system(size: 12, weight: .medium, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.78))
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundStyle(Theme.Colors.textMuted)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
                     Spacer(minLength: 12)
 
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 13, weight: .black))
-                        .foregroundStyle(.white.opacity(0.7))
+                    Image(systemName: "greaterthan")
+                        .font(.system(size: 13, weight: .black, design: .monospaced))
+                        .foregroundStyle(tint)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(15)
-            .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(Color.black.opacity(0.26))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(tint.opacity(0.65), lineWidth: 1)
-            )
+            .background(Theme.Colors.panelBackground)
+            .border(tint.opacity(0.65), width: 1)
             .opacity(isDisabled ? 0.58 : 1.0)
         }
         .buttonStyle(.plain)

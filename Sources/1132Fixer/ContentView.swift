@@ -19,16 +19,8 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [
-                    Color(red: 0.05, green: 0.08, blue: 0.16),
-                    Color(red: 0.08, green: 0.19, blue: 0.30),
-                    Color(red: 0.16, green: 0.27, blue: 0.38)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
+            Theme.Colors.background
+                .ignoresSafeArea()
 
             VStack(spacing: 14) {
                 HeaderCard(
@@ -54,8 +46,8 @@ struct ContentView: View {
                     ActionCard(
                         title: "Start Zoom",
                         subtitle: "Checks the active network, resets Zoom data, refreshes DNS cache, and launches Zoom in sandbox mode.",
-                        systemImage: "video.circle.fill",
-                        tint: Color(red: 0.13, green: 0.50, blue: 0.86),
+                        systemImage: "terminal.fill",
+                        tint: Theme.Colors.accent,
                         isDisabled: vm.isRunning,
                         action: {
                             vm.startZoom()
@@ -66,8 +58,8 @@ struct ContentView: View {
                         ActionCard(
                             title: "Cancel",
                             subtitle: "Stop the running workflow.",
-                            systemImage: "xmark.circle.fill",
-                            tint: Color.red.opacity(0.8),
+                            systemImage: "xmark.square.fill",
+                            tint: Theme.Colors.error,
                             isDisabled: false,
                             action: {
                                 vm.cancelWorkflow()
@@ -78,8 +70,8 @@ struct ContentView: View {
                         ActionCard(
                             title: "Dry Run",
                             subtitle: "Check system state without making any changes.",
-                            systemImage: "eye.circle.fill",
-                            tint: Color(red: 0.55, green: 0.55, blue: 0.62),
+                            systemImage: "eye.square.fill",
+                            tint: Theme.Colors.textMuted,
                             isDisabled: vm.isRunning,
                             action: {
                                 vm.dryRun()
