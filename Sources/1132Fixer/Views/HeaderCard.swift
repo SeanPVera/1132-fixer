@@ -11,17 +11,18 @@ struct HeaderCard: View {
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
             ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.white.opacity(0.14))
+                Rectangle()
+                    .fill(Theme.Colors.panelBackground)
+                    .border(Theme.Colors.border, width: 1)
                     .frame(width: 58, height: 58)
-                Image(systemName: "video.badge.waveform.fill")
+                Image(systemName: "terminal.fill")
                     .font(.system(size: 28, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.Colors.accent)
             }
 
             Text("1132 Fixer")
-                .font(.system(size: 29, weight: .black, design: .rounded))
-                .foregroundStyle(.white)
+                .font(.system(size: 29, weight: .black, design: .monospaced))
+                .foregroundStyle(Theme.Colors.accent)
 
             Spacer()
 
@@ -52,14 +53,7 @@ struct HeaderCard: View {
             .frame(width: 280)
         }
         .padding(18)
-        .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(.ultraThinMaterial.opacity(0.82))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(Color.white.opacity(0.16), lineWidth: 1)
-        )
+        .terminalPanel()
     }
 }
 
@@ -100,17 +94,10 @@ struct HeaderActionButton: View {
 struct HeaderButtonChrome: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .font(.system(size: 12, weight: .semibold, design: .rounded))
-            .foregroundStyle(.white)
+            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+            .foregroundStyle(Theme.Colors.accent)
             .padding(.vertical, 10)
             .padding(.horizontal, 14)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.black.opacity(0.24))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
-            )
+            .terminalPanel()
     }
 }

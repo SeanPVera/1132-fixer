@@ -16,8 +16,8 @@ struct PreflightPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Label("Preflight Checks", systemImage: "checklist")
-                .font(.system(size: 14, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+                .font(.system(size: 14, weight: .bold, design: .monospaced))
+                .foregroundStyle(Theme.Colors.accent)
 
             switch preflight.status {
             case .loading:
@@ -25,63 +25,50 @@ struct PreflightPanel: View {
                     ProgressView()
                         .controlSize(.small)
                     Text("Checking system...")
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.72))
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Theme.Colors.textMuted)
                 }
             case .error(let msg):
                 Text(msg)
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.red.opacity(0.9))
+                    .foregroundStyle(Theme.Colors.error)
             case .ready:
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 6) {
                     ForEach(preflight.checks) { check in
                         HStack(spacing: 6) {
-                            Image(systemName: check.isWarning ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                                .font(.system(size: 11))
-                                .foregroundStyle(check.isWarning ? .yellow : .green)
+                            Text(check.isWarning ? "[WARN]" : "[OK]")
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                .foregroundStyle(check.isWarning ? Theme.Colors.warning : Theme.Colors.success)
                             Text(check.label + ":")
-                                .font(.system(size: 11, weight: .semibold, design: .rounded))
-                                .foregroundStyle(.white.opacity(0.72))
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(Theme.Colors.textMuted)
                             Text(check.value)
-                                .font(.system(size: 11, weight: .medium, design: .rounded))
-                                .foregroundStyle(.white.opacity(0.92))
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundStyle(Theme.Colors.text)
                         }
                     }
                 }
             }
 
-            Divider().background(Color.white.opacity(0.12))
+            Divider().background(Theme.Colors.border.opacity(0.5))
 
             HStack(spacing: 6) {
                 Text("Supported:")
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.5))
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Theme.Colors.textMuted)
                 ForEach(Self.supportMatrix, id: \.label) { item in
                     Text(item.label)
-                        .font(.system(size: 10, weight: .medium, design: .rounded))
-                        .foregroundStyle(item.supported ? .white.opacity(0.8) : .white.opacity(0.4))
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(item.supported ? Theme.Colors.text : Theme.Colors.textMuted)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .fill(item.supported ? Color.green.opacity(0.18) : Color.red.opacity(0.15))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .stroke(item.supported ? Color.green.opacity(0.25) : Color.red.opacity(0.2), lineWidth: 0.5)
-                        )
+                        .background(item.supported ? Theme.Colors.success.opacity(0.2) : Theme.Colors.error.opacity(0.2))
+                        .border(item.supported ? Theme.Colors.success.opacity(0.5) : Theme.Colors.error.opacity(0.5), width: 1)
                 }
             }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(.ultraThinMaterial.opacity(0.7))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
-        )
+        .terminalPanel()
     }
 }
