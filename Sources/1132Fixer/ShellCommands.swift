@@ -148,23 +148,58 @@ enum ShellCommands {
     echo "Zoom updaters stopped for this login session only; they are not disabled and macOS restores them at the next login."
     """#
 
-    static func makeResetAndRefreshDNSCommand(homeDirectory: String) -> String {
+    /// The privileged part of the reset: flushing the system DNS cache is the only step
+    /// that needs administrator rights. Reports `__1132_DNS_STATUS__=<n>` on its last line.
+    static func makeRefreshDNSCommand() -> String {
+        """
+        /usr/bin/dscacheutil -flushcache
+        dns_status=$?
+        /usr/bin/killall -HUP mDNSResponder || dns_status=$?
+        printf '\n__1132_DNS_STATUS__=%s\n' "$dns_status"
+        """
+    }
+
+    /// Runs the unprivileged Zoom data reset and reports `__1132_RESET_STATUS__=<n>` on its
+    /// last line. Always exits 0 so the caller can read the sentinel instead of an error.
+    static func makeResetZoomDataWithStatusCommand(homeDirectory: String) -> String {
         """
         (
         \(makeResetZoomDataCommand(homeDirectory: homeDirectory))
         )
         reset_status=$?
-        /usr/bin/dscacheutil -flushcache
-        dns_status=$?
-        /usr/bin/killall -HUP mDNSResponder || dns_status=$?
-        printf '\n__1132_RESET_STATUS__=%s\n__1132_DNS_STATUS__=%s\n' "$reset_status" "$dns_status"
+        printf '\n__1132_RESET_STATUS__=%s\n' "$reset_status"
         """
     }
 
+    /// Whether `path` is acceptable as the base for the `rm -rf` of Zoom's state: non-empty,
+    /// absolute, and not the filesystem root. (The generated script re-checks this, and that
+    /// the directory exists, before deleting anything.)
+    static func isSafeHomeDirectory(_ path: String) -> Bool {
+        var trimmed = path
+        while trimmed.count > 1 && trimmed.hasSuffix("/") { trimmed.removeLast() }
+        return trimmed.hasPrefix("/") && trimmed != "/"
+    }
+
+    /// Clears Zoom's local state. Runs as the current user (no administrator privileges):
+    /// every path is inside the user's own home directory, and running `rm -rf` and
+    /// `defaults delete` as root could leave root-owned files in `~/Library`.
     static func makeResetZoomDataCommand(homeDirectory: String) -> String {
         let home = shellSingleQuote(homeDirectory)
         return """
         home=\(home)
+        while [ "${home%/}" != "$home" ] && [ -n "${home%/}" ]; do home="${home%/}"; done
+        case "$home" in
+          /*) ;;
+          *)
+            echo "Reset Zoom data: home directory '$home' is not an absolute path; refusing to delete anything." >&2
+            exit 1
+            ;;
+        esac
+        if [ "$home" = "/" ] || [ "${home%/}" = "" ] || [ ! -d "$home" ]; then
+          echo "Reset Zoom data: home directory '$home' is not a usable directory; refusing to delete anything." >&2
+          exit 1
+        fi
+
         zoom_data="$home/Library/Application Support/zoom.us"
         zoom_cache="$home/Library/Caches/us.zoom.xos"
         zoom_prefs="$home/Library/Preferences/us.zoom.xos.plist"

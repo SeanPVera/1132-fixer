@@ -239,41 +239,63 @@ final class AppViewModel: ObservableObject {
                 self.appendLog("Warning: Backup failed, continuing anyway: \(error.localizedDescription)")
             }
 
-            // 4–5. Reset Zoom data and refresh DNS with one authorization
+            // 4. Reset Zoom data. Runs as the current user: no administrator prompt is needed.
             self.workflowState = .clearingState
             self.markStepRunning("resetData")
-            self.markStepRunning("dns")
-            self.appendLog("Waiting for password to reset Zoom data and refresh DNS cache…")
+            self.appendLog("Step: Clear Zoom local state")
             do {
-                let command = ShellCommands.makeResetAndRefreshDNSCommand(homeDirectory: NSHomeDirectory())
-                let script = ShellCommands.appleScriptDoShellScript(command, administratorPrivileges: true)
+                let home = NSHomeDirectory()
+                guard ShellCommands.isSafeHomeDirectory(home) else {
+                    throw self.appError("Reset Zoom data: refusing to delete files because the home directory '\(home)' is not a safe absolute path.")
+                }
                 let output = try await self.runProcess(
-                    stepName: "Reset Zoom data and refresh DNS cache",
-                    executable: Constants.osascriptPath,
-                    arguments: ["-e", script]
+                    stepName: "Reset Zoom data",
+                    executable: Constants.bashPath,
+                    arguments: ["-c", ShellCommands.makeResetZoomDataWithStatusCommand(homeDirectory: home)]
                 )
                 let lines = output.components(separatedBy: .newlines)
                 let resetSucceeded = lines.contains("__1132_RESET_STATUS__=0")
-                let dnsSucceeded = lines.contains("__1132_DNS_STATUS__=0")
                 let detail = lines.filter { !$0.hasPrefix("__1132_") }.joined(separator: "\n")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 self.markStepDone("resetData", succeeded: resetSucceeded)
-                self.markStepDone("dns", succeeded: dnsSucceeded)
                 results.append(.init(id: "resetData", name: "Clear Local State", succeeded: resetSucceeded,
                                      detail: resetSucceeded ? (detail.isEmpty ? nil : detail) : "Could not clear all Zoom data. \(detail)"))
-                results.append(.init(id: "dns", name: "DNS Flush", succeeded: dnsSucceeded,
-                                     detail: dnsSucceeded ? nil : "Could not refresh DNS cache. \(detail)"))
             } catch {
                 self.markStepDone("resetData", succeeded: false)
                 results.append(.init(id: "resetData", name: "Clear Local State", succeeded: false, detail: error.localizedDescription))
-                self.markStepDone("dns", succeeded: false)
-                results.append(.init(id: "dns", name: "DNS Flush", succeeded: false, detail: error.localizedDescription))
                 self.appendLog("Warning: \(error.localizedDescription)")
                 if (error as NSError).code == -1 {
                     self.resetTimedOut = true
                     self.lastRunResults = results
                     throw error
                 }
+            }
+
+            // 5. Flush the DNS cache. This is the only step that needs administrator privileges.
+            self.markStepRunning("dns")
+            self.appendLog("Waiting for password to refresh the DNS cache…")
+            do {
+                // The root shell cannot be killed from here, so it bounds itself just under the 60s timeout.
+                let script = ShellCommands.appleScriptDoShellScript(
+                    ShellCommands.makeTimeBoundedCommand(ShellCommands.makeRefreshDNSCommand(), seconds: 55),
+                    administratorPrivileges: true
+                )
+                let output = try await self.runProcess(
+                    stepName: "Refresh DNS cache",
+                    executable: Constants.osascriptPath,
+                    arguments: ["-e", script]
+                )
+                let lines = output.components(separatedBy: .newlines)
+                let dnsSucceeded = lines.contains("__1132_DNS_STATUS__=0")
+                let detail = lines.filter { !$0.hasPrefix("__1132_") }.joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                self.markStepDone("dns", succeeded: dnsSucceeded)
+                results.append(.init(id: "dns", name: "DNS Flush", succeeded: dnsSucceeded,
+                                     detail: dnsSucceeded ? nil : "Could not refresh DNS cache. \(detail)"))
+            } catch {
+                self.markStepDone("dns", succeeded: false)
+                results.append(.init(id: "dns", name: "DNS Flush", succeeded: false, detail: error.localizedDescription))
+                self.appendLog("Warning: \(error.localizedDescription)")
             }
 
             // 6. Stop updaters
@@ -398,14 +420,17 @@ final class AppViewModel: ObservableObject {
         runTask("Retry Reset Zoom Data", completionState: .resetCompleted) {
             self.workflowState = .clearingState
             self.markStepRunning("resetData")
-            self.appendLog("Waiting for password to reset Zoom data…")
+            self.appendLog("Step: Clear Zoom local state (no administrator password needed)")
             do {
-                let resetCommand = ShellCommands.makeResetZoomDataCommand(homeDirectory: NSHomeDirectory())
-                let resetScript = ShellCommands.appleScriptDoShellScript(resetCommand, administratorPrivileges: true)
+                let home = NSHomeDirectory()
+                guard ShellCommands.isSafeHomeDirectory(home) else {
+                    throw self.appError("Reset Zoom data: refusing to delete files because the home directory '\(home)' is not a safe absolute path.")
+                }
+                let resetCommand = ShellCommands.makeResetZoomDataCommand(homeDirectory: home)
                 _ = try await self.runProcess(
                     stepName: "Reset Zoom data",
-                    executable: Constants.osascriptPath,
-                    arguments: ["-e", resetScript]
+                    executable: Constants.bashPath,
+                    arguments: ["-c", resetCommand]
                 )
                 self.markStepDone("resetData", succeeded: true)
                 self.lastRunResults = [.init(id: "resetData", name: "Clear Local State", succeeded: true, detail: nil)]
@@ -1599,7 +1624,7 @@ struct ContentView: View {
             Button("Continue") { vm.startZoom() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("macOS may ask once for your password to reset Zoom data and refresh the DNS cache; network repair can require additional administrator prompts on systems where MAC changes are enabled. Your password is handled by macOS and is never stored by 1132 Fixer.")
+            Text("macOS may ask once for your password to refresh the DNS cache (Zoom data is cleared without administrator access); network repair can require additional administrator prompts on systems where MAC changes are enabled. Your password is handled by macOS and is never stored by 1132 Fixer.")
         }
         .confirmationDialog(
             "Repair still running",
@@ -1898,7 +1923,7 @@ private struct WorkflowStatusPanel: View {
     private var status: (icon: String, title: String, detail: String, tint: Color)? {
         switch state {
         case .clearingState:
-            return ("lock.shield", "Waiting for password", "Approve the macOS prompt to reset Zoom data and refresh the DNS cache. If you cannot see it, check behind this window.", .yellow)
+            return ("lock.shield", "Clearing Zoom data", "Zoom data is cleared without a password. If macOS asks for your password to refresh the DNS cache, approve the prompt; if you cannot see it, check behind this window.", .yellow)
         case .checkingMediaAccess:
             return ("video.badge.checkmark", "Checking camera and microphone", "Zoom will still launch if access is unavailable, but affected devices will not work.", Design.accent)
         case .launchingZoom:
@@ -1910,7 +1935,7 @@ private struct WorkflowStatusPanel: View {
         case .resetCompleted:
             return ("checkmark.circle.fill", "Zoom data reset", "Reset completed. Run Start Zoom when you are ready to continue.", .green)
         case .failed(let message):
-            return ("exclamationmark.triangle.fill", resetTimedOut ? "Reset timed out" : "Repair stopped", resetTimedOut ? "The password prompt may be hidden. Check behind this window, then retry only the reset step." : message, .red)
+            return ("exclamationmark.triangle.fill", resetTimedOut ? "Reset timed out" : "Repair stopped", resetTimedOut ? "The reset step did not finish in time. Retry only the reset step." : message, .red)
         case .canceled:
             return ("xmark.circle.fill", "Repair canceled", "No more workflow steps will run.", .yellow)
         default:

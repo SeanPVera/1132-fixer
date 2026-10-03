@@ -330,6 +330,49 @@ struct ShellCommandsTests {
         #expect(script.contains(#"\"$__1132_watchdog\""#))
     }
 
+    // MARK: - Reset split (unprivileged data removal, privileged DNS flush only)
+
+    @Test func privilegedCommandOnlyFlushesDNS() {
+        let cmd = ShellCommands.makeRefreshDNSCommand()
+        #expect(cmd.contains("dscacheutil -flushcache"))
+        #expect(cmd.contains("killall -HUP mDNSResponder"))
+        #expect(cmd.contains("__1132_DNS_STATUS__"))
+        #expect(!cmd.contains("rm "))
+        #expect(!cmd.contains("defaults delete"))
+    }
+
+    @Test func resetWithStatusKeepsSentinelAndDoesNotFlushDNS() {
+        let cmd = ShellCommands.makeResetZoomDataWithStatusCommand(homeDirectory: "/Users/test")
+        #expect(cmd.contains("home='/Users/test'"))
+        #expect(cmd.contains("__1132_RESET_STATUS__"))
+        #expect(!cmd.contains("__1132_DNS_STATUS__"))
+        #expect(!cmd.contains("dscacheutil"))
+        #expect(cmd.contains("defaults delete us.zoom.xos"))
+    }
+
+    @Test func resetCommandGuardsHomeBeforeAnyDeletion() {
+        let cmd = ShellCommands.makeResetZoomDataCommand(homeDirectory: "/Users/test")
+        let guardRange = cmd.range(of: "refusing to delete anything")
+        let rmRange = cmd.range(of: "/bin/rm -rf")
+        #expect(guardRange != nil)
+        #expect(rmRange != nil)
+        if let guardRange, let rmRange {
+            #expect(guardRange.lowerBound < rmRange.lowerBound)
+        }
+        #expect(cmd.contains(#"[ ! -d "$home" ]"#))
+        #expect(cmd.contains(#"[ "$home" = "/" ]"#))
+    }
+
+    @Test func safeHomeDirectoryValidation() {
+        #expect(ShellCommands.isSafeHomeDirectory("/Users/test"))
+        #expect(ShellCommands.isSafeHomeDirectory("/Users/test/"))
+        #expect(!ShellCommands.isSafeHomeDirectory(""))
+        #expect(!ShellCommands.isSafeHomeDirectory("/"))
+        #expect(!ShellCommands.isSafeHomeDirectory("//"))
+        #expect(!ShellCommands.isSafeHomeDirectory("Users/test"))
+        #expect(!ShellCommands.isSafeHomeDirectory("~"))
+    }
+
     // MARK: - Machine Architecture
 
     @Test func machineArchitecture() {
