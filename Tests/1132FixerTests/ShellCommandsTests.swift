@@ -678,15 +678,17 @@ struct ShellCommandsTests {
         #expect(ShellCommands.makeTimeBoundedCommand("true", seconds: 0).contains("/bin/sleep 1;"))
     }
 
-    @Test func timeBoundedCommandSurvivesAppleScriptEscaping() {
-        let script = ShellCommands.appleScriptDoShellScript(
-            ShellCommands.makeTimeBoundedCommand("echo hi", seconds: 5),
-            administratorPrivileges: true
-        )
+    @Test func timeBoundedCommandSurvivesAppleScriptEncoding() throws {
+        let command = ShellCommands.makeTimeBoundedCommand("echo hi", seconds: 5)
+        let script = ShellCommands.appleScriptDoShellScript(command, administratorPrivileges: true)
         #expect(script.hasPrefix("do shell script \""))
         #expect(script.hasSuffix("\" with administrator privileges"))
-        // Double quotes inside the trap must be escaped for AppleScript.
-        #expect(script.contains(#"\"$__1132_watchdog\""#))
+        // The command travels base64-encoded, so its quotes and `$` need no AppleScript escaping.
+        let start = try #require(script.range(of: "echo '"))
+        let end = try #require(script.range(of: "' | /usr/bin/base64"))
+        let encoded = String(script[start.upperBound..<end.lowerBound])
+        let decoded = try #require(Data(base64Encoded: encoded).flatMap { String(data: $0, encoding: .utf8) })
+        #expect(decoded == command)
     }
 
     // MARK: - Reset split (unprivileged data removal, privileged DNS flush only)
