@@ -61,8 +61,7 @@ enum UpdateChecker {
 
         let version = normalizeVersion(decoded.tagName)
         guard let htmlURL = URL(string: decoded.htmlURL),
-              htmlURL.scheme == "https",
-              htmlURL.host?.contains("github.com") == true else {
+              isTrustedReleaseURL(htmlURL) else {
             throw NSError(
                 domain: errorDomain,
                 code: 2,
@@ -71,6 +70,19 @@ enum UpdateChecker {
         }
 
         return ReleaseInfo(version: version, htmlURL: htmlURL, releaseNotes: decoded.body)
+    }
+
+    /// Release links are opened in the browser, so accept only `https://github.com/...`.
+    /// The host must match exactly: a substring check would also accept hosts such as
+    /// `evilgithub.com` or `github.com.evil.example`.
+    static func isTrustedReleaseURL(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "https",
+              url.host?.lowercased() == "github.com",
+              url.user == nil,
+              url.port == nil || url.port == 443 else {
+            return false
+        }
+        return true
     }
 
     static func normalizeVersion(_ raw: String) -> String {
