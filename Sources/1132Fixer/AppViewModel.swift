@@ -132,7 +132,6 @@ final class AppViewModel: ObservableObject {
     private var currentProcess: Process?
     private let stopZoomCommand = ShellCommands.stopZoom
     private let stopZoomUpdatersCommand = ShellCommands.stopZoomUpdaters
-    private let refreshDNSAppleScript = ShellCommands.refreshDNSAppleScript
 
     /// The `zoom.us.app` bundle path currently in effect. `nil` means the default
     /// `/Applications` location; a non-nil value is a user-selected location.
@@ -158,6 +157,10 @@ final class AppViewModel: ObservableObject {
         ])
         runTask("Start Zoom") {
             var results: [StepResult] = []
+
+            // 0. Fail fast, before anything is closed or deleted, if the Zoom bundle is not genuine.
+            self.appendLog("Step: Verify Zoom app signature")
+            _ = try await self.verifiedZoomBinaryPath()
 
             // 1. Close Zoom
             self.workflowState = .closingZoom
@@ -207,6 +210,7 @@ final class AppViewModel: ObservableObject {
             self.workflowState = .backingUpState
             self.markStepRunning("backup")
             self.appendLog("Step: Backup Zoom local state")
+            var backupSucceeded = true
             do {
                 let output = try await self.runProcess(
                     stepName: "Backup Zoom state",
@@ -218,9 +222,21 @@ final class AppViewModel: ObservableObject {
                 self.markStepDone("backup", succeeded: true)
                 results.append(.init(id: "backup", name: "Backup State", succeeded: true, detail: backupPath.isEmpty ? nil : "Saved to \(backupPath)"))
             } catch {
+                backupSucceeded = false
                 self.markStepDone("backup", succeeded: false)
                 results.append(.init(id: "backup", name: "Backup State", succeeded: false, detail: error.localizedDescription))
-                self.appendLog("Warning: Backup failed, continuing anyway: \(error.localizedDescription)")
+                self.appendLog("Error: Backup failed: \(error.localizedDescription)")
+            }
+
+            // Never delete Zoom's local state without a backup of it.
+            guard backupSucceeded else {
+                let message = "Backup failed, so Zoom's local data was not cleared and nothing was deleted. Fix the backup problem (for example free disk space) and run Start Zoom again."
+                self.markStepSkipped("resetData")
+                self.markStepSkipped("dns")
+                results.append(.init(id: "resetData", name: "Clear Local State", succeeded: false, detail: "Skipped: backup failed."))
+                results.append(.init(id: "dns", name: "DNS Flush", succeeded: false, detail: "Skipped: backup failed."))
+                self.lastRunResults = results
+                throw self.appError(message)
             }
 
             // 4. Reset Zoom data
@@ -229,32 +245,50 @@ final class AppViewModel: ObservableObject {
             self.appendLog("Step: Reset Zoom data")
             do {
                 // Runs unprivileged: every path is inside the user's own home directory.
-                let resetCommand = ShellCommands.makeResetZoomDataCommand(homeDirectory: NSHomeDirectory())
+                let home = NSHomeDirectory()
+                guard ShellCommands.isSafeHomeDirectory(home) else {
+                    throw self.appError("Reset Zoom data: refusing to delete files because the home directory '\(home)' is not a safe absolute path.")
+                }
                 let output = try await self.runProcess(
                     stepName: "Reset Zoom data",
                     executable: Constants.bashPath,
-                    arguments: ["-c", resetCommand]
+                    arguments: ["-c", ShellCommands.makeResetZoomDataWithStatusCommand(homeDirectory: home)]
                 )
-                self.markStepDone("resetData", succeeded: true)
-                results.append(.init(id: "resetData", name: "Clear Local State", succeeded: true, detail: output.isEmpty ? nil : output))
+                let lines = output.components(separatedBy: .newlines)
+                let resetSucceeded = lines.contains("__1132_RESET_STATUS__=0")
+                let detail = lines.filter { !$0.hasPrefix("__1132_") }.joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                self.markStepDone("resetData", succeeded: resetSucceeded)
+                results.append(.init(id: "resetData", name: "Clear Local State", succeeded: resetSucceeded,
+                                     detail: resetSucceeded ? (detail.isEmpty ? nil : detail) : "Could not clear all Zoom data. \(detail)"))
             } catch {
                 self.markStepDone("resetData", succeeded: false)
                 results.append(.init(id: "resetData", name: "Clear Local State", succeeded: false, detail: error.localizedDescription))
                 self.appendLog("Warning: \(error.localizedDescription)")
             }
 
-            // 5. DNS flush
+            // 5. DNS flush. This is the only step that needs administrator privileges.
             self.workflowState = .flushingDNS
             self.markStepRunning("dns")
             self.appendLog("Step: Refresh DNS cache (admin prompt may appear)")
             do {
+                // The root shell cannot be killed from here, so it bounds itself just under the 60s timeout.
+                let script = ShellCommands.appleScriptDoShellScript(
+                    ShellCommands.makeTimeBoundedCommand(ShellCommands.makeRefreshDNSCommand(), seconds: 55),
+                    administratorPrivileges: true
+                )
                 let output = try await self.runProcess(
                     stepName: "Refresh DNS cache",
                     executable: Constants.osascriptPath,
-                    arguments: ["-e", self.refreshDNSAppleScript]
+                    arguments: ["-e", script]
                 )
-                self.markStepDone("dns", succeeded: true)
-                results.append(.init(id: "dns", name: "DNS Flush", succeeded: true, detail: output.isEmpty ? nil : output))
+                let lines = output.components(separatedBy: .newlines)
+                let dnsSucceeded = lines.contains("__1132_DNS_STATUS__=0")
+                let detail = lines.filter { !$0.hasPrefix("__1132_") }.joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                self.markStepDone("dns", succeeded: dnsSucceeded)
+                results.append(.init(id: "dns", name: "DNS Flush", succeeded: dnsSucceeded,
+                                     detail: dnsSucceeded ? (detail.isEmpty ? nil : detail) : "Could not refresh DNS cache. \(detail)"))
             } catch {
                 self.markStepDone("dns", succeeded: false)
                 results.append(.init(id: "dns", name: "DNS Flush", succeeded: false, detail: error.localizedDescription))
@@ -302,10 +336,12 @@ final class AppViewModel: ObservableObject {
             self.markStepRunning("launch")
             self.appendLog("Step: Launch Zoom")
             do {
+                // Verify again at launch time: the location may have changed since the start of the run.
+                let verifiedBinaryPath = try await self.verifiedZoomBinaryPath()
                 let output = try await self.runProcess(
                     stepName: "Launch Zoom",
                     executable: Constants.bashPath,
-                    arguments: ["-c", ShellCommands.makeLaunchZoomCommand(zoomBinaryPath: self.zoomBinaryPath)],
+                    arguments: ["-c", ShellCommands.makeLaunchZoomCommand(zoomBinaryPath: verifiedBinaryPath)],
                     timeout: 120
                 )
                 self.markStepDone("launch", succeeded: true)
@@ -364,7 +400,9 @@ final class AppViewModel: ObservableObject {
 
     func cancelWorkflow() {
         runningTask?.cancel()
-        currentProcess?.terminate()
+        if let process = currentProcess {
+            Self.terminateProcessTree(process)
+        }
         workflowState = .canceled
         appendLog("Workflow canceled by user.")
         isRunning = false
@@ -472,14 +510,16 @@ final class AppViewModel: ObservableObject {
                 let routeOutput = try await runProcess(
                     stepName: "Preflight: detect interface",
                     executable: Constants.bashPath,
-                    arguments: ["-c", "/sbin/route -n get default 2>/dev/null"]
+                    arguments: ["-c", "/sbin/route -n get default 2>/dev/null"],
+                    trackAsCurrent: false
                 )
                 let device = try ShellCommands.parseDefaultRouteInterface(from: routeOutput)
 
                 let portsOutput = try await runProcess(
                     stepName: "Preflight: hardware ports",
                     executable: Constants.bashPath,
-                    arguments: ["-c", "/usr/sbin/networksetup -listallhardwareports"]
+                    arguments: ["-c", "/usr/sbin/networksetup -listallhardwareports"],
+                    trackAsCurrent: false
                 )
                 let portMap = ShellCommands.parseHardwarePorts(from: portsOutput)
                 let portName = portMap[device] ?? "Unknown"
@@ -693,7 +733,11 @@ Last action status: \(lastStatus)
 
         appendLog("Network recovery: commands to be attempted on \(interface.device) (service: \(interface.networkService))")
 
-        let appleScript = ShellCommands.appleScriptDoShellScript(spoofScript, administratorPrivileges: true)
+        // The root shell cannot be killed from here, so it bounds itself just under the 90s timeout below.
+        let appleScript = ShellCommands.appleScriptDoShellScript(
+            ShellCommands.makeTimeBoundedCommand(spoofScript, seconds: 85),
+            administratorPrivileges: true
+        )
         let commandOutput: String
         do {
             commandOutput = try await runProcess(
@@ -784,7 +828,10 @@ If your network connection is disrupted after this step:
             warnings.append("Warning: Private Wi-Fi Address controls are unsupported on this macOS/networksetup version.")
         } else if currentMode != "rotating" {
             let setModeCmd = ShellCommands.makeSetPrivateAddressModeCommand(networkService: networkService, mode: "rotating")
-            let setModeScript = ShellCommands.appleScriptDoShellScript(setModeCmd, administratorPrivileges: true)
+            let setModeScript = ShellCommands.appleScriptDoShellScript(
+                ShellCommands.makeTimeBoundedCommand(setModeCmd, seconds: 10),
+                administratorPrivileges: true
+            )
             do {
                 _ = try await runProcess(
                     stepName: "Enable rotating Private Wi-Fi Address",
@@ -803,7 +850,10 @@ If your network connection is disrupted after this step:
 
         // 3. Cycle the interface to generate a new MAC — always brings it back up
         let resetCmd = ShellCommands.makeRotatingMACResetCommand(device: device)
-        let resetScript = ShellCommands.appleScriptDoShellScript(resetCmd, administratorPrivileges: true)
+        let resetScript = ShellCommands.appleScriptDoShellScript(
+            ShellCommands.makeTimeBoundedCommand(resetCmd, seconds: 25),
+            administratorPrivileges: true
+        )
         do {
             _ = try await runProcess(
                 stepName: "Reset Wi-Fi to generate new rotating MAC",
@@ -897,6 +947,18 @@ If your network connection is disrupted after this step:
     /// Prompts the user to choose a `zoom.us.app` bundle when Zoom is installed
     /// outside the default location. Sandbox-mode launch is unchanged; only the
     /// bundle location is configurable.
+    /// Verifies the Zoom bundle currently in effect (name, symlinks and code signature) off
+    /// the main actor and returns the verified, symlink-resolved executable path. Called
+    /// before any destructive step and again right before launch, because the custom
+    /// location lives in `UserDefaults` and can change at any time.
+    private func verifiedZoomBinaryPath() async throws -> String {
+        let appPath = zoomAppPath
+        let verified = try await Task.detached(priority: .userInitiated) {
+            try ZoomBundleVerifier.verify(appPath: appPath)
+        }.value
+        return verified.binaryPath
+    }
+
     func chooseZoomLocation() {
         let panel = NSOpenPanel()
         panel.title = "Select Zoom Application"
@@ -914,6 +976,14 @@ If your network connection is disrupted after this step:
         guard let validated = ZoomLocation.validatedAppPath(selectedPath) else {
             appendLog("Selected app is not a valid Zoom installation: \(selectedPath)")
             workflowState = .failed("The selected app does not contain the Zoom executable. Choose 'zoom.us.app'.")
+            return
+        }
+
+        do {
+            _ = try ZoomBundleVerifier.verify(appPath: validated)
+        } catch {
+            appendLog("Selected app was rejected: \(error.localizedDescription)")
+            workflowState = .failed(error.localizedDescription)
             return
         }
 
@@ -1077,13 +1147,55 @@ If your network connection is disrupted after this step:
         }
     }
 
-    private func runProcess(stepName: String, executable: String, arguments: [String], timeout: TimeInterval = 60) async throws -> String {
+    /// Stops `process` and, best effort, its direct children, then force-kills it after a
+    /// short grace period.
+    ///
+    /// Limits: this runs without elevated privileges, so it cannot signal a root-owned
+    /// child. For `osascript ... with administrator privileges` the root shell is a child of
+    /// the authorization helper rather than of `osascript`; killing `osascript` alone does not
+    /// stop it. Privileged scripts therefore bound themselves with
+    /// `ShellCommands.makeTimeBoundedCommand`. If a root child ever outlives a run, it can be
+    /// stopped manually with `sudo pkill -P <pid>` (or by killing the shell it names).
+    nonisolated private static func terminateProcessTree(_ process: Process) {
+        guard process.isRunning else { return }
+        let pid = process.processIdentifier
+
+        let childKiller = Process()
+        childKiller.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        childKiller.arguments = ["-TERM", "-P", "\(pid)"]
+        childKiller.standardOutput = FileHandle.nullDevice
+        childKiller.standardError = FileHandle.nullDevice
+        if (try? childKiller.run()) != nil {
+            childKiller.waitUntilExit()
+        }
+
+        if process.isRunning {
+            process.terminate()
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+            if process.isRunning {
+                kill(pid, SIGKILL)
+            }
+        }
+    }
+
+    /// Runs a process and returns its combined output.
+    ///
+    /// `trackAsCurrent` registers the process as the one `cancelWorkflow()` stops. Background
+    /// work such as the preflight refresh passes `false` so it can neither be cancelled by,
+    /// nor replace the handle of, the user's running workflow.
+    private func runProcess(
+        stepName: String,
+        executable: String,
+        arguments: [String],
+        timeout: TimeInterval = 60,
+        trackAsCurrent: Bool = true
+    ) async throws -> String {
         try Task.checkCancellation()
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
-        currentProcess = process
 
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -1094,6 +1206,10 @@ If your network connection is disrupted after this step:
             let stdoutBuffer = LockedDataBuffer()
             let stderrBuffer = LockedDataBuffer()
             let resumeGate = ContinuationResumeGate()
+            // Each pipe is read to EOF on its own thread. The termination handler only
+            // finishes once both reads are done, so trailing output (for example the
+            // `__1132_RESET_STATUS__=` lines) cannot be lost to a handler that had not run yet.
+            let readGroup = DispatchGroup()
 
             @Sendable func safeResume(_ result: Result<String, Error>) {
                 guard resumeGate.beginResume() else { return }
@@ -1103,23 +1219,12 @@ If your network connection is disrupted after this step:
                 }
             }
 
-            outPipe.fileHandleForReading.readabilityHandler = { handle in
-                let chunk = handle.availableData
-                guard !chunk.isEmpty else { return }
-                stdoutBuffer.append(chunk)
-            }
-
-            errPipe.fileHandleForReading.readabilityHandler = { handle in
-                let chunk = handle.availableData
-                guard !chunk.isEmpty else { return }
-                stderrBuffer.append(chunk)
-            }
-
-            // Timeout timer
+            // Timeout timer. It is cancelled only after the output has been drained, so a
+            // grandchild that keeps a pipe open still ends in a timeout instead of a hang.
             let timer = DispatchSource.makeTimerSource(queue: .global())
             timer.schedule(deadline: .now() + timeout)
             timer.setEventHandler {
-                process.terminate()
+                AppViewModel.terminateProcessTree(process)
                 DispatchQueue.main.async {
                     self.appendLog("Timeout: '\(stepName)' did not complete within \(Int(timeout))s — terminating.")
                 }
@@ -1127,22 +1232,19 @@ If your network connection is disrupted after this step:
             }
             timer.resume()
 
-            do {
-                process.terminationHandler = { terminatedProcess in
+            process.terminationHandler = { terminatedProcess in
+                let terminationStatus = terminatedProcess.terminationStatus
+
+                readGroup.notify(queue: .global()) {
                     timer.cancel()
-                    outPipe.fileHandleForReading.readabilityHandler = nil
-                    errPipe.fileHandleForReading.readabilityHandler = nil
 
-                    let outData = stdoutBuffer.snapshot()
-                    let errData = stderrBuffer.snapshot()
-
-                    let stdout = String(data: outData, encoding: .utf8) ?? ""
-                    let stderr = String(data: errData, encoding: .utf8) ?? ""
+                    let stdout = String(data: stdoutBuffer.snapshot(), encoding: .utf8) ?? ""
+                    let stderr = String(data: stderrBuffer.snapshot(), encoding: .utf8) ?? ""
                     let combined = [stdout, stderr]
                         .filter { !$0.isEmpty }
                         .joined(separator: "\n")
 
-                    if terminatedProcess.terminationStatus == 0 {
+                    if terminationStatus == 0 {
                         safeResume(.success(combined))
                         return
                     }
@@ -1154,19 +1256,50 @@ If your network connection is disrupted after this step:
                     } else if executable == Constants.osascriptPath {
                         message = "\(stepName): Admin authorization was canceled or failed. This step requires your macOS password to run with elevated privileges. Click Start Zoom again and enter your password when prompted."
                     } else {
-                        message = "\(stepName): Command failed with exit code \(terminatedProcess.terminationStatus)."
+                        message = "\(stepName): Command failed with exit code \(terminationStatus)."
                     }
 
                     safeResume(.failure(AppError.processFailed(
-                        exitCode: Int(terminatedProcess.terminationStatus),
+                        exitCode: Int(terminationStatus),
                         message: message
                     )))
                 }
 
+                if trackAsCurrent {
+                    Task { @MainActor in
+                        if self.currentProcess === terminatedProcess {
+                            self.currentProcess = nil
+                        }
+                    }
+                }
+            }
+
+            // Registered before launch so the group is never empty when the process exits.
+            readGroup.enter()
+            readGroup.enter()
+
+            do {
                 try process.run()
             } catch {
+                readGroup.leave()
+                readGroup.leave()
                 timer.cancel()
                 safeResume(.failure(error))
+                return
+            }
+
+            // Only a launched process may be tracked (and later terminated).
+            if trackAsCurrent {
+                currentProcess = process
+            }
+
+            for (pipe, buffer) in [(outPipe, stdoutBuffer), (errPipe, stderrBuffer)] {
+                DispatchQueue.global().async {
+                    if let data = try? pipe.fileHandleForReading.readToEnd() {
+                        buffer.append(data)
+                    }
+                    readGroup.leave()
+                }
             }
         }
     }

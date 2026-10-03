@@ -67,14 +67,59 @@ APPLE_PASSWORD="${APPLE_PASSWORD:-}"
 APPLE_TEAM_ID="${APPLE_TEAM_ID:-}"
 APPLE_CERTIFICATE="${APPLE_CERTIFICATE:-}"
 APPLE_CERTIFICATE_PASSWORD="${APPLE_CERTIFICATE_PASSWORD:-}"
+# Name of a notarytool keychain profile (created once with `xcrun notarytool store-credentials`).
+# Preferred over APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID: no secret appears on a command line.
+NOTARY_PROFILE="${NOTARY_PROFILE:-}"
+
+# Reads simple KEY=VALUE lines from the settings file WITHOUT executing it. The file is data,
+# not a shell script: nothing is expanded or evaluated, and only the keys listed below are
+# accepted (anything else is ignored with a notice). Blank lines and '#' comments are skipped,
+# an optional leading 'export ' is tolerated, and one pair of matching quotes around a value
+# is removed. Values from the file override the environment, as before.
+load_apple_developer_file() {
+  local file="$1"
+  local line key value
+  local double_quoted_re='^"(.*)"$'
+  local single_quoted_re="^'(.*)'\$"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    if [[ -z "$line" || "${line:0:1}" == "#" ]]; then
+      continue
+    fi
+    line="${line#export }"
+    if [[ "$line" != *=* ]]; then
+      echo "==> Ignoring a line without '=' in $file" >&2
+      continue
+    fi
+
+    key="${line%%=*}"
+    value="${line#*=}"
+    key="${key%"${key##*[![:space:]]}"}"
+
+    case "$key" in
+      APPLE_ID|APPLE_PASSWORD|APPLE_TEAM_ID|APPLE_CERTIFICATE|APPLE_CERTIFICATE_PASSWORD|NOTARY_PROFILE|SIGN_IDENTITY|FIXER_BUG_REPORT_ENDPOINT|FIXER_BUG_REPORT_TOKEN)
+        ;;
+      *)
+        echo "==> Ignoring unsupported key '$key' in $file" >&2
+        continue
+        ;;
+    esac
+
+    if [[ "$value" =~ $double_quoted_re ]]; then
+      value="${BASH_REMATCH[1]}"
+    elif [[ "$value" =~ $single_quoted_re ]]; then
+      value="${BASH_REMATCH[1]}"
+    fi
+
+    printf -v "$key" '%s' "$value"
+  done < "$file"
+}
 
 if [[ -f "$APPLE_DEVELOPER_FILE" ]]; then
   echo "==> Loading Apple developer settings from $APPLE_DEVELOPER_FILE"
-  # apple-developer.txt is stored as simple KEY=VALUE assignments.
-  set -a
-  # shellcheck disable=SC1090
-  source "$APPLE_DEVELOPER_FILE"
-  set +a
+  load_apple_developer_file "$APPLE_DEVELOPER_FILE"
 fi
 
 decode_base64_to_file() {
@@ -94,6 +139,9 @@ decode_base64_to_file() {
 
 BUG_REPORT_ENDPOINT_BACKUP_FILE=""
 BUG_REPORT_TOKEN_BACKUP_FILE=""
+# "1" if the resource file existed before this build, "0" if it did not (empty = not checked yet).
+BUG_REPORT_ENDPOINT_EXISTED=""
+BUG_REPORT_TOKEN_EXISTED=""
 CERTIFICATE_P12_FILE=""
 KEYCHAIN_PATH=""
 KEYCHAIN_PASSWORD=""
@@ -103,10 +151,15 @@ cleanup_bug_report_resources() {
   if [[ -n "$BUG_REPORT_ENDPOINT_BACKUP_FILE" && -f "$BUG_REPORT_ENDPOINT_BACKUP_FILE" ]]; then
     cp "$BUG_REPORT_ENDPOINT_BACKUP_FILE" "$BUG_REPORT_ENDPOINT_RESOURCE_FILE"
     rm -f "$BUG_REPORT_ENDPOINT_BACKUP_FILE"
+  elif [[ "$BUG_REPORT_ENDPOINT_EXISTED" == "0" ]]; then
+    # The file was created by this build; do not leave the embedded value in the source tree.
+    rm -f "$BUG_REPORT_ENDPOINT_RESOURCE_FILE"
   fi
   if [[ -n "$BUG_REPORT_TOKEN_BACKUP_FILE" && -f "$BUG_REPORT_TOKEN_BACKUP_FILE" ]]; then
     cp "$BUG_REPORT_TOKEN_BACKUP_FILE" "$BUG_REPORT_TOKEN_RESOURCE_FILE"
     rm -f "$BUG_REPORT_TOKEN_BACKUP_FILE"
+  elif [[ "$BUG_REPORT_TOKEN_EXISTED" == "0" ]]; then
+    rm -f "$BUG_REPORT_TOKEN_RESOURCE_FILE"
   fi
   if [[ -n "$CERTIFICATE_P12_FILE" && -f "$CERTIFICATE_P12_FILE" ]]; then
     rm -f "$CERTIFICATE_P12_FILE"
@@ -121,13 +174,19 @@ cleanup_bug_report_resources() {
 trap cleanup_bug_report_resources EXIT
 
 if [[ -f "$BUG_REPORT_ENDPOINT_RESOURCE_FILE" ]]; then
+  BUG_REPORT_ENDPOINT_EXISTED="1"
   BUG_REPORT_ENDPOINT_BACKUP_FILE="$(mktemp -t fixer-bug-report-endpoint-backup.XXXXXX)"
   cp "$BUG_REPORT_ENDPOINT_RESOURCE_FILE" "$BUG_REPORT_ENDPOINT_BACKUP_FILE"
+else
+  BUG_REPORT_ENDPOINT_EXISTED="0"
 fi
 
 if [[ -f "$BUG_REPORT_TOKEN_RESOURCE_FILE" ]]; then
+  BUG_REPORT_TOKEN_EXISTED="1"
   BUG_REPORT_TOKEN_BACKUP_FILE="$(mktemp -t fixer-bug-report-token-backup.XXXXXX)"
   cp "$BUG_REPORT_TOKEN_RESOURCE_FILE" "$BUG_REPORT_TOKEN_BACKUP_FILE"
+else
+  BUG_REPORT_TOKEN_EXISTED="0"
 fi
 
 if [[ -n "$FIXER_BUG_REPORT_ENDPOINT" ]]; then
@@ -156,6 +215,10 @@ if [[ -z "$SIGN_IDENTITY" ]]; then
   KEYCHAIN_PASSWORD="$(uuidgen | tr -d '-')$(uuidgen | tr -d '-')"
   KEYCHAIN_PASSWORD="${KEYCHAIN_PASSWORD:0:32}"
 
+  # NOTE: `security` has no way to read these passwords from a file or stdin, so the throwaway
+  # keychain password (and the certificate password for `security import -P` below) appear
+  # in this process's argument list while each command runs. The keychain password is random,
+  # used once, and the keychain is deleted on exit; it cannot unlock anything else.
   echo "==> Importing signing certificate into temporary keychain"
   rm -f "$KEYCHAIN_PATH"
   security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
@@ -308,16 +371,25 @@ codesign --verify --verbose=2 "$DMG_PATH"
 if [[ "$NOTARIZE" == "1" ]]; then
   echo "==> Notarizing DMG"
 
-  if [[ -z "$APPLE_ID" || -z "$APPLE_PASSWORD" || -z "$APPLE_TEAM_ID" ]]; then
-    echo "Missing APPLE_ID, APPLE_PASSWORD, or APPLE_TEAM_ID for notarization." >&2
-    exit 1
-  fi
+  if [[ -n "$NOTARY_PROFILE" ]]; then
+    # Credentials live in the keychain profile; nothing secret is passed on the command line.
+    xcrun notarytool submit "$DMG_PATH" \
+      --keychain-profile "$NOTARY_PROFILE" \
+      --wait
+  else
+    if [[ -z "$APPLE_ID" || -z "$APPLE_PASSWORD" || -z "$APPLE_TEAM_ID" ]]; then
+      echo "Set NOTARY_PROFILE (preferred), or APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID, for notarization." >&2
+      exit 1
+    fi
 
-  xcrun notarytool submit "$DMG_PATH" \
-    --apple-id "$APPLE_ID" \
-    --password "$APPLE_PASSWORD" \
-    --team-id "$APPLE_TEAM_ID" \
-    --wait
+    # Fallback: notarytool only accepts the app-specific password as an argument here, so it is
+    # visible in `ps` while the submission runs. Prefer NOTARY_PROFILE where possible.
+    xcrun notarytool submit "$DMG_PATH" \
+      --apple-id "$APPLE_ID" \
+      --password "$APPLE_PASSWORD" \
+      --team-id "$APPLE_TEAM_ID" \
+      --wait
+  fi
 
   echo "==> Stapling notarization ticket"
   xcrun stapler staple "$DMG_PATH"

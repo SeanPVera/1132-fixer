@@ -8,8 +8,8 @@ struct ReleaseInfo: Equatable {
 
 enum UpdateChecker {
     // Keep this aligned with the repository link in ContentView.
-    static let owner = "PrimeUpYourLife"
-    static let repo = "1132-fixer"
+    static let owner = "1132-Fixer"
+    static let repo = "macos"
     static let errorDomain = "1132Fixer.UpdateChecker"
     private static let userAgent = "1132Fixer"
 
@@ -60,11 +60,8 @@ enum UpdateChecker {
         }
 
         let version = normalizeVersion(decoded.tagName)
-        // Exact host match: `contains("github.com")` would also accept hosts such as
-        // github.com.example.net.
         guard let htmlURL = URL(string: decoded.htmlURL),
-              htmlURL.scheme == "https",
-              isGitHubHost(htmlURL.host) else {
+              isTrustedReleaseURL(htmlURL) else {
             throw NSError(
                 domain: errorDomain,
                 code: 2,
@@ -75,9 +72,17 @@ enum UpdateChecker {
         return ReleaseInfo(version: version, htmlURL: htmlURL, releaseNotes: decoded.body)
     }
 
-    static func isGitHubHost(_ host: String?) -> Bool {
-        guard let host = host?.lowercased() else { return false }
-        return host == "github.com" || host == "www.github.com"
+    /// Release links are opened in the browser, so accept only `https://github.com/...`.
+    /// The host must match exactly: a substring check would also accept hosts such as
+    /// `evilgithub.com` or `github.com.evil.example`.
+    static func isTrustedReleaseURL(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "https",
+              url.host?.lowercased() == "github.com",
+              url.user == nil,
+              url.port == nil || url.port == 443 else {
+            return false
+        }
+        return true
     }
 
     static func normalizeVersion(_ raw: String) -> String {

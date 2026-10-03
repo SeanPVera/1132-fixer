@@ -163,6 +163,42 @@ struct ShellCommandsTests {
         #expect(result["en1"] == "Thunderbolt Ethernet Slot 1")
     }
 
+    @Test func parseNetworkServiceOrderSkipsDisabledServices() {
+        // Real `networksetup -listnetworkserviceorder` output marks disabled services with "(*)".
+        let output = """
+        An asterisk (*) denotes that a network service is disabled.
+        (1) Wi-Fi
+        (Hardware Port: Wi-Fi, Device: en0)
+
+        (*) USB 10/100/1000 LAN
+        (Hardware Port: USB 10/100/1000 LAN, Device: en5)
+
+        (3) Thunderbolt Bridge
+        (Hardware Port: Thunderbolt Bridge, Device: bridge0)
+        """
+        let result = ShellCommands.parseNetworkServiceOrder(from: output)
+        #expect(result["en0"] == "Wi-Fi")
+        #expect(result["bridge0"] == "Thunderbolt Bridge")
+        #expect(result["en5"] == nil)
+        #expect(result.count == 2)
+    }
+
+    @Test func parseNetworkServiceOrderKeepsServiceNamesThatStartWithAsterisk() {
+        let output = """
+        (1) *Office Network
+        (Hardware Port: Ethernet, Device: en6)
+        """
+        #expect(ShellCommands.parseNetworkServiceOrder(from: output)["en6"] == "*Office Network")
+    }
+
+    @Test func parseNetworkServiceOrderHandlesParenthesesInHardwarePortName() {
+        let output = """
+        (1) Dock Ethernet
+        (Hardware Port: Dock (Gigabit), Device: en7)
+        """
+        #expect(ShellCommands.parseNetworkServiceOrder(from: output)["en7"] == "Dock Ethernet")
+    }
+
     // MARK: - AppleScript Generation
 
     @Test func appleScriptDoShellScript() {
@@ -217,12 +253,6 @@ struct ShellCommandsTests {
         #expect(cmd.contains("ether"))
     }
 
-    @Test func normalizePrivateAddressModeOutput() {
-        #expect(ShellCommands.normalizePrivateAddressModeOutput("Rotating\n") == "rotating")
-        #expect(ShellCommands.normalizePrivateAddressModeOutput("** Error: The command is not recognized.") == "unsupported")
-        #expect(ShellCommands.normalizePrivateAddressModeOutput("networksetup -listnetworkserviceorder\nnetworksetup -printcommands") == "unsupported")
-    }
-
     @Test func makeResetZoomDataCommandUsesProvidedHome() {
         let cmd = ShellCommands.makeResetZoomDataCommand(homeDirectory: "/Users/test user")
         #expect(cmd.contains("home='/Users/test user'"))
@@ -233,8 +263,8 @@ struct ShellCommandsTests {
     @Test func makeResetZoomDataCommandRefusesEmptyHome() {
         // An empty home would rewrite every target to a system-level /Library path.
         let cmd = ShellCommands.makeResetZoomDataCommand(homeDirectory: "")
-        #expect(cmd.contains(#"if [ -z "$home" ]; then"#))
-        #expect(cmd.contains("refusing to delete system-level paths"))
+        #expect(cmd.contains(#"/*) ;;"#))
+        #expect(cmd.contains("refusing to delete anything"))
     }
 
     // MARK: - Backup Pruning
@@ -269,6 +299,8 @@ struct ShellCommandsTests {
         // Zoom permanently without security updates.
         #expect(!ShellCommands.stopZoomUpdaters.contains("launchctl disable"))
         #expect(ShellCommands.stopZoomUpdaters.contains("launchctl bootout"))
+        // Clears any override left behind by older versions of the app.
+        #expect(ShellCommands.stopZoomUpdaters.contains("launchctl enable"))
     }
 
     @Test func stopZoomUpdatersUsesValidDomainTargets() {
@@ -630,6 +662,86 @@ struct ShellCommandsTests {
         #expect(cmd.contains("Launch mode: sandboxRequiredMissingBinary"))
         #expect(cmd.contains(customBinary))
         #expect(!cmd.contains("/usr/bin/sandbox-exec"))
+    }
+
+    // MARK: - Time-bounded privileged commands
+
+    @Test func makeTimeBoundedCommandAddsWatchdogAndKeepsCommand() {
+        let cmd = ShellCommands.makeTimeBoundedCommand("echo hi", seconds: 30)
+        #expect(cmd.contains("/bin/sleep 30"))
+        #expect(cmd.contains("kill -TERM $$"))
+        #expect(cmd.contains("trap "))
+        #expect(cmd.hasSuffix("echo hi"))
+    }
+
+    @Test func makeTimeBoundedCommandClampsNonPositiveLimit() {
+        #expect(ShellCommands.makeTimeBoundedCommand("true", seconds: 0).contains("/bin/sleep 1;"))
+    }
+
+    @Test func timeBoundedCommandSurvivesAppleScriptEncoding() throws {
+        let command = ShellCommands.makeTimeBoundedCommand("echo hi", seconds: 5)
+        let script = ShellCommands.appleScriptDoShellScript(command, administratorPrivileges: true)
+        #expect(script.hasPrefix("do shell script \""))
+        #expect(script.hasSuffix("\" with administrator privileges"))
+        // The command travels base64-encoded, so its quotes and `$` need no AppleScript escaping.
+        let start = try #require(script.range(of: "echo '"))
+        let end = try #require(script.range(of: "' | /usr/bin/base64"))
+        let encoded = String(script[start.upperBound..<end.lowerBound])
+        let decoded = try #require(Data(base64Encoded: encoded).flatMap { String(data: $0, encoding: .utf8) })
+        #expect(decoded == command)
+    }
+
+    // MARK: - Reset split (unprivileged data removal, privileged DNS flush only)
+
+    @Test func privilegedCommandOnlyFlushesDNS() {
+        let cmd = ShellCommands.makeRefreshDNSCommand()
+        #expect(cmd.contains("dscacheutil -flushcache"))
+        #expect(cmd.contains("killall -HUP mDNSResponder"))
+        #expect(cmd.contains("__1132_DNS_STATUS__"))
+        #expect(!cmd.contains("rm "))
+        #expect(!cmd.contains("defaults delete"))
+    }
+
+    @Test func resetWithStatusKeepsSentinelAndDoesNotFlushDNS() {
+        let cmd = ShellCommands.makeResetZoomDataWithStatusCommand(homeDirectory: "/Users/test")
+        #expect(cmd.contains("home='/Users/test'"))
+        #expect(cmd.contains("__1132_RESET_STATUS__"))
+        #expect(!cmd.contains("__1132_DNS_STATUS__"))
+        #expect(!cmd.contains("dscacheutil"))
+        #expect(cmd.contains("defaults delete us.zoom.xos"))
+    }
+
+    @Test func resetCommandGuardsHomeBeforeAnyDeletion() {
+        let cmd = ShellCommands.makeResetZoomDataCommand(homeDirectory: "/Users/test")
+        let guardRange = cmd.range(of: "refusing to delete anything")
+        let rmRange = cmd.range(of: "/bin/rm -rf")
+        #expect(guardRange != nil)
+        #expect(rmRange != nil)
+        if let guardRange, let rmRange {
+            #expect(guardRange.lowerBound < rmRange.lowerBound)
+        }
+        #expect(cmd.contains(#"[ ! -d "$home" ]"#))
+        #expect(cmd.contains(#"[ "$home" = "/" ]"#))
+    }
+
+    @Test func safeHomeDirectoryValidation() {
+        #expect(ShellCommands.isSafeHomeDirectory("/Users/test"))
+        #expect(ShellCommands.isSafeHomeDirectory("/Users/test/"))
+        #expect(!ShellCommands.isSafeHomeDirectory(""))
+        #expect(!ShellCommands.isSafeHomeDirectory("/"))
+        #expect(!ShellCommands.isSafeHomeDirectory("//"))
+        #expect(!ShellCommands.isSafeHomeDirectory("Users/test"))
+        #expect(!ShellCommands.isSafeHomeDirectory("~"))
+    }
+
+    // MARK: - Backup
+
+    @Test func backupCommandIsPrivateAndFailsOnError() {
+        let cmd = ShellCommands.makeBackupZoomDataCommand()
+        #expect(cmd.contains("umask 077"))
+        #expect(cmd.contains("chmod 700"))
+        #expect(cmd.contains("exit 1"))
+        #expect(!cmd.contains("|| true"))
     }
 
     // MARK: - Machine Architecture

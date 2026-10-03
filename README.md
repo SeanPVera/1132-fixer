@@ -11,7 +11,7 @@
 ## Minimal macOS app with two actions
 
 - `Start Zoom`: closes Zoom if it is running, checks the active network, backs up and then clears Zoom local data/cache/preferences/log state, requests admin access to flush system DNS caches, stops Zoom's updaters for the current login session, then launches Zoom in the required sandbox mode with camera/microphone access preserved.
-- `Report a Bug`: opens a small form for optional email + message, then sends metadata plus an attached diagnostics file to the bug report API. The form lists exactly what the attachment contains, and `Export Diagnostics` in the app header shows you the file itself.
+- `Report a Bug`: opens a small form for optional email + message, then sends metadata plus an attached diagnostics file to the bug report API. The form lists exactly what the attachment contains, and `Export Diagnostics` in the app header shows you the file itself. Reports are sent to the project's server over HTTPS only (the app refuses other schemes and does not follow redirects), and the diagnostics attachment is capped at 1 MB (the newest log lines are kept).
 
 ### What Start Zoom does about network identity
 
@@ -27,7 +27,9 @@ The last two cases mean Zoom may still see the same network identity, so error 1
 
 ### Backups
 
-Before clearing Zoom's local state, the app copies it to `~/Library/Application Support/1132Fixer/Backups/`. The five most recent snapshots are kept and older ones are deleted automatically.
+Before clearing Zoom's local state, the app copies it to `~/Library/Application Support/1132Fixer/Backups/`. The five most recent snapshots are kept and older ones are deleted automatically. Backups are readable only by your user account. If the backup fails, Start Zoom stops before anything is deleted.
+
+Before launching Zoom (and when you choose a custom Zoom location), the app verifies that the app is `zoom.us.app` and is signed by Zoom's Apple team; otherwise it refuses to run it.
 
 ## Updates
 

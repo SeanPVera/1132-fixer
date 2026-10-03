@@ -1,3 +1,5 @@
+import Foundation
+import Testing
 import XCTest
 @testable import _132Fixer
 
@@ -167,17 +169,6 @@ final class UpdateCheckerTests: XCTestCase {
         }
     }
 
-    func testIsGitHubHost() {
-        XCTAssertTrue(UpdateChecker.isGitHubHost("github.com"))
-        XCTAssertTrue(UpdateChecker.isGitHubHost("GitHub.com"))
-        XCTAssertTrue(UpdateChecker.isGitHubHost("www.github.com"))
-        // A substring check would have accepted all of these.
-        XCTAssertFalse(UpdateChecker.isGitHubHost("github.com.example.net"))
-        XCTAssertFalse(UpdateChecker.isGitHubHost("evil-github.com.attacker.io"))
-        XCTAssertFalse(UpdateChecker.isGitHubHost("notgithub.com"))
-        XCTAssertFalse(UpdateChecker.isGitHubHost(nil))
-    }
-
     func testFetchLatestRelease_LookalikeHostRejected() async {
         let jsonString = """
         {
@@ -224,5 +215,33 @@ final class UpdateCheckerTests: XCTestCase {
             // Decoding error is expected
             XCTAssertTrue(error is DecodingError)
         }
+    }
+}
+
+// MARK: - Release URL validation (swift-testing)
+
+@Suite("UpdateChecker release URL")
+struct UpdateCheckerURLTests {
+
+    @Test func acceptsGitHubReleaseURLs() {
+        #expect(UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/1132-Fixer/macos/releases/tag/v1.7.7")!))
+        #expect(UpdateChecker.isTrustedReleaseURL(URL(string: "https://GitHub.com/1132-Fixer/macos")!))
+        #expect(UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com:443/1132-Fixer/macos")!))
+    }
+
+    @Test func rejectsLookalikeHosts() {
+        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://evilgithub.com/x")!))
+        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com.evil.example/x")!))
+        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://notgithub.com/x")!))
+        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://www.github.com/x")!))
+        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com@evil.example/x")!))
+        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://user@github.com/x")!))
+    }
+
+    @Test func rejectsNonHTTPSAndOddPorts() {
+        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "http://github.com/x")!))
+        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "ftp://github.com/x")!))
+        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "file:///etc/hosts")!))
+        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com:8443/x")!))
     }
 }

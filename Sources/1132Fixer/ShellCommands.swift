@@ -39,9 +39,13 @@ enum ZoomLocation {
 
     /// Validates that a chosen bundle path is a `zoom.us.app` containing the Zoom
     /// executable. Returns the normalized bundle path, or `nil` if invalid.
+    ///
+    /// This is a cheap structural check. The code signature is verified separately by
+    /// `ZoomBundleVerifier`, both when a location is chosen and again right before launch.
     static func validatedAppPath(_ selectedPath: String) -> String? {
         let path = selectedPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty else { return nil }
+        guard ZoomBundleVerifier.hasZoomBundleName(path) else { return nil }
         let binary = ShellCommands.zoomBinaryPath(forAppPath: path)
         guard FileManager.default.fileExists(atPath: binary) else { return nil }
         return path
@@ -85,6 +89,21 @@ enum ShellCommands {
         return "do shell script \"/bin/bash -c \\\"$(/bin/echo '\(base64Command)' | /usr/bin/base64 --decode)\\\"\"\(privilegeClause)"
     }
 
+    /// Wraps a script that will run with administrator privileges so it stops itself after
+    /// `seconds`. Killing `osascript` from the app cannot reach a root-owned shell, so the
+    /// privileged script carries its own watchdog: a background timer that sends SIGTERM to
+    /// the script's shell (`$$`), cancelled by an EXIT trap when the script finishes in time.
+    /// The limit should be a little shorter than the app-side timeout.
+    static func makeTimeBoundedCommand(_ command: String, seconds: Int) -> String {
+        let limit = max(seconds, 1)
+        return """
+        ( /bin/sleep \(limit); /bin/kill -TERM $$ ) >/dev/null 2>&1 &
+        __1132_watchdog=$!
+        trap '/usr/bin/pkill -P "$__1132_watchdog" 2>/dev/null; /bin/kill "$__1132_watchdog" 2>/dev/null' EXIT
+        \(command)
+        """
+    }
+
     // MARK: - Command Strings
 
     static let stopZoom = #"""
@@ -111,9 +130,14 @@ enum ShellCommands {
 
     /// Stops Zoom's updaters for the current login session only.
     ///
-    /// `launchctl disable` is deliberately not used here: it persists across reboots
-    /// and is never undone by this app, which would leave Zoom permanently without
-    /// security updates. It also requires root, so it silently failed in practice.
+    /// This must stay non-persistent: `launchctl disable` survives reboots and nothing in
+    /// this app would ever undo it, which would leave Zoom without security updates (it also
+    /// requires root, so it silently failed in practice). `pkill` and `launchctl bootout`
+    /// only unload the jobs until the next login.
+    ///
+    /// The final loop clears any "disabled" override that earlier 1132 Fixer versions left
+    /// behind with `launchctl disable`, so users upgrading from those versions get their
+    /// updaters back. `launchctl enable` only removes the override; it does not start the job.
     static let stopZoomUpdaters = #"""
     uid="$(/usr/bin/id -u)"
     stopped=""
@@ -131,25 +155,67 @@ enum ShellCommands {
       done
     done
 
+    for label in us.zoom.zAutoUpdate us.zoom.ZoomUpdater us.zoom.zPTUpdaterUI; do
+      /bin/launchctl enable "gui/$uid/$label" 2>/dev/null || true
+    done
+
     if [ -n "$stopped" ]; then
       echo "Stopped Zoom updater processes:$stopped"
     else
       echo "No Zoom updater processes were running."
     fi
-    echo "Updater agents unloaded for this login session; macOS restores them at the next login."
+    echo "Updater agents unloaded for this login session only; they are not disabled and macOS restores them at the next login."
     """#
 
-    static let refreshDNSAppleScript = #"do shell script "/usr/bin/dscacheutil -flushcache; /usr/bin/killall -HUP mDNSResponder" with administrator privileges"#
+    /// The privileged part of the reset: flushing the system DNS cache is the only step
+    /// that needs administrator rights. Reports `__1132_DNS_STATUS__=<n>` on its last line.
+    static func makeRefreshDNSCommand() -> String {
+        """
+        /usr/bin/dscacheutil -flushcache
+        dns_status=$?
+        /usr/bin/killall -HUP mDNSResponder || dns_status=$?
+        printf '\n__1132_DNS_STATUS__=%s\n' "$dns_status"
+        """
+    }
 
-    /// Clears Zoom's local state. Runs as the current user: every path is inside the
-    /// user's own home directory, so elevating this to root only widened the blast
-    /// radius of the `rm -rf` without enabling anything.
+    /// Runs the unprivileged Zoom data reset and reports `__1132_RESET_STATUS__=<n>` on its
+    /// last line. Always exits 0 so the caller can read the sentinel instead of an error.
+    static func makeResetZoomDataWithStatusCommand(homeDirectory: String) -> String {
+        """
+        (
+        \(makeResetZoomDataCommand(homeDirectory: homeDirectory))
+        )
+        reset_status=$?
+        printf '\n__1132_RESET_STATUS__=%s\n' "$reset_status"
+        """
+    }
+
+    /// Whether `path` is acceptable as the base for the `rm -rf` of Zoom's state: non-empty,
+    /// absolute, and not the filesystem root. (The generated script re-checks this, and that
+    /// the directory exists, before deleting anything.)
+    static func isSafeHomeDirectory(_ path: String) -> Bool {
+        var trimmed = path
+        while trimmed.count > 1 && trimmed.hasSuffix("/") { trimmed.removeLast() }
+        return trimmed.hasPrefix("/") && trimmed != "/"
+    }
+
+    /// Clears Zoom's local state. Runs as the current user (no administrator privileges):
+    /// every path is inside the user's own home directory, and running `rm -rf` and
+    /// `defaults delete` as root could leave root-owned files in `~/Library`.
     static func makeResetZoomDataCommand(homeDirectory: String) -> String {
         let home = shellSingleQuote(homeDirectory)
         return """
         home=\(home)
-        if [ -z "$home" ]; then
-          echo "Reset Zoom data: home directory is empty; refusing to delete system-level paths." >&2
+        while [ "${home%/}" != "$home" ] && [ -n "${home%/}" ]; do home="${home%/}"; done
+        case "$home" in
+          /*) ;;
+          *)
+            echo "Reset Zoom data: home directory '$home' is not an absolute path; refusing to delete anything." >&2
+            exit 1
+            ;;
+        esac
+        if [ "$home" = "/" ] || [ "${home%/}" = "" ] || [ ! -d "$home" ]; then
+          echo "Reset Zoom data: home directory '$home' is not a usable directory; refusing to delete anything." >&2
           exit 1
         fi
 
@@ -188,16 +254,31 @@ enum ShellCommands {
             .replacingOccurrences(of: ":", with: "-")
         let firstStaleEntry = max(retainedBackupCount, 1) + 1
         return """
+        # Backups hold Zoom session data: keep them private to the current user.
+        umask 077
         backup_root="$HOME/Library/Application Support/1132Fixer/Backups"
         backup_dir="$backup_root/\(timestamp)"
-        mkdir -p "$backup_dir"
+        if ! mkdir -p "$backup_dir" || ! chmod 700 "$backup_root" "$backup_dir"; then
+          printf 'Could not create a private backup folder at %s\\n' "$backup_dir" >&2
+          exit 1
+        fi
+
+        backup_failed=0
         for src in \
           "$HOME/Library/Application Support/zoom.us" \
           "$HOME/Library/Caches/us.zoom.xos" \
           "$HOME/Library/Preferences/us.zoom.xos.plist" \
           "$HOME/Library/Saved Application State/us.zoom.xos.savedState"; do
-          [ -e "$src" ] && cp -a "$src" "$backup_dir/" 2>/dev/null || true
+          [ -e "$src" ] || continue
+          if ! cp -a "$src" "$backup_dir/" 2>/dev/null; then
+            printf 'Could not back up %s\\n' "$src" >&2
+            backup_failed=1
+          fi
         done
+        # A failed backup must stop the caller before anything is deleted.
+        if [ "$backup_failed" -ne 0 ]; then
+          exit 1
+        fi
 
         # Prune older snapshots. Directory names are generated by this app, so they
         # contain no spaces or newlines.
@@ -337,6 +418,8 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         throw AppError.general("Detect active network interface: Active interface '\(hardwarePortName)' is not supported. Only Wi-Fi and Ethernet are supported.")
     }
 
+    /// Parses `networksetup -listnetworkserviceorder`. Disabled services are listed as
+    /// `(*) Name` (enabled ones as `(1) Name`) and are left out of the result.
     static func parseNetworkServiceOrder(from output: String) -> [String: String] {
         var result: [String: String] = [:]
         var pendingServiceName: String?
@@ -348,28 +431,34 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             guard !line.isEmpty else { return }
 
-            if line.hasPrefix("("), let closingParen = line.firstIndex(of: ")"), line.index(after: closingParen) < line.endIndex {
-                let nameStart = line.index(after: closingParen)
-                let serviceName = line[nameStart...].trimmingCharacters(in: .whitespaces)
-                if !serviceName.isEmpty && !serviceName.hasPrefix("*") {
-                    pendingServiceName = String(serviceName)
-                } else {
-                    pendingServiceName = nil
+            // Check the hardware-port line first: a port name such as "Foo (bar)" contains ")"
+            // and must not be mistaken for a "(n) Service" line.
+            if line.hasPrefix("(Hardware Port:") {
+                guard let serviceName = pendingServiceName, let regex else { return }
+                let nsLine = line as NSString
+                let range = NSRange(location: 0, length: nsLine.length)
+                guard let match = regex.firstMatch(in: line, options: [], range: range), match.numberOfRanges > 1 else { return }
+
+                let deviceRange = match.range(at: 1)
+                guard deviceRange.location != NSNotFound else { return }
+
+                let device = nsLine.substring(with: deviceRange).trimmingCharacters(in: .whitespaces)
+                if isSafeInterfaceName(device) {
+                    result[device] = serviceName
                 }
                 return
             }
 
-            guard line.hasPrefix("(Hardware Port:"), let serviceName = pendingServiceName, let regex else { return }
-            let nsLine = line as NSString
-            let range = NSRange(location: 0, length: nsLine.length)
-            guard let match = regex.firstMatch(in: line, options: [], range: range), match.numberOfRanges > 1 else { return }
-
-            let deviceRange = match.range(at: 1)
-            guard deviceRange.location != NSNotFound else { return }
-
-            let device = nsLine.substring(with: deviceRange).trimmingCharacters(in: .whitespaces)
-            if isSafeInterfaceName(device) {
-                result[device] = serviceName
+            if line.hasPrefix("("), let closingParen = line.firstIndex(of: ")"), line.index(after: closingParen) < line.endIndex {
+                // The marker is "(1)", "(2)", ... for enabled services and "(*)" for disabled ones.
+                let marker = line[line.startIndex...closingParen]
+                let nameStart = line.index(after: closingParen)
+                let serviceName = line[nameStart...].trimmingCharacters(in: .whitespaces)
+                if !serviceName.isEmpty && marker != "(*)" {
+                    pendingServiceName = serviceName
+                } else {
+                    pendingServiceName = nil
+                }
             }
         }
 
