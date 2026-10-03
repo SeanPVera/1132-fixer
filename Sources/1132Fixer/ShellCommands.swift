@@ -384,6 +384,8 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         throw NSError(domain: "1132Fixer", code: 1, userInfo: [NSLocalizedDescriptionKey: "Detect active network interface: Active interface '\(hardwarePortName)' is not supported. Only Wi-Fi and Ethernet are supported."])
     }
 
+    /// Parses `networksetup -listnetworkserviceorder`. Disabled services are listed as
+    /// `(*) Name` (enabled ones as `(1) Name`) and are left out of the result.
     static func parseNetworkServiceOrder(from output: String) -> [String: String] {
         var result: [String: String] = [:]
         var pendingServiceName: String?
@@ -395,28 +397,34 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             guard !line.isEmpty else { continue }
 
-            if line.hasPrefix("("), let closingParen = line.firstIndex(of: ")"), line.index(after: closingParen) < line.endIndex {
-                let nameStart = line.index(after: closingParen)
-                let serviceName = line[nameStart...].trimmingCharacters(in: .whitespaces)
-                if !serviceName.isEmpty && !serviceName.hasPrefix("*") {
-                    pendingServiceName = serviceName
-                } else {
-                    pendingServiceName = nil
+            // Check the hardware-port line first: a port name such as "Foo (bar)" contains ")"
+            // and must not be mistaken for a "(n) Service" line.
+            if line.hasPrefix("(Hardware Port:") {
+                guard let serviceName = pendingServiceName, let regex else { continue }
+                let nsLine = line as NSString
+                let range = NSRange(location: 0, length: nsLine.length)
+                guard let match = regex.firstMatch(in: line, options: [], range: range), match.numberOfRanges > 1 else { continue }
+
+                let deviceRange = match.range(at: 1)
+                guard deviceRange.location != NSNotFound else { continue }
+
+                let device = nsLine.substring(with: deviceRange).trimmingCharacters(in: .whitespaces)
+                if isSafeInterfaceName(device) {
+                    result[device] = serviceName
                 }
                 continue
             }
 
-            guard line.hasPrefix("(Hardware Port:"), let serviceName = pendingServiceName, let regex else { continue }
-            let nsLine = line as NSString
-            let range = NSRange(location: 0, length: nsLine.length)
-            guard let match = regex.firstMatch(in: line, options: [], range: range), match.numberOfRanges > 1 else { continue }
-
-            let deviceRange = match.range(at: 1)
-            guard deviceRange.location != NSNotFound else { continue }
-
-            let device = nsLine.substring(with: deviceRange).trimmingCharacters(in: .whitespaces)
-            if isSafeInterfaceName(device) {
-                result[device] = serviceName
+            if line.hasPrefix("("), let closingParen = line.firstIndex(of: ")"), line.index(after: closingParen) < line.endIndex {
+                // The marker is "(1)", "(2)", ... for enabled services and "(*)" for disabled ones.
+                let marker = line[line.startIndex...closingParen]
+                let nameStart = line.index(after: closingParen)
+                let serviceName = line[nameStart...].trimmingCharacters(in: .whitespaces)
+                if !serviceName.isEmpty && marker != "(*)" {
+                    pendingServiceName = serviceName
+                } else {
+                    pendingServiceName = nil
+                }
             }
         }
 

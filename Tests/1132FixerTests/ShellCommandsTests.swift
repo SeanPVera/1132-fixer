@@ -162,6 +162,42 @@ struct ShellCommandsTests {
         #expect(result["en1"] == "Thunderbolt Ethernet Slot 1")
     }
 
+    @Test func parseNetworkServiceOrderSkipsDisabledServices() {
+        // Real `networksetup -listnetworkserviceorder` output marks disabled services with "(*)".
+        let output = """
+        An asterisk (*) denotes that a network service is disabled.
+        (1) Wi-Fi
+        (Hardware Port: Wi-Fi, Device: en0)
+
+        (*) USB 10/100/1000 LAN
+        (Hardware Port: USB 10/100/1000 LAN, Device: en5)
+
+        (3) Thunderbolt Bridge
+        (Hardware Port: Thunderbolt Bridge, Device: bridge0)
+        """
+        let result = ShellCommands.parseNetworkServiceOrder(from: output)
+        #expect(result["en0"] == "Wi-Fi")
+        #expect(result["bridge0"] == "Thunderbolt Bridge")
+        #expect(result["en5"] == nil)
+        #expect(result.count == 2)
+    }
+
+    @Test func parseNetworkServiceOrderKeepsServiceNamesThatStartWithAsterisk() {
+        let output = """
+        (1) *Office Network
+        (Hardware Port: Ethernet, Device: en6)
+        """
+        #expect(ShellCommands.parseNetworkServiceOrder(from: output)["en6"] == "*Office Network")
+    }
+
+    @Test func parseNetworkServiceOrderHandlesParenthesesInHardwarePortName() {
+        let output = """
+        (1) Dock Ethernet
+        (Hardware Port: Dock (Gigabit), Device: en7)
+        """
+        #expect(ShellCommands.parseNetworkServiceOrder(from: output)["en7"] == "Dock Ethernet")
+    }
+
     // MARK: - AppleScript Generation
 
     @Test func appleScriptDoShellScript() {
