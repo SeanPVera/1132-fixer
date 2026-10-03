@@ -207,12 +207,6 @@ struct ShellCommandsTests {
         #expect(cmd.contains("ether"))
     }
 
-    @Test func normalizePrivateAddressModeOutput() {
-        #expect(ShellCommands.normalizePrivateAddressModeOutput("Rotating\n") == "rotating")
-        #expect(ShellCommands.normalizePrivateAddressModeOutput("** Error: The command is not recognized.") == "unsupported")
-        #expect(ShellCommands.normalizePrivateAddressModeOutput("networksetup -listnetworkserviceorder\nnetworksetup -printcommands") == "unsupported")
-    }
-
     @Test func makeResetZoomDataCommandUsesProvidedHome() {
         let cmd = ShellCommands.makeResetZoomDataCommand(homeDirectory: "/Users/test user")
         #expect(cmd.contains("home='/Users/test user'"))

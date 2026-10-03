@@ -509,8 +509,6 @@ final class AppViewModel: ObservableObject {
                     results.append("Interface type: \(kind.rawValue)")
                     if ShellCommands.isMacSpoofingDisabledForCurrentOS() {
                         results.append("MAC spoofing: Disabled on macOS 14+")
-                    } else if kind == .wifi && ShellCommands.isMacSpoofingBlockedOnWiFi() {
-                        results.append("MAC spoofing: BLOCKED (Apple Silicon + macOS 14+)")
                     } else {
                         results.append("MAC spoofing: Available")
                     }
@@ -605,8 +603,6 @@ final class AppViewModel: ObservableObject {
             // MAC spoofing availability
             if ShellCommands.isMacSpoofingDisabledForCurrentOS() {
                 checks.append(.init(id: "macspoof", label: "MAC Spoofing", value: "Disabled on macOS 14+", isWarning: false))
-            } else if ShellCommands.isMacSpoofingBlockedOnWiFi() {
-                checks.append(.init(id: "macspoof", label: "MAC Spoofing", value: "Blocked on Wi-Fi (Apple Silicon + macOS 14+)", isWarning: true))
             }
 
             preflight = PreflightInfo(status: .ready, checks: checks)
@@ -797,10 +793,6 @@ Last action status: \(lastStatus)
             )
         }
 
-        if interface.kind == .wifi && ShellCommands.isMacSpoofingBlockedOnWiFi() {
-            return try await resetPrivateWiFiAddressAndReconnect(networkService: interface.networkService, device: interface.device)
-        }
-
         let spoofedMAC = try ShellCommands.generateRandomMACAddress()
         let spoofScript = ShellCommands.makeSpoofCommand(device: interface.device, spoofedMAC: spoofedMAC, networkService: interface.networkService)
 
@@ -877,89 +869,6 @@ If your network connection is disrupted after this step:
         return MACSpoofResult(
             summary: combinedSummary,
             hasWarning: combinedSummary.contains("Warning:"),
-            wasSkipped: false
-        )
-    }
-
-    private func resetPrivateWiFiAddressAndReconnect(networkService: String, device: String) async throws -> MACSpoofResult {
-        // 1. Check current private address mode
-        let getModeCmd = ShellCommands.makeGetPrivateAddressModeCommand(networkService: networkService)
-        let currentModeOutput = (try? await runProcess(
-            stepName: "Check Private Wi-Fi Address mode",
-            executable: Constants.bashPath,
-            arguments: ["-c", getModeCmd]
-        )) ?? "unsupported"
-        let currentMode = ShellCommands.normalizePrivateAddressModeOutput(currentModeOutput)
-
-        appendLog("Private Wi-Fi Address mode: \(currentMode)")
-
-        var modeWasChanged = false
-        var warnings: [String] = []
-
-        // 2. If not rotating, set it
-        if currentMode == "unsupported" {
-            warnings.append("Warning: Private Wi-Fi Address controls are unsupported on this macOS/networksetup version.")
-        } else if currentMode != "rotating" {
-            let setModeCmd = ShellCommands.makeSetPrivateAddressModeCommand(networkService: networkService, mode: "rotating")
-            let setModeScript = ShellCommands.appleScriptDoShellScript(setModeCmd, administratorPrivileges: true)
-            do {
-                _ = try await runProcess(
-                    stepName: "Enable rotating Private Wi-Fi Address",
-                    executable: Constants.osascriptPath,
-                    arguments: ["-e", setModeScript],
-                    timeout: 15
-                )
-                modeWasChanged = true
-                appendLog("Private Wi-Fi Address set to rotating (was: \(currentMode))")
-            } catch {
-                let warning = "Warning: Could not set Private Wi-Fi Address to rotating: \(error.localizedDescription)"
-                warnings.append(warning)
-                appendLog(warning)
-            }
-        }
-
-        // 3. Cycle the interface to generate a new MAC — always brings it back up
-        let resetCmd = ShellCommands.makeRotatingMACResetCommand(device: device)
-        let resetScript = ShellCommands.appleScriptDoShellScript(resetCmd, administratorPrivileges: true)
-        do {
-            _ = try await runProcess(
-                stepName: "Reset Wi-Fi to generate new rotating MAC",
-                executable: Constants.osascriptPath,
-                arguments: ["-e", resetScript],
-                timeout: 30
-            )
-        } catch {
-            let warning = "Warning: Wi-Fi cycle encountered an error: \(error.localizedDescription)"
-            warnings.append(warning)
-            appendLog(warning)
-            // Interface was already brought back up by the command — log and continue
-        }
-
-        // 4. Read the new MAC for logging
-        let verifyScript = ShellCommands.makeVerifyMACCommand(device: device)
-        let newMAC = (try? await runProcess(
-            stepName: "Read new MAC address",
-            executable: Constants.bashPath,
-            arguments: ["-c", verifyScript]
-        ))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "(could not read)"
-
-        let modeNote: String
-        if currentMode == "unsupported" {
-            modeNote = "Private Wi-Fi Address mode could not be verified on this system. "
-        } else if modeWasChanged {
-            modeNote = "Private Wi-Fi Address changed to rotating (was: \(currentMode)). "
-        } else if currentMode == "rotating" {
-            modeNote = "Private Wi-Fi Address was already set to rotating. "
-        } else {
-            modeNote = "Private Wi-Fi Address remained \(currentMode). "
-        }
-
-        var summaryParts = ["\(modeNote)Wi-Fi cycled to generate new rotating MAC. Current MAC: \(newMAC)"]
-        summaryParts.append(contentsOf: warnings)
-
-        return MACSpoofResult(
-            summary: summaryParts.joined(separator: "\n"),
-            hasWarning: !warnings.isEmpty,
             wasSkipped: false
         )
     }

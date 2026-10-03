@@ -436,63 +436,8 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         return String(bytes: values, encoding: .ascii) ?? "unknown"
     }
 
-    static func isMacSpoofingBlockedOnWiFi() -> Bool {
-        let isAppleSilicon = machineArchitecture() == "arm64"
-        let isMacOS14OrLater = ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 14
-        return isAppleSilicon && isMacOS14OrLater
-    }
-
     static func isMacSpoofingDisabledForCurrentOS() -> Bool {
         ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 14
-    }
-
-    // MARK: - Private Wi-Fi Address (Rotating MAC)
-
-    static func makeGetPrivateAddressModeCommand(networkService: String) -> String {
-        "/usr/sbin/networksetup -getPrivateNetworkAddress \(shellSingleQuote(networkService)) 2>/dev/null || echo 'unsupported'"
-    }
-
-    static func makeSetPrivateAddressModeCommand(networkService: String, mode: String) -> String {
-        "/usr/sbin/networksetup -setPrivateNetworkAddress \(shellSingleQuote(networkService)) \(shellSingleQuote(mode))"
-    }
-
-    static func normalizePrivateAddressModeOutput(_ output: String) -> String {
-        let normalizedLines = output
-            .split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-            .filter { !$0.isEmpty }
-
-        for mode in ["rotating", "fixed", "static", "off"] {
-            if normalizedLines.contains(mode) {
-                return mode
-            }
-        }
-
-        let normalizedOutput = normalizedLines.joined(separator: "\n")
-        if normalizedOutput.contains("not recognized")
-            || normalizedOutput.contains("unsupported")
-            || normalizedOutput.contains("networksetup -printcommands") {
-            return "unsupported"
-        }
-
-        for mode in ["rotating", "fixed", "static", "off"] {
-            if normalizedOutput.contains(mode) {
-                return mode
-            }
-        }
-
-        return normalizedOutput.isEmpty ? "unsupported" : normalizedOutput
-    }
-
-    /// Cycles the Wi-Fi interface off then on to generate a new rotating MAC address.
-    /// The interface is always brought back up, even if the down step fails.
-    static func makeRotatingMACResetCommand(device: String) -> String {
-        let off = "/usr/sbin/networksetup -setairportpower \(shellSingleQuote(device)) off"
-        let sleep1 = "/bin/sleep 1"
-        let on = "/usr/sbin/networksetup -setairportpower \(shellSingleQuote(device)) on"
-        let sleep2 = "/bin/sleep 2"
-        // Always run `on`, regardless of whether `off` succeeded
-        return "{ \(off); \(sleep1); } 2>/dev/null || true; \(on); \(sleep2)"
     }
 
     // MARK: - MAC Spoof Command
