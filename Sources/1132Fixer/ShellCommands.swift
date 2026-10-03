@@ -80,6 +80,21 @@ enum ShellCommands {
         return "do shell script \"\(escapedCommand)\"\(privilegeClause)"
     }
 
+    /// Wraps a script that will run with administrator privileges so it stops itself after
+    /// `seconds`. Killing `osascript` from the app cannot reach a root-owned shell, so the
+    /// privileged script carries its own watchdog: a background timer that sends SIGTERM to
+    /// the script's shell (`$$`), cancelled by an EXIT trap when the script finishes in time.
+    /// The limit should be a little shorter than the app-side timeout.
+    static func makeTimeBoundedCommand(_ command: String, seconds: Int) -> String {
+        let limit = max(seconds, 1)
+        return """
+        ( /bin/sleep \(limit); /bin/kill -TERM $$ ) >/dev/null 2>&1 &
+        __1132_watchdog=$!
+        trap '/usr/bin/pkill -P "$__1132_watchdog" 2>/dev/null; /bin/kill "$__1132_watchdog" 2>/dev/null' EXIT
+        \(command)
+        """
+    }
+
     // MARK: - Command Strings
 
     static let stopZoom = #"""

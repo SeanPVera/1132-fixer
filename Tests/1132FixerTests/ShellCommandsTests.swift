@@ -305,6 +305,31 @@ struct ShellCommandsTests {
         #expect(cmd.contains("launchctl enable"))
     }
 
+    // MARK: - Time-bounded privileged commands
+
+    @Test func makeTimeBoundedCommandAddsWatchdogAndKeepsCommand() {
+        let cmd = ShellCommands.makeTimeBoundedCommand("echo hi", seconds: 30)
+        #expect(cmd.contains("/bin/sleep 30"))
+        #expect(cmd.contains("kill -TERM $$"))
+        #expect(cmd.contains("trap "))
+        #expect(cmd.hasSuffix("echo hi"))
+    }
+
+    @Test func makeTimeBoundedCommandClampsNonPositiveLimit() {
+        #expect(ShellCommands.makeTimeBoundedCommand("true", seconds: 0).contains("/bin/sleep 1;"))
+    }
+
+    @Test func timeBoundedCommandSurvivesAppleScriptEscaping() {
+        let script = ShellCommands.appleScriptDoShellScript(
+            ShellCommands.makeTimeBoundedCommand("echo hi", seconds: 5),
+            administratorPrivileges: true
+        )
+        #expect(script.hasPrefix("do shell script \""))
+        #expect(script.hasSuffix("\" with administrator privileges"))
+        // Double quotes inside the trap must be escaped for AppleScript.
+        #expect(script.contains(#"\"$__1132_watchdog\""#))
+    }
+
     // MARK: - Machine Architecture
 
     @Test func machineArchitecture() {

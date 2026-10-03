@@ -381,7 +381,9 @@ final class AppViewModel: ObservableObject {
 
     func cancelWorkflow() {
         runningTask?.cancel()
-        currentProcess?.terminate()
+        if let process = currentProcess {
+            Self.terminateProcessTree(process)
+        }
         workflowState = .canceled
         appendLog("Workflow canceled by user.")
         isRunning = false
@@ -534,14 +536,16 @@ final class AppViewModel: ObservableObject {
                 let routeOutput = try await runProcess(
                     stepName: "Preflight: detect interface",
                     executable: Constants.bashPath,
-                    arguments: ["-c", "/sbin/route -n get default 2>/dev/null"]
+                    arguments: ["-c", "/sbin/route -n get default 2>/dev/null"],
+                    trackAsCurrent: false
                 )
                 let device = try ShellCommands.parseDefaultRouteInterface(from: routeOutput)
 
                 let portsOutput = try await runProcess(
                     stepName: "Preflight: hardware ports",
                     executable: Constants.bashPath,
-                    arguments: ["-c", "/usr/sbin/networksetup -listallhardwareports"]
+                    arguments: ["-c", "/usr/sbin/networksetup -listallhardwareports"],
+                    trackAsCurrent: false
                 )
                 let portMap = ShellCommands.parseHardwarePorts(from: portsOutput)
                 let portName = portMap[device] ?? "Unknown"
@@ -764,7 +768,11 @@ Last action status: \(lastStatus)
 
         appendLog("Network recovery: commands to be attempted on \(interface.device) (service: \(interface.networkService))")
 
-        let appleScript = ShellCommands.appleScriptDoShellScript(spoofScript, administratorPrivileges: true)
+        // The root shell cannot be killed from here, so it bounds itself just under the 90s timeout below.
+        let appleScript = ShellCommands.appleScriptDoShellScript(
+            ShellCommands.makeTimeBoundedCommand(spoofScript, seconds: 85),
+            administratorPrivileges: true
+        )
         let commandOutput: String
         do {
             commandOutput = try await runProcess(
@@ -1125,13 +1133,55 @@ If your network connection is disrupted after this step:
         }
     }
 
-    private func runProcess(stepName: String, executable: String, arguments: [String], timeout: TimeInterval = 60) async throws -> String {
+    /// Stops `process` and, best effort, its direct children, then force-kills it after a
+    /// short grace period.
+    ///
+    /// Limits: this runs without elevated privileges, so it cannot signal a root-owned
+    /// child. For `osascript ... with administrator privileges` the root shell is a child of
+    /// the authorization helper rather than of `osascript`; killing `osascript` alone does not
+    /// stop it. Privileged scripts therefore bound themselves with
+    /// `ShellCommands.makeTimeBoundedCommand`. If a root child ever outlives a run, it can be
+    /// stopped manually with `sudo pkill -P <pid>` (or by killing the shell it names).
+    nonisolated private static func terminateProcessTree(_ process: Process) {
+        guard process.isRunning else { return }
+        let pid = process.processIdentifier
+
+        let childKiller = Process()
+        childKiller.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        childKiller.arguments = ["-TERM", "-P", "\(pid)"]
+        childKiller.standardOutput = FileHandle.nullDevice
+        childKiller.standardError = FileHandle.nullDevice
+        if (try? childKiller.run()) != nil {
+            childKiller.waitUntilExit()
+        }
+
+        if process.isRunning {
+            process.terminate()
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+            if process.isRunning {
+                kill(pid, SIGKILL)
+            }
+        }
+    }
+
+    /// Runs a process and returns its combined output.
+    ///
+    /// `trackAsCurrent` registers the process as the one `cancelWorkflow()` stops. Background
+    /// work such as the preflight refresh passes `false` so it can neither be cancelled by,
+    /// nor replace the handle of, the user's running workflow.
+    private func runProcess(
+        stepName: String,
+        executable: String,
+        arguments: [String],
+        timeout: TimeInterval = 60,
+        trackAsCurrent: Bool = true
+    ) async throws -> String {
         try Task.checkCancellation()
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
-        currentProcess = process
 
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -1142,6 +1192,10 @@ If your network connection is disrupted after this step:
             let stdoutBuffer = LockedDataBuffer()
             let stderrBuffer = LockedDataBuffer()
             let resumeGate = ContinuationResumeGate()
+            // Each pipe is read to EOF on its own thread. The termination handler only
+            // finishes once both reads are done, so trailing output (for example the
+            // `__1132_RESET_STATUS__=` lines) cannot be lost to a handler that had not run yet.
+            let readGroup = DispatchGroup()
 
             @Sendable func safeResume(_ result: Result<String, Error>) {
                 guard resumeGate.beginResume() else { return }
@@ -1151,23 +1205,12 @@ If your network connection is disrupted after this step:
                 }
             }
 
-            outPipe.fileHandleForReading.readabilityHandler = { handle in
-                let chunk = handle.availableData
-                guard !chunk.isEmpty else { return }
-                stdoutBuffer.append(chunk)
-            }
-
-            errPipe.fileHandleForReading.readabilityHandler = { handle in
-                let chunk = handle.availableData
-                guard !chunk.isEmpty else { return }
-                stderrBuffer.append(chunk)
-            }
-
-            // Timeout timer
+            // Timeout timer. It is cancelled only after the output has been drained, so a
+            // grandchild that keeps a pipe open still ends in a timeout instead of a hang.
             let timer = DispatchSource.makeTimerSource(queue: .global())
             timer.schedule(deadline: .now() + timeout)
             timer.setEventHandler {
-                process.terminate()
+                AppViewModel.terminateProcessTree(process)
                 DispatchQueue.main.async {
                     self.appendLog("Timeout: '\(stepName)' did not complete within \(Int(timeout))s — terminating.")
                 }
@@ -1179,22 +1222,19 @@ If your network connection is disrupted after this step:
             }
             timer.resume()
 
-            do {
-                process.terminationHandler = { terminatedProcess in
+            process.terminationHandler = { terminatedProcess in
+                let terminationStatus = terminatedProcess.terminationStatus
+
+                readGroup.notify(queue: .global()) {
                     timer.cancel()
-                    outPipe.fileHandleForReading.readabilityHandler = nil
-                    errPipe.fileHandleForReading.readabilityHandler = nil
 
-                    let outData = stdoutBuffer.snapshot()
-                    let errData = stderrBuffer.snapshot()
-
-                    let stdout = String(data: outData, encoding: .utf8) ?? ""
-                    let stderr = String(data: errData, encoding: .utf8) ?? ""
+                    let stdout = String(data: stdoutBuffer.snapshot(), encoding: .utf8) ?? ""
+                    let stderr = String(data: stderrBuffer.snapshot(), encoding: .utf8) ?? ""
                     let combined = [stdout, stderr]
                         .filter { !$0.isEmpty }
                         .joined(separator: "\n")
 
-                    if terminatedProcess.terminationStatus == 0 {
+                    if terminationStatus == 0 {
                         safeResume(.success(combined))
                         return
                     }
@@ -1206,20 +1246,51 @@ If your network connection is disrupted after this step:
                     } else if executable == Constants.osascriptPath {
                         message = "\(stepName): Admin authorization was canceled or failed. This step requires your macOS password to run with elevated privileges. Click Start Zoom again and enter your password when prompted."
                     } else {
-                        message = "\(stepName): Command failed with exit code \(terminatedProcess.terminationStatus)."
+                        message = "\(stepName): Command failed with exit code \(terminationStatus)."
                     }
 
                     safeResume(.failure(NSError(
                         domain: Constants.errorDomain,
-                        code: Int(terminatedProcess.terminationStatus),
+                        code: Int(terminationStatus),
                         userInfo: [NSLocalizedDescriptionKey: message]
                     )))
                 }
 
+                if trackAsCurrent {
+                    Task { @MainActor in
+                        if self.currentProcess === terminatedProcess {
+                            self.currentProcess = nil
+                        }
+                    }
+                }
+            }
+
+            // Registered before launch so the group is never empty when the process exits.
+            readGroup.enter()
+            readGroup.enter()
+
+            do {
                 try process.run()
             } catch {
+                readGroup.leave()
+                readGroup.leave()
                 timer.cancel()
                 safeResume(.failure(error))
+                return
+            }
+
+            // Only a launched process may be tracked (and later terminated).
+            if trackAsCurrent {
+                currentProcess = process
+            }
+
+            for (pipe, buffer) in [(outPipe, stdoutBuffer), (errPipe, stderrBuffer)] {
+                DispatchQueue.global().async {
+                    if let data = try? pipe.fileHandleForReading.readToEnd() {
+                        buffer.append(data)
+                    }
+                    readGroup.leave()
+                }
             }
         }
     }
