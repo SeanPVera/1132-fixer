@@ -1,19 +1,35 @@
 # 1132 Fixer
 
-<img width="2086" height="216" alt="image" src="https://github.com/user-attachments/assets/7da05d6d-ebbc-4384-ae35-52d2a1e1e6b9" />
-
-## [Download the latest release here](https://github.com/1132-Fixer/macos/releases/latest)
+## [Download the latest release here](https://github.com/PrimeUpYourLife/1132-fixer/releases/latest)
 
 ## [Discuss on Telegram](https://t.me/Team1132Fixer)
 
 <img src="Sources/1132Fixer/Resources/AppIcon.png" width="128" alt="1132 Fixer app icon">
 
-![GitHub Release](https://img.shields.io/github/v/release/1132-Fixer/macos?style=for-the-badge) ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/1132-Fixer/macos/total?style=for-the-badge) ![Static Badge](https://img.shields.io/badge/mac-silicone-yellow?logo=apple&style=for-the-badge) ![Static Badge](https://img.shields.io/badge/mac-intel-purple?logo=apple&style=for-the-badge) ![Static Badge](https://img.shields.io/badge/mac-universal-green?logo=apple&style=for-the-badge)
+![GitHub Release](https://img.shields.io/github/v/release/PrimeUpYourLife/1132-fixer?style=for-the-badge) ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/PrimeUpYourLife/1132-fixer/total?style=for-the-badge) ![Static Badge](https://img.shields.io/badge/mac-silicone-yellow?logo=apple&style=for-the-badge) ![Static Badge](https://img.shields.io/badge/mac-intel-purple?logo=apple&style=for-the-badge) ![Static Badge](https://img.shields.io/badge/mac-universal-green?logo=apple&style=for-the-badge)
 
 ## Minimal macOS app with two actions
 
-- `Start Zoom`: closes Zoom if it is running, stops immediately if a VPN interface is active, checks the active network, clears Zoom local data/cache/preferences/log state, requests admin access to flush system DNS caches, then launches Zoom in the required sandbox mode with camera/video access preserved. On macOS 13, the app may also spoof and reconnect the active Wi-Fi/Ethernet interface; on macOS 14 and later, MAC spoofing is disabled because that legacy method no longer works reliably.
-- `Report a Bug`: opens a small form for optional email + message, then sends metadata plus an attached diagnostics file to the bug report API. A report includes the app and OS version, network interface names, MAC address details, the activity log, and your email if you enter one, and is sent to the project's server (HTTPS only; the log is capped at 1 MB).
+- `Start Zoom`: closes Zoom if it is running, checks the active network, backs up and then clears Zoom local data/cache/preferences/log state, requests admin access to flush system DNS caches, stops Zoom's updaters for the current login session, then launches Zoom in the required sandbox mode with camera/microphone access preserved.
+- `Report a Bug`: opens a small form for optional email + message, then sends metadata plus an attached diagnostics file to the bug report API. The form lists exactly what the attachment contains, and `Export Diagnostics` in the app header shows you the file itself. Reports are sent to the project's server over HTTPS only (the app refuses other schemes and does not follow redirects), and the diagnostics attachment is capped at 1 MB (the newest log lines are kept).
+
+### What Start Zoom does about network identity
+
+This depends on your Mac, and the app tells you which case applies before you run it:
+
+- **macOS 13**: the active Wi-Fi or Ethernet interface is MAC-spoofed and reconnected.
+- **Apple Silicon on macOS 14 or later, over Wi-Fi**: the legacy method no longer works, so the app switches the network to a rotating Private Wi-Fi Address and cycles Wi-Fi to pick up a new one.
+- **Anything else on macOS 14 or later**: no network identity change is possible; the step is skipped with a warning and the rest of the workflow still runs.
+
+If a VPN is carrying your default route, the network step is skipped with a warning and the remaining steps still run. Turn the VPN off first if you want that step to do anything.
+
+The last two cases mean Zoom may still see the same network identity, so error 1132 can persist.
+
+### Backups
+
+Before clearing Zoom's local state, the app copies it to `~/Library/Application Support/1132Fixer/Backups/`. The five most recent snapshots are kept and older ones are deleted automatically. Backups are readable only by your user account. If the backup fails, Start Zoom stops before anything is deleted.
+
+Before launching Zoom (and when you choose a custom Zoom location), the app verifies that the app is `zoom.us.app` and is signed by Zoom's Apple team; otherwise it refuses to run it.
 
 ## Updates
 
@@ -22,12 +38,10 @@ On launch, the app checks the GitHub Releases `latest` endpoint and prompts if a
 ## License and Risk
 
 This project is licensed under the terms in `LICENSE`.
-Commercial use is prohibited without prior written permission from the
-copyright holders.
 
 Attribution is required: any copy, fork, or derivative of this project must
 give clear and prominent credit to the original project, **1132 Fixer**, with
-a working link to <https://github.com/1132-Fixer/macos>. You may
+a working link to <https://github.com/PrimeUpYourLife/1132-fixer>. You may
 not claim the original work as your own. See `LICENSE` for the full terms.
 
 The software is provided "as is" with no warranty. Installing and using it is

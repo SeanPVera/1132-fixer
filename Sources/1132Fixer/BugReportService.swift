@@ -27,7 +27,11 @@ enum BugReportService {
         #endif
     }
 
-    private static func resolveConfigValue(envVar: String, allowEnvironmentOverride: Bool = true, fallback: String = "") -> String {
+    private static func resolveConfigValue(
+        envVar: String,
+        allowEnvironmentOverride: Bool = true,
+        fallback: String = ""
+    ) async -> String {
         let envValue = allowEnvironmentOverride
             ? (ProcessInfo.processInfo.environment[envVar]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
             : ""
@@ -56,8 +60,14 @@ enum BugReportService {
         bundlesToSearch.append(Bundle.main)
 
         for bundle in bundlesToSearch {
-            guard let resourceURL = bundle.url(forResource: envVar, withExtension: nil),
-                  let data = try? Data(contentsOf: resourceURL),
+            guard let resourceURL = bundle.url(forResource: envVar, withExtension: nil) else { continue }
+
+            // Offload synchronous I/O to avoid blocking the Swift concurrency thread pool
+            let data = await Task.detached {
+                try? Data(contentsOf: resourceURL)
+            }.value
+
+            guard let data,
                   let bundledValue = String(data: data, encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines),
                   !bundledValue.isEmpty else {
@@ -77,12 +87,12 @@ enum BugReportService {
         diagnosticsFileName: String,
         diagnosticsData: Data
     ) async throws {
-        let endpoint = resolveConfigValue(
+        let endpoint = await resolveConfigValue(
             envVar: endpointEnvVar,
             allowEnvironmentOverride: allowsEndpointEnvironmentOverride,
             fallback: defaultEndpoint
         )
-        let token = resolveConfigValue(envVar: tokenEnvVar)
+        let token = await resolveConfigValue(envVar: tokenEnvVar)
 
         guard !token.isEmpty else {
             throw NSError(
@@ -249,9 +259,10 @@ enum BugReportService {
         return body
     }
 
-    /// Makes a value safe for a quoted `Content-Disposition` parameter: CR, LF and other control
-    /// characters are dropped (they would let a value start a new header), then backslashes
-    /// and quotes are escaped.
+    /// Makes a value safe for a quoted `Content-Disposition` parameter. CR, LF and other
+    /// control characters are removed outright: escaping cannot make them safe, and leaving
+    /// them in would let a value terminate the header and inject further multipart headers.
+    /// Backslashes and quotes are then escaped.
     static func escapedHeaderValue(_ value: String) -> String {
         String(String.UnicodeScalarView(value.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }))
             .replacingOccurrences(of: "\\", with: "\\\\")

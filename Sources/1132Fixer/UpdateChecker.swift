@@ -29,7 +29,7 @@ enum UpdateChecker {
         }
     }
 
-    static func fetchLatestRelease() async throws -> ReleaseInfo {
+    static func fetchLatestRelease(session: URLSession = .shared) async throws -> ReleaseInfo {
         let url = URL(string: "https://api.github.com/repos/\(owner)/\(repo)/releases/latest")!
 
         var request = URLRequest(url: url)
@@ -39,7 +39,7 @@ enum UpdateChecker {
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = 10
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             throw NSError(
                 domain: errorDomain,

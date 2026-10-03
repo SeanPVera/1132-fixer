@@ -69,15 +69,24 @@ enum ShellCommands {
     // MARK: - Shell Quoting
 
     static func shellSingleQuote(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: #"'"'"'"#) + "'"
+        "'" + value.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
+    }
+
+    /// Quotes a value for use as a sandbox profile (SBPL) string literal.
+    /// Backslash and double quote are the only characters SBPL treats specially
+    /// inside a string; an unescaped one would end the literal early and change
+    /// which paths a rule matches.
+    static func sandboxStringLiteral(_ value: String) -> String {
+        let escaped = value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
     }
 
     static func appleScriptDoShellScript(_ command: String, administratorPrivileges: Bool) -> String {
-        let escapedCommand = command
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
+        let base64Command = Data(command.utf8).base64EncodedString()
         let privilegeClause = administratorPrivileges ? " with administrator privileges" : ""
-        return "do shell script \"\(escapedCommand)\"\(privilegeClause)"
+        return "do shell script \"/bin/bash -c \\\"$(/bin/echo '\(base64Command)' | /usr/bin/base64 --decode)\\\"\"\(privilegeClause)"
     }
 
     /// Wraps a script that will run with administrator privileges so it stops itself after
@@ -122,20 +131,24 @@ enum ShellCommands {
     /// Stops Zoom's updaters for the current login session only.
     ///
     /// This must stay non-persistent: `launchctl disable` survives reboots and nothing in
-    /// this app would ever undo it, which would leave Zoom without security updates.
-    /// `pkill` and `launchctl bootout` only unload the jobs until the next login.
+    /// this app would ever undo it, which would leave Zoom without security updates (it also
+    /// requires root, so it silently failed in practice). `pkill` and `launchctl bootout`
+    /// only unload the jobs until the next login.
     ///
     /// The final loop clears any "disabled" override that earlier 1132 Fixer versions left
     /// behind with `launchctl disable`, so users upgrading from those versions get their
     /// updaters back. `launchctl enable` only removes the override; it does not start the job.
     static let stopZoomUpdaters = #"""
     uid="$(/usr/bin/id -u)"
+    stopped=""
 
     for proc in zAutoUpdate zPTUpdaterUI ZoomUpdater; do
-      /usr/bin/pkill -x "$proc" 2>/dev/null || true
+      if /usr/bin/pkill -x "$proc" 2>/dev/null; then
+        stopped="$stopped $proc"
+      fi
     done
 
-    for domain in gui/"$uid" user/"$uid"; do
+    for domain in "gui/$uid" "user/$uid"; do
       for label in us.zoom.zAutoUpdate us.zoom.ZoomUpdater us.zoom.zPTUpdaterUI; do
         /bin/launchctl bootout "$domain" "/Library/LaunchAgents/$label.plist" 2>/dev/null || true
         /bin/launchctl bootout "$domain" "$HOME/Library/LaunchAgents/$label.plist" 2>/dev/null || true
@@ -145,7 +158,13 @@ enum ShellCommands {
     for label in us.zoom.zAutoUpdate us.zoom.ZoomUpdater us.zoom.zPTUpdaterUI; do
       /bin/launchctl enable "gui/$uid/$label" 2>/dev/null || true
     done
-    echo "Zoom updaters stopped for this login session only; they are not disabled and macOS restores them at the next login."
+
+    if [ -n "$stopped" ]; then
+      echo "Stopped Zoom updater processes:$stopped"
+    else
+      echo "No Zoom updater processes were running."
+    fi
+    echo "Updater agents unloaded for this login session only; they are not disabled and macOS restores them at the next login."
     """#
 
     /// The privileged part of the reset: flushing the system DNS cache is the only step
@@ -227,16 +246,20 @@ enum ShellCommands {
         """
     }
 
-    static func makeBackupZoomDataCommand() -> String {
+    /// Copies Zoom's local state aside before it is cleared, keeping only the most
+    /// recent `retainedBackupCount` snapshots. Without pruning, every run left another
+    /// full copy of Zoom's Application Support and Caches on disk forever.
+    static func makeBackupZoomDataCommand(retainedBackupCount: Int = 5) -> String {
         let timestamp = ISO8601DateFormatter().string(from: Date())
             .replacingOccurrences(of: ":", with: "-")
+        let firstStaleEntry = max(retainedBackupCount, 1) + 1
         return """
         # Backups hold Zoom session data: keep them private to the current user.
         umask 077
-        backups_root="$HOME/Library/Application Support/1132Fixer/Backups"
-        backup_dir="$backups_root/\(timestamp)"
-        if ! mkdir -p "$backup_dir" || ! chmod 700 "$backups_root" "$backup_dir"; then
-          echo "Could not create a private backup folder at $backup_dir" >&2
+        backup_root="$HOME/Library/Application Support/1132Fixer/Backups"
+        backup_dir="$backup_root/\(timestamp)"
+        if ! mkdir -p "$backup_dir" || ! chmod 700 "$backup_root" "$backup_dir"; then
+          printf 'Could not create a private backup folder at %s\\n' "$backup_dir" >&2
           exit 1
         fi
 
@@ -248,25 +271,21 @@ enum ShellCommands {
           "$HOME/Library/Saved Application State/us.zoom.xos.savedState"; do
           [ -e "$src" ] || continue
           if ! cp -a "$src" "$backup_dir/" 2>/dev/null; then
-            echo "Could not back up $src" >&2
+            printf 'Could not back up %s\\n' "$src" >&2
             backup_failed=1
           fi
         done
+        # A failed backup must stop the caller before anything is deleted.
         if [ "$backup_failed" -ne 0 ]; then
           exit 1
         fi
 
-        backup_count=0
-        for backup in "$backups_root"/*; do
-          [ -d "$backup" ] || continue
-          backup_count=$((backup_count + 1))
-        done
-        backups_to_delete=$((backup_count - 3))
-        for backup in "$backups_root"/*; do
-          [ "$backups_to_delete" -gt 0 ] || break
-          [ -d "$backup" ] || continue
-          rm -rf "$backup"
-          backups_to_delete=$((backups_to_delete - 1))
+        # Prune older snapshots. Directory names are generated by this app, so they
+        # contain no spaces or newlines.
+        /bin/ls -1t "$backup_root" 2>/dev/null | /usr/bin/tail -n +\(firstStaleEntry) | while IFS= read -r stale; do
+          if [ -n "$stale" ]; then
+            /bin/rm -rf "$backup_root/$stale"
+          fi
         done
 
         echo "$backup_dir"
@@ -281,11 +300,7 @@ enum ShellCommands {
 
         let mac = bytes.map { String(format: "%02x", $0) }.joined(separator: ":")
         guard isValidMACAddress(mac) else {
-            throw NSError(
-                domain: "1132Fixer",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Generate MAC address: Failed to generate a valid MAC address."]
-            )
+            throw AppError.general("Generate MAC address: Failed to generate a valid MAC address.")
         }
         return mac
     }
@@ -317,19 +332,38 @@ enum ShellCommands {
     }
 
     static func parseDefaultRouteInterface(from output: String) throws -> String {
-        for rawLine in output.split(whereSeparator: \.isNewline) {
+        var foundInterface: String?
+        var parseError: Error?
+
+        output.enumerateLines { rawLine, stop in
             let line = rawLine.trimmingCharacters(in: .whitespaces)
-            guard line.hasPrefix("interface:") else { continue }
+            guard line.hasPrefix("interface:") else { return }
 
             let value = line.dropFirst("interface:".count).trimmingCharacters(in: .whitespaces)
             guard isSafeInterfaceName(value) else {
-                throw NSError(domain: "1132Fixer", code: 1, userInfo: [NSLocalizedDescriptionKey: "Detect active network interface: Invalid interface name '\(value)'."])
+                parseError = AppError.general("Detect active network interface: Invalid interface name '\(value)'.")
+                stop = true
+                return
             }
-            try ensureVPNIsNotActive(interfaceName: value)
-            return value
+
+            do {
+                try ensureVPNIsNotActive(interfaceName: value)
+                foundInterface = value
+            } catch {
+                parseError = error
+            }
+            stop = true
         }
 
-        throw NSError(domain: "1132Fixer", code: 1, userInfo: [NSLocalizedDescriptionKey: "Detect active network interface: No default route interface was found. Make sure you are connected to Wi-Fi or Ethernet. If you just disconnected a VPN, wait a few seconds for your connection to restore and try again."])
+        if let parseError {
+            throw parseError
+        }
+
+        if let foundInterface {
+            return foundInterface
+        }
+
+        throw AppError.general("Detect active network interface: No default route interface was found. Make sure you are connected to Wi-Fi or Ethernet. If you just disconnected a VPN, wait a few seconds for your connection to restore and try again.")
     }
 
     static func ensureVPNIsNotActive(interfaceName: String) throws {
@@ -337,11 +371,11 @@ enum ShellCommands {
         let vpnPrefixes = ["utun", "ipsec", "ppp", "tun", "tap"]
 
         if vpnPrefixes.contains(where: normalized.hasPrefix) {
-            throw NSError(domain: "1132Fixer", code: 1, userInfo: [NSLocalizedDescriptionKey: """
+            throw AppError.general("""
 VPN detected on interface '\(interfaceName)'. \
 MAC spoofing cannot work while a VPN is active because the VPN tunnel hides your real network interface. \
 Turn off your VPN, wait a few seconds for your normal connection to restore, and run Start Zoom again.
-"""])
+""")
         }
     }
 
@@ -349,12 +383,12 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         var result: [String: String] = [:]
         var currentHardwarePort: String?
 
-        for rawLine in output.split(whereSeparator: \.isNewline) {
+        output.enumerateLines { rawLine, _ in
             let line = rawLine.trimmingCharacters(in: .whitespaces)
 
             if line.hasPrefix("Hardware Port:") {
                 currentHardwarePort = String(line.dropFirst("Hardware Port:".count)).trimmingCharacters(in: .whitespaces)
-                continue
+                return
             }
 
             if line.hasPrefix("Device:"), let hardwarePort = currentHardwarePort {
@@ -381,7 +415,7 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
             return .ethernet
         }
 
-        throw NSError(domain: "1132Fixer", code: 1, userInfo: [NSLocalizedDescriptionKey: "Detect active network interface: Active interface '\(hardwarePortName)' is not supported. Only Wi-Fi and Ethernet are supported."])
+        throw AppError.general("Detect active network interface: Active interface '\(hardwarePortName)' is not supported. Only Wi-Fi and Ethernet are supported.")
     }
 
     /// Parses `networksetup -listnetworkserviceorder`. Disabled services are listed as
@@ -393,26 +427,26 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         let pattern = #"\(Hardware Port: .*?, Device: ([^)]+)\)"#
         let regex = try? NSRegularExpression(pattern: pattern)
 
-        for rawLine in output.split(whereSeparator: \.isNewline) {
+        output.enumerateLines { rawLine, _ in
             let line = rawLine.trimmingCharacters(in: .whitespaces)
-            guard !line.isEmpty else { continue }
+            guard !line.isEmpty else { return }
 
             // Check the hardware-port line first: a port name such as "Foo (bar)" contains ")"
             // and must not be mistaken for a "(n) Service" line.
             if line.hasPrefix("(Hardware Port:") {
-                guard let serviceName = pendingServiceName, let regex else { continue }
+                guard let serviceName = pendingServiceName, let regex else { return }
                 let nsLine = line as NSString
                 let range = NSRange(location: 0, length: nsLine.length)
-                guard let match = regex.firstMatch(in: line, options: [], range: range), match.numberOfRanges > 1 else { continue }
+                guard let match = regex.firstMatch(in: line, options: [], range: range), match.numberOfRanges > 1 else { return }
 
                 let deviceRange = match.range(at: 1)
-                guard deviceRange.location != NSNotFound else { continue }
+                guard deviceRange.location != NSNotFound else { return }
 
                 let device = nsLine.substring(with: deviceRange).trimmingCharacters(in: .whitespaces)
                 if isSafeInterfaceName(device) {
                     result[device] = serviceName
                 }
-                continue
+                return
             }
 
             if line.hasPrefix("("), let closingParen = line.firstIndex(of: ")"), line.index(after: closingParen) < line.endIndex {
@@ -444,8 +478,107 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         return String(bytes: values, encoding: .ascii) ?? "unknown"
     }
 
+    static func isMacSpoofingBlockedOnWiFi() -> Bool {
+        let isAppleSilicon = machineArchitecture() == "arm64"
+        let isMacOS14OrLater = ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 14
+        return isAppleSilicon && isMacOS14OrLater
+    }
+
     static func isMacSpoofingDisabledForCurrentOS() -> Bool {
         ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 14
+    }
+
+    // MARK: - Network Identity Strategy
+
+    /// How the workflow can change the machine's network identity on this OS and interface.
+    enum NetworkIdentityStrategy: Equatable {
+        /// `ifconfig lladdr` spoofing, which only works reliably before macOS 14.
+        case legacyMACSpoof
+        /// macOS 14+ replacement on Apple Silicon Wi-Fi: cycle the rotating Private Wi-Fi Address.
+        case rotatingPrivateWiFiAddress
+        /// No usable mechanism on this OS/interface combination.
+        case unsupported
+    }
+
+    /// Decides the strategy. The Wi-Fi case is checked *first*: it only ever applies on
+    /// macOS 14+, so testing `isMacSpoofingDisabledForCurrentOS` before it would make the
+    /// rotating-address path unreachable.
+    static func networkIdentityStrategy(
+        isWiFi: Bool,
+        isMacSpoofingBlockedOnWiFi: Bool,
+        isMacSpoofingDisabledForCurrentOS: Bool
+    ) -> NetworkIdentityStrategy {
+        if isWiFi && isMacSpoofingBlockedOnWiFi {
+            return .rotatingPrivateWiFiAddress
+        }
+        if isMacSpoofingDisabledForCurrentOS {
+            return .unsupported
+        }
+        return .legacyMACSpoof
+    }
+
+    /// Strategy for the running system.
+    static func networkIdentityStrategy(isWiFi: Bool) -> NetworkIdentityStrategy {
+        networkIdentityStrategy(
+            isWiFi: isWiFi,
+            isMacSpoofingBlockedOnWiFi: isMacSpoofingBlockedOnWiFi(),
+            isMacSpoofingDisabledForCurrentOS: isMacSpoofingDisabledForCurrentOS()
+        )
+    }
+
+    // MARK: - Private Wi-Fi Address (Rotating MAC)
+
+    static func makeGetPrivateAddressModeCommand(networkService: String) -> String {
+        "/usr/sbin/networksetup -getPrivateNetworkAddress \(shellSingleQuote(networkService)) 2>/dev/null || echo 'unsupported'"
+    }
+
+    static func makeSetPrivateAddressModeCommand(networkService: String, mode: String) -> String {
+        "/usr/sbin/networksetup -setPrivateNetworkAddress \(shellSingleQuote(networkService)) \(shellSingleQuote(mode))"
+    }
+
+    static func normalizePrivateAddressModeOutput(_ output: String) -> String {
+        var normalizedLines: [String] = []
+        var containsNotRecognizedOrUnsupported = false
+
+        output.enumerateLines { rawLine, _ in
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !line.isEmpty {
+                normalizedLines.append(line)
+                if line.contains("not recognized") || line.contains("unsupported") || line.contains("networksetup -printcommands") {
+                    containsNotRecognizedOrUnsupported = true
+                }
+            }
+        }
+
+        for mode in ["rotating", "fixed", "static", "off"] {
+            if normalizedLines.contains(mode) {
+                return mode
+            }
+        }
+
+        if containsNotRecognizedOrUnsupported {
+            return "unsupported"
+        }
+
+        let normalizedOutput = normalizedLines.joined(separator: "\n")
+        for mode in ["rotating", "fixed", "static", "off"] {
+            if normalizedOutput.contains(mode) {
+                return mode
+            }
+        }
+
+        return normalizedOutput.isEmpty ? "unsupported" : normalizedOutput
+    }
+
+    /// Cycles the Wi-Fi interface off then on to generate a new rotating MAC address.
+    /// The interface is always brought back up, even if the down step fails.
+    static func makeRotatingMACResetCommand(device: String) -> String {
+        let off = "/usr/sbin/networksetup -setairportpower \(shellSingleQuote(device)) off"
+        let sleep1 = "/bin/sleep 1"
+        let on = "/usr/sbin/networksetup -setairportpower \(shellSingleQuote(device)) on"
+        let sleep2 = "/bin/sleep 2"
+        // Always run `on`, regardless of whether `off` succeeded
+        return "{ \(off); \(sleep1); } 2>/dev/null || true; \(on); \(sleep2)"
     }
 
     // MARK: - MAC Spoof Command
@@ -473,12 +606,144 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
 
     // Zoom must stay inside sandbox-exec for this app. Do not replace this
     // profile-backed launch with /usr/bin/open or any other normal Zoom launch.
-    static let zoomSandboxProfile = """
+
+    /// Sandbox profile for the running user.
+    static var zoomSandboxProfile: String {
+        makeZoomSandboxProfile(homeDirectory: NSHomeDirectory())
+    }
+
+    /// Home-relative directories Zoom is denied read access to. Zoom needs none of
+    /// them, and macOS treats 1132 Fixer as the TCC *responsible* process for the
+    /// sandboxed session, so without these rules Zoom would inherit this app's
+    /// standing when it reaches for TCC-protected data.
+    ///
+    /// `Application Support/1132Fixer` holds this app's own backups of Zoom's
+    /// previous local state — readable, that is a copy of the very identity the
+    /// workflow just cleared.
+    private static let deniedHomeReadSubpaths = [
+        ".ssh",
+        ".gnupg",
+        ".aws",
+        ".kube",
+        ".docker",
+        ".config",
+        "Library/Keychains",
+        "Library/Containers",
+        "Library/Mail",
+        "Library/Messages",
+        "Library/Safari",
+        "Library/Calendars",
+        "Library/IdentityServices",
+        "Library/Application Support/1132Fixer",
+        "Library/Application Support/AddressBook",
+        "Library/Application Support/BraveSoftware",
+        "Library/Application Support/Firefox",
+        "Library/Application Support/Google/Chrome",
+        "Library/Application Support/Microsoft Edge",
+        "Library/Application Support/MobileSync",
+        "Library/Application Support/com.apple.sharedfilelist",
+        "Pictures/Photos Library.photoslibrary"
+    ]
+
+    private static let deniedHomeReadLiterals = [
+        ".netrc",
+        ".bash_history",
+        ".zsh_history"
+    ]
+
+    /// Home-relative directories Zoom is denied write access to. `Library/LaunchAgents`
+    /// stops the sandboxed session from reinstating the updater agents the workflow
+    /// just unloaded. This lasts only as long as the sandboxed process: the agent
+    /// files are untouched, so Zoom still updates outside this app.
+    private static let deniedHomeWriteSubpaths = [
+        ".ssh",
+        ".gnupg",
+        ".aws",
+        "Library/Keychains",
+        "Library/LaunchAgents",
+        "Library/Application Support/1132Fixer"
+    ]
+
+    /// Returns an absolute home path with trailing slashes trimmed, or `nil` when the
+    /// value cannot anchor a `subpath` rule. `/` is rejected on purpose: anchoring
+    /// these rules at the filesystem root would deny Zoom most of the disk.
+    static func normalizedSandboxHome(_ homeDirectory: String) -> String? {
+        var path = homeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        while path.count > 1 && path.hasSuffix("/") {
+            path.removeLast()
+        }
+        guard path.hasPrefix("/"), path != "/" else { return nil }
+        return path
+    }
+
+    /// Builds the sandbox profile Zoom runs under.
+    ///
+    /// The base stays `(allow default)`. Zoom is closed source, spawns its own capture
+    /// helpers, and this app has no non-sandbox launch path to fall back on, so a
+    /// `(deny default)` profile could not be kept working across Zoom and macOS updates
+    /// — a single missing allow rule would leave users unable to start Zoom at all.
+    /// Everything below is therefore a denylist, and it is written to be exhaustive
+    /// about the two things worth containing:
+    ///
+    /// 1. **Stable hardware identity.** Error 1132 is a device-level ban, so every
+    ///    channel that lets Zoom re-derive the same machine fingerprint is closed:
+    ///    IOKit properties, the `sysctl` identifiers, the command-line tools that
+    ///    report them, and the on-disk files that record network identity.
+    /// 2. **Private user data.** See `deniedHomeReadSubpaths`.
+    ///
+    /// SBPL resolves the *last* matching rule, so the denies below override the blanket
+    /// allows above them, and the home allow-back overrides the `/Users` deny. Rule
+    /// order in this profile is load-bearing.
+    static func makeZoomSandboxProfile(homeDirectory: String) -> String {
+        var profile = zoomSandboxProfilePrefix
+
+        guard let home = normalizedSandboxHome(homeDirectory) else {
+            return profile
+        }
+
+        let homeLiteral = sandboxStringLiteral(home)
+        let readSubpaths = deniedHomeReadSubpaths
+            .map { "    (subpath \(sandboxStringLiteral("\(home)/\($0)")))" }
+            .joined(separator: "\n")
+        let readLiterals = deniedHomeReadLiterals
+            .map { "    (literal \(sandboxStringLiteral("\(home)/\($0)")))" }
+            .joined(separator: "\n")
+        let writeSubpaths = deniedHomeWriteSubpaths
+            .map { "    (subpath \(sandboxStringLiteral("\(home)/\($0)")))" }
+            .joined(separator: "\n")
+
+        profile += """
+
+
+        ; Other users' files. Allowed back for this user's own home immediately
+        ; below, so the deny only covers accounts Zoom has no business reading.
+        (deny file-read* (subpath "/Users"))
+        (allow file-read* (subpath \(homeLiteral)))
+        (allow file-read* (subpath "/Users/Shared"))
+
+        ; Private data inside this user's own home.
+        (deny file-read*
+        \(readSubpaths)
+        \(readLiterals)
+        )
+
+        (deny file-write*
+        \(writeSubpaths)
+        )
+        """
+
+        return profile
+    }
+
+    private static let zoomSandboxProfilePrefix = """
     (version 1)
     (allow default)
 
     ; Camera and microphone access must remain explicit because Zoom runs under
     ; sandbox-exec for the full session, including helper-based video capture.
+    ; These allows are redundant while the default is `allow`; they stay because
+    ; they record the exact set the capture path needs, and the denies further
+    ; down must never grow to cover any of it.
     (allow device-camera)
     (allow device-microphone)
     (allow iokit-get-properties)
@@ -529,14 +794,85 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         (global-name "com.apple.windowserver.active")
     )
 
+    ; Stable hardware identity, which is what a 1132 device ban keys on.
+    ;
+    ; Every key below lives on the platform-expert or device-tree node, so denying
+    ; it costs Zoom nothing. Generic keys that also appear on peripherals --
+    ; "model", "manufacturer", "SerialNumber" -- are deliberately absent: an
+    ; iokit-property filter matches on every registry entry, so denying those
+    ; would break camera and USB device enumeration.
     (deny iokit-get-properties
         (iokit-property "IOPlatformSerialNumber")
         (iokit-property "IOPlatformUUID")
-        (iokit-property "board-id")
         (iokit-property "IOMACAddress")
+        (iokit-property "board-id")
+        (iokit-property "chip-id")
+        (iokit-property "die-id")
+        (iokit-property "local-mac-address")
+        (iokit-property "mlb-serial-number")
+        (iokit-property "model-number")
+        (iokit-property "nvram-proxy-data")
+        (iokit-property "platform-uuid")
+        (iokit-property "region-info")
+        (iokit-property "regulatory-model-number")
+        (iokit-property "serial-number")
+        (iokit-property "system-serial-number")
+        (iokit-property "target-type")
+        (iokit-property "unique-chip-id")
     )
-    (deny file-read-data
+
+    ; Per-machine sysctl identifiers. Low-entropy ones such as hw.model and
+    ; machdep.cpu.brand_string stay readable: they are shared by millions of
+    ; machines and Zoom uses them to pick codecs.
+    (deny sysctl-read
+        (sysctl-name "hw.serialnumber")
+        (sysctl-name "hw.uuid")
+        (sysctl-name "kern.uuid")
+    )
+
+    ; The command-line tools that report the same identifiers. Zoom has no reason
+    ; to shell out to any of them, and the in-process equivalents are already
+    ; denied above.
+    (deny process-exec
+        (literal "/bin/hostname")
+        (literal "/sbin/ifconfig")
+        (literal "/usr/bin/dscl")
+        (literal "/usr/libexec/remotectl")
+        (literal "/usr/sbin/arp")
+        (literal "/usr/sbin/diskutil")
+        (literal "/usr/sbin/ioreg")
+        (literal "/usr/sbin/netstat")
+        (literal "/usr/sbin/networksetup")
+        (literal "/usr/sbin/nvram")
+        (literal "/usr/sbin/scutil")
+        (literal "/usr/sbin/sysctl")
+        (literal "/usr/sbin/system_profiler")
+    )
+
+    ; On-disk records of network and machine identity. The airport and network
+    ; identification plists are the strongest of these: they hold the history of
+    ; every Wi-Fi network and router this Mac has joined.
+    (deny file-read*
         (literal "/Library/Preferences/SystemConfiguration/NetworkInterfaces.plist")
+        (literal "/Library/Preferences/SystemConfiguration/com.apple.airport.preferences.plist")
+        (literal "/Library/Preferences/SystemConfiguration/com.apple.network.identification.plist")
+        (literal "/Library/Preferences/SystemConfiguration/preferences.plist")
+        (literal "/Library/Preferences/com.apple.Bluetooth.plist")
+        (literal "/private/var/db/SystemKey")
+        (subpath "/Library/Application Support/CrashReporter")
+        (subpath "/private/var/db/ConfigurationProfiles")
+        (subpath "/private/var/db/dslocal")
+    )
+
+    ; System-wide credentials and persistence.
+    (deny file-read*
+        (subpath "/Library/Keychains")
+        (subpath "/private/etc/ssh")
+    )
+    (deny file-write*
+        (subpath "/Library/Keychains")
+        (subpath "/Library/LaunchAgents")
+        (subpath "/Library/LaunchDaemons")
     )
     """
 
@@ -555,23 +891,35 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         makeLaunchZoomCommand(zoomBinaryPath: zoomBinaryPath, zoomBinaryExists: zoomBinaryExists)
     }
 
+    /// Builds the launch script that the caller hands to `/bin/bash -c`.
+    ///
+    /// The script must never wrap itself in another `/bin/bash -c '...'`: the single
+    /// quotes produced by `shellSingleQuote` would close that wrapper's quoting, so the
+    /// interpolated Zoom path would reach the outer shell unquoted. Interpolate paths
+    /// only through `shellSingleQuote`, and reference them as `"$zoom_binary"`.
     static func makeLaunchZoomCommand(zoomBinaryPath: String, zoomBinaryExists: Bool) -> String {
+        let quotedBinaryPath = shellSingleQuote(zoomBinaryPath)
+
         guard zoomBinaryExists else {
             return """
+            zoom_binary=\(quotedBinaryPath)
             echo "Launch mode: sandboxRequiredMissingBinary"
-            echo "Error: Zoom must be launched in sandbox mode, but the Zoom binary was not found at \(zoomBinaryPath). Install Zoom from https://zoom.us/download, or pick the correct Zoom location in 1132 Fixer, and try again."
+            echo "Error: Zoom must be launched in sandbox mode, but the Zoom binary was not found at $zoom_binary. Install Zoom from https://zoom.us/download, or pick the correct Zoom location in 1132 Fixer, and try again."
             exit 1
             """
         }
 
         let encodedProfile = Data(zoomSandboxProfile.utf8).base64EncodedString()
         return """
-        /bin/bash -c '
         set -u
 
-        zoom_binary=\(shellSingleQuote(zoomBinaryPath))
+        zoom_binary=\(quotedBinaryPath)
         encoded_profile=\(shellSingleQuote(encodedProfile))
-        profile_path="$(/usr/bin/mktemp "/tmp/1132fixer.zoom-sandbox.XXXXXX")" || exit 1
+
+        # The per-user TMPDIR (mode 0700) rather than /tmp, which every local
+        # account can write to and list.
+        tmp_dir="${TMPDIR:-/tmp}"
+        profile_path="$(/usr/bin/mktemp "${tmp_dir%/}/1132fixer.zoom-sandbox.XXXXXX")" || exit 1
 
         cleanup() {
           /bin/rm -f "$profile_path"
@@ -621,6 +969,15 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         trap cleanup EXIT
         /bin/echo "$encoded_profile" | /usr/bin/base64 --decode > "$profile_path" || exit 1
 
+        # Compile the profile before touching the running Zoom. A rejected rule
+        # would otherwise surface as an unexplained failure to launch, and Zoom
+        # would already have been killed by then. This fails closed: there is no
+        # unsandboxed retry.
+        if ! profile_error="$(/usr/bin/sandbox-exec -f "$profile_path" /usr/bin/true 2>&1)"; then
+          echo "Error: macOS rejected the Zoom sandbox profile, so Zoom was not started. Details: $profile_error" >&2
+          exit 1
+        fi
+
         # Sandbox mode is required for 1132 Fixer. Normal Zoom launch mode does
         # not work for this workflow, so there is intentionally no open -a
         # fallback here.
@@ -649,7 +1006,6 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
 
         echo "Heuristic: sandbox launch stabilized = no"
         exit 1
-        '
         """
     }
 }
