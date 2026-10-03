@@ -4,3 +4,4 @@
 /Sources/1132Fixer/*.swift @patricktobias86 @high-texas
 /.github/CODEOWNERS @patricktobias86 @high-texas
 /.github/workflows/brand.yml @patricktobias86 @high-texas
+/.github/workflows/build.yml @patricktobias86 @high-texas
