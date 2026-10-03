@@ -373,6 +373,16 @@ struct ShellCommandsTests {
         #expect(!ShellCommands.isSafeHomeDirectory("~"))
     }
 
+    // MARK: - Backup
+
+    @Test func backupCommandIsPrivateAndFailsOnError() {
+        let cmd = ShellCommands.makeBackupZoomDataCommand()
+        #expect(cmd.contains("umask 077"))
+        #expect(cmd.contains("chmod 700"))
+        #expect(cmd.contains("exit 1"))
+        #expect(!cmd.contains("|| true"))
+    }
+
     // MARK: - Machine Architecture
 
     @Test func machineArchitecture() {

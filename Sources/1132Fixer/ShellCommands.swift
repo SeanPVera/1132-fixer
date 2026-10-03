@@ -231,16 +231,30 @@ enum ShellCommands {
         let timestamp = ISO8601DateFormatter().string(from: Date())
             .replacingOccurrences(of: ":", with: "-")
         return """
+        # Backups hold Zoom session data: keep them private to the current user.
+        umask 077
         backups_root="$HOME/Library/Application Support/1132Fixer/Backups"
         backup_dir="$backups_root/\(timestamp)"
-        mkdir -p "$backup_dir"
+        if ! mkdir -p "$backup_dir" || ! chmod 700 "$backups_root" "$backup_dir"; then
+          echo "Could not create a private backup folder at $backup_dir" >&2
+          exit 1
+        fi
+
+        backup_failed=0
         for src in \
           "$HOME/Library/Application Support/zoom.us" \
           "$HOME/Library/Caches/us.zoom.xos" \
           "$HOME/Library/Preferences/us.zoom.xos.plist" \
           "$HOME/Library/Saved Application State/us.zoom.xos.savedState"; do
-          [ -e "$src" ] && cp -a "$src" "$backup_dir/" 2>/dev/null || true
+          [ -e "$src" ] || continue
+          if ! cp -a "$src" "$backup_dir/" 2>/dev/null; then
+            echo "Could not back up $src" >&2
+            backup_failed=1
+          fi
         done
+        if [ "$backup_failed" -ne 0 ]; then
+          exit 1
+        fi
 
         backup_count=0
         for backup in "$backups_root"/*; do

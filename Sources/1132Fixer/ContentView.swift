@@ -223,6 +223,7 @@ final class AppViewModel: ObservableObject {
             self.workflowState = .backingUpState
             self.markStepRunning("backup")
             self.appendLog("Step: Backup Zoom local state")
+            var backupSucceeded = true
             do {
                 let output = try await self.runProcess(
                     stepName: "Backup Zoom state",
@@ -234,9 +235,21 @@ final class AppViewModel: ObservableObject {
                 self.markStepDone("backup", succeeded: true)
                 results.append(.init(id: "backup", name: "Backup State", succeeded: true, detail: backupPath.isEmpty ? nil : "Saved to \(backupPath)"))
             } catch {
+                backupSucceeded = false
                 self.markStepDone("backup", succeeded: false)
                 results.append(.init(id: "backup", name: "Backup State", succeeded: false, detail: error.localizedDescription))
-                self.appendLog("Warning: Backup failed, continuing anyway: \(error.localizedDescription)")
+                self.appendLog("Error: Backup failed: \(error.localizedDescription)")
+            }
+
+            // Never delete Zoom's local state without a backup of it.
+            guard backupSucceeded else {
+                let message = "Backup failed, so Zoom's local data was not cleared and nothing was deleted. Fix the backup problem (for example free disk space) and run Start Zoom again."
+                self.markStepSkipped("resetData")
+                self.markStepSkipped("dns")
+                results.append(.init(id: "resetData", name: "Clear Local State", succeeded: false, detail: "Skipped: backup failed."))
+                results.append(.init(id: "dns", name: "DNS Flush", succeeded: false, detail: "Skipped: backup failed."))
+                self.lastRunResults = results
+                throw self.appError(message)
             }
 
             // 4. Reset Zoom data. Runs as the current user: no administrator prompt is needed.
