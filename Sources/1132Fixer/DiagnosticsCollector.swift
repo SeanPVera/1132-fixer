@@ -74,7 +74,17 @@ enum DiagnosticsCollector {
         run("/usr/bin/pgrep", ["-x", name]) != nil
     }
 
-    private static func run(_ executable: String, _ arguments: [String]) -> String? {
+    /// Runs a tool directly (no shell) and returns its trimmed stdout, or `nil` on failure.
+    ///
+    /// The pipe is read to EOF *before* waiting for exit. Waiting first deadlocks once the
+    /// tool writes more than the pipe buffer (about 64 KB): it blocks writing while this
+    /// side blocks waiting.
+    ///
+    /// This is synchronous and `makeSnapshot()` runs several of these, so callers on the main
+    /// thread (diagnostics export and bug reports are built from `AppViewModel`) block it
+    /// briefly. The tools involved are fast; moving the snapshot off the main actor would
+    /// need an async API and is left as a follow-up.
+    static func run(_ executable: String, _ arguments: [String]) -> String? {
         let process = Process()
         let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -84,9 +94,10 @@ enum DiagnosticsCollector {
 
         do {
             try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             guard process.terminationStatus == 0 else { return nil }
-            return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            return String(data: data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
             return nil
