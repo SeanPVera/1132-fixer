@@ -295,6 +295,16 @@ struct ShellCommandsTests {
         #expect(!cmd.contains("/usr/bin/sandbox-exec"))
     }
 
+    // MARK: - Updaters
+
+    @Test func stopZoomUpdatersNeverDisablesServicesPersistently() {
+        let cmd = ShellCommands.stopZoomUpdaters
+        #expect(!cmd.contains("launchctl disable"))
+        #expect(cmd.contains("launchctl bootout"))
+        // Clears any override left behind by older versions of the app.
+        #expect(cmd.contains("launchctl enable"))
+    }
+
     // MARK: - Machine Architecture
 
     @Test func machineArchitecture() {

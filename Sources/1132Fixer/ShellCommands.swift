@@ -100,18 +100,33 @@ enum ShellCommands {
     fi
     """#
 
+    /// Stops Zoom's updaters for the current login session only.
+    ///
+    /// This must stay non-persistent: `launchctl disable` survives reboots and nothing in
+    /// this app would ever undo it, which would leave Zoom without security updates.
+    /// `pkill` and `launchctl bootout` only unload the jobs until the next login.
+    ///
+    /// The final loop clears any "disabled" override that earlier 1132 Fixer versions left
+    /// behind with `launchctl disable`, so users upgrading from those versions get their
+    /// updaters back. `launchctl enable` only removes the override; it does not start the job.
     static let stopZoomUpdaters = #"""
+    uid="$(/usr/bin/id -u)"
+
     for proc in zAutoUpdate zPTUpdaterUI ZoomUpdater; do
       /usr/bin/pkill -x "$proc" 2>/dev/null || true
     done
 
-    for domain in gui/"$(/usr/bin/id -u)" user; do
+    for domain in gui/"$uid" user/"$uid"; do
       for label in us.zoom.zAutoUpdate us.zoom.ZoomUpdater us.zoom.zPTUpdaterUI; do
         /bin/launchctl bootout "$domain" "/Library/LaunchAgents/$label.plist" 2>/dev/null || true
         /bin/launchctl bootout "$domain" "$HOME/Library/LaunchAgents/$label.plist" 2>/dev/null || true
-        /bin/launchctl disable "$domain/$label" 2>/dev/null || true
       done
     done
+
+    for label in us.zoom.zAutoUpdate us.zoom.ZoomUpdater us.zoom.zPTUpdaterUI; do
+      /bin/launchctl enable "gui/$uid/$label" 2>/dev/null || true
+    done
+    echo "Zoom updaters stopped for this login session only; they are not disabled and macOS restores them at the next login."
     """#
 
     static func makeResetAndRefreshDNSCommand(homeDirectory: String) -> String {
