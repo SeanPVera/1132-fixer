@@ -171,6 +171,10 @@ final class AppViewModel: ObservableObject {
         runTask("Start Zoom") {
             var results: [StepResult] = []
 
+            // 0. Fail fast, before anything is closed or deleted, if the Zoom bundle is not genuine.
+            self.appendLog("Step: Verify Zoom app signature")
+            _ = try await self.verifiedZoomBinaryPath()
+
             // 1. Close Zoom
             self.workflowState = .closingZoom
             self.markStepRunning("closeZoom")
@@ -313,10 +317,12 @@ final class AppViewModel: ObservableObject {
             self.markStepRunning("launch")
             self.appendLog("Step: Launch Zoom")
             do {
+                // Verify again at launch time: the location may have changed since the start of the run.
+                let verifiedBinaryPath = try await self.verifiedZoomBinaryPath()
                 let output = try await self.runProcess(
                     stepName: "Launch Zoom",
                     executable: Constants.bashPath,
-                    arguments: ["-c", ShellCommands.makeLaunchZoomCommand(zoomBinaryPath: self.zoomBinaryPath)],
+                    arguments: ["-c", ShellCommands.makeLaunchZoomCommand(zoomBinaryPath: verifiedBinaryPath)],
                     timeout: 120
                 )
                 self.markStepDone("launch", succeeded: true)
@@ -957,6 +963,18 @@ If your network connection is disrupted after this step:
         ShellCommands.makeLaunchZoomCommand(zoomBinaryPath: zoomBinaryPath)
     }
 
+    /// Verifies the Zoom bundle currently in effect (name, symlinks and code signature) off
+    /// the main actor and returns the verified, symlink-resolved executable path. Called
+    /// before any destructive step and again right before launch, because the custom
+    /// location lives in `UserDefaults` and can change at any time.
+    private func verifiedZoomBinaryPath() async throws -> String {
+        let appPath = zoomAppPath
+        let verified = try await Task.detached(priority: .userInitiated) {
+            try ZoomBundleVerifier.verify(appPath: appPath)
+        }.value
+        return verified.binaryPath
+    }
+
     // MARK: - Zoom Location
 
     /// Prompts the user to choose a `zoom.us.app` bundle when Zoom is installed
@@ -979,6 +997,14 @@ If your network connection is disrupted after this step:
         guard let validated = ZoomLocation.validatedAppPath(selectedPath) else {
             appendLog("Selected app is not a valid Zoom installation: \(selectedPath)")
             workflowState = .failed("The selected app does not contain the Zoom executable. Choose 'zoom.us.app'.")
+            return
+        }
+
+        do {
+            _ = try ZoomBundleVerifier.verify(appPath: validated)
+        } catch {
+            appendLog("Selected app was rejected: \(error.localizedDescription)")
+            workflowState = .failed(error.localizedDescription)
             return
         }
 

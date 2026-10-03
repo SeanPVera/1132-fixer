@@ -39,9 +39,13 @@ enum ZoomLocation {
 
     /// Validates that a chosen bundle path is a `zoom.us.app` containing the Zoom
     /// executable. Returns the normalized bundle path, or `nil` if invalid.
+    ///
+    /// This is a cheap structural check. The code signature is verified separately by
+    /// `ZoomBundleVerifier`, both when a location is chosen and again right before launch.
     static func validatedAppPath(_ selectedPath: String) -> String? {
         let path = selectedPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty else { return nil }
+        guard ZoomBundleVerifier.hasZoomBundleName(path) else { return nil }
         let binary = ShellCommands.zoomBinaryPath(forAppPath: path)
         guard FileManager.default.fileExists(atPath: binary) else { return nil }
         return path
