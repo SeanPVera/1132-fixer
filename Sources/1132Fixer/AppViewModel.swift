@@ -55,6 +55,24 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    private final class LockedFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+
+        func set() {
+            lock.lock()
+            value = true
+            lock.unlock()
+        }
+
+        var isSet: Bool {
+            lock.lock()
+            let snapshot = value
+            lock.unlock()
+            return snapshot
+        }
+    }
+
     private static let logTimestampFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         return formatter
@@ -66,6 +84,7 @@ final class AppViewModel: ObservableObject {
         return formatter
     }()
     private static let diagnosticsFileName = "1132Fixer-diagnostics.txt"
+    private static let maxInMemoryLogEntries = 5_000
 
     enum WorkflowState: Equatable {
         case idle
@@ -81,14 +100,47 @@ final class AppViewModel: ObservableObject {
         case launchingZoom
         case completed
         case failed(String)
+        case canceling
         case canceled
     }
 
     struct StepResult: Identifiable, Equatable {
+        enum Outcome: String, Equatable {
+            case success
+            case warning
+            case skipped
+            case failed
+
+            var label: String {
+                switch self {
+                case .success: return "OK"
+                case .warning: return "WARN"
+                case .skipped: return "SKIP"
+                case .failed: return "FAIL"
+                }
+            }
+
+            var accessibilityLabel: String {
+                switch self {
+                case .success: return "Succeeded"
+                case .warning: return "Warning"
+                case .skipped: return "Skipped"
+                case .failed: return "Failed"
+                }
+            }
+        }
+
         let id: String
         let name: String
-        let succeeded: Bool
+        let outcome: Outcome
         let detail: String?
+
+        init(id: String, name: String, outcome: Outcome, detail: String? = nil) {
+            self.id = id
+            self.name = name
+            self.outcome = outcome
+            self.detail = detail
+        }
     }
 
     struct PreflightInfo: Equatable {
@@ -103,6 +155,15 @@ final class AppViewModel: ObservableObject {
             let label: String
             let value: String
             let isWarning: Bool
+            let isBlocking: Bool
+
+            init(id: String, label: String, value: String, isWarning: Bool, isBlocking: Bool = false) {
+                self.id = id
+                self.label = label
+                self.value = value
+                self.isWarning = isWarning
+                self.isBlocking = isBlocking
+            }
         }
 
         var status: Status = .loading
@@ -117,19 +178,23 @@ final class AppViewModel: ObservableObject {
             var state: StepState
         }
         enum StepState: Equatable {
-            case pending, running, succeeded, failed, skipped
+            case pending, running, succeeded, warning, failed, skipped
         }
         var steps: [Step] = []
         var currentStepIndex: Int = 0
     }
 
     @Published var isRunning = false
+    @Published var isCanceling = false
     @Published var workflowState: WorkflowState = .idle
     @Published var preflight = PreflightInfo()
     @Published var lastRunResults: [StepResult]?
     @Published var workflowProgress: WorkflowProgress?
+    @Published private(set) var latestBackupPath: String? = BackupStore.latestBackupURL()?.path
     private var runningTask: Task<Void, Never>?
-    private var currentProcess: Process?
+    private var preflightTask: Task<Void, Never>?
+    private var runGate = WorkflowRunGate()
+    private var activePreflightID: UUID?
     private let stopZoomCommand = ShellCommands.stopZoom
     private let stopZoomUpdatersCommand = ShellCommands.stopZoomUpdaters
 
@@ -137,18 +202,26 @@ final class AppViewModel: ObservableObject {
     /// `/Applications` location; a non-nil value is a user-selected location.
     @Published var customZoomAppPath: String? = ZoomLocation.customAppPath
 
-    /// The effective Zoom executable path (default or user-selected).
-    private var zoomBinaryPath: String { ZoomLocation.binaryPath }
-
     /// The effective `zoom.us.app` bundle path (default or user-selected).
     var zoomAppPath: String { ZoomLocation.appPath }
 
+    var canStartZoom: Bool {
+        guard case .ready = preflight.status else { return false }
+        return !preflight.checks.contains(where: \.isBlocking) && !isRunning
+    }
+
     func startZoom() {
+        guard canStartZoom else {
+            appendLog("Start Zoom is unavailable until required preflight checks pass.")
+            return
+        }
+
         lastRunResults = nil
         initProgress(steps: [
+            ("validate", "Safety Check"),
             ("closeZoom", "Close Zoom"),
-            ("network", ShellCommands.isMacSpoofingDisabledForCurrentOS() ? "Network Check" : "MAC Spoof & Network"),
             ("backup", "Backup State"),
+            ("network", ShellCommands.isMacSpoofingDisabledForCurrentOS() ? "Network Check" : "MAC Spoof & Network"),
             ("resetData", "Clear Local State"),
             ("dns", "DNS Flush"),
             ("updaters", "Stop Updaters"),
@@ -157,10 +230,34 @@ final class AppViewModel: ObservableObject {
         ])
         runTask("Start Zoom") {
             var results: [StepResult] = []
+            defer { self.lastRunResults = results }
 
-            // 0. Fail fast, before anything is closed or deleted, if the Zoom bundle is not genuine.
-            self.appendLog("Step: Verify Zoom app signature")
-            _ = try await self.verifiedZoomBinaryPath()
+            // 0. Fail fast before anything is closed or changed. This verifies both the
+            // selected Zoom bundle and the exact sandbox profile used at launch time.
+            self.workflowState = .preflight
+            self.markStepRunning("validate")
+            self.appendLog("Step: Verify Zoom signature and required sandbox profile")
+            do {
+                _ = try await self.verifiedZoomBinaryPath()
+                let output = try await self.runProcess(
+                    stepName: "Validate Zoom sandbox profile",
+                    executable: Constants.bashPath,
+                    arguments: ["-c", ShellCommands.makeSandboxProfileValidationCommand()],
+                    timeout: 15
+                )
+                self.markStepDone("validate", succeeded: true)
+                results.append(.init(
+                    id: "validate",
+                    name: "Safety Check",
+                    outcome: .success,
+                    detail: output.trimmingCharacters(in: .whitespacesAndNewlines)
+                ))
+            } catch {
+                try Task.checkCancellation()
+                self.markStepDone("validate", succeeded: false)
+                results.append(.init(id: "validate", name: "Safety Check", outcome: .failed, detail: error.localizedDescription))
+                throw error
+            }
 
             // 1. Close Zoom
             self.workflowState = .closingZoom
@@ -173,70 +270,70 @@ final class AppViewModel: ObservableObject {
                     arguments: ["-c", self.stopZoomCommand]
                 )
                 self.markStepDone("closeZoom", succeeded: true)
-                results.append(.init(id: "closeZoom", name: "Close Zoom", succeeded: true, detail: output.isEmpty ? nil : output))
+                results.append(.init(id: "closeZoom", name: "Close Zoom", outcome: .success, detail: output.isEmpty ? nil : output))
             } catch {
+                try Task.checkCancellation()
                 self.markStepDone("closeZoom", succeeded: false)
-                results.append(.init(id: "closeZoom", name: "Close Zoom", succeeded: false, detail: error.localizedDescription))
-                self.appendLog("Warning: \(error.localizedDescription)")
+                results.append(.init(id: "closeZoom", name: "Close Zoom", outcome: .failed, detail: error.localizedDescription))
+                throw self.appError("Zoom could not be closed safely, so no backup, network, or data changes were made. \(error.localizedDescription)")
             }
 
-            // 2. Network handling
-            self.workflowState = ShellCommands.isMacSpoofingDisabledForCurrentOS() ? .checkingNetwork : .spoofingMAC
-            self.markStepRunning("network")
-            self.appendLog(ShellCommands.isMacSpoofingDisabledForCurrentOS()
-                ? "Step: Check active network; MAC spoofing is disabled on macOS 14+"
-                : "Step: Spoof MAC and reconnect active network (admin prompt expected)")
-            let macSpoofResult: MACSpoofResult
-            do {
-                macSpoofResult = try await self.spoofMACAndReconnectActiveInterface()
-                if macSpoofResult.wasSkipped {
-                    self.markStepSkipped("network")
-                } else {
-                    self.markStepDone("network", succeeded: !macSpoofResult.hasWarning)
-                }
-                results.append(.init(
-                    id: "network",
-                    name: ShellCommands.isMacSpoofingDisabledForCurrentOS() ? "Network Check" : "MAC Spoof & Network",
-                    succeeded: !macSpoofResult.hasWarning,
-                    detail: macSpoofResult.summary
-                ))
-            } catch {
-                macSpoofResult = MACSpoofResult(summary: "Network step skipped: \(error.localizedDescription)", hasWarning: true, wasSkipped: true)
-                self.markStepDone("network", succeeded: false)
-                results.append(.init(id: "network", name: "Network Check", succeeded: false, detail: error.localizedDescription))
-            }
-
-            // 3. Backup Zoom state
+            // 2. Back up Zoom state before any network mutation or deletion.
             self.workflowState = .backingUpState
             self.markStepRunning("backup")
             self.appendLog("Step: Backup Zoom local state")
-            var backupSucceeded = true
             do {
                 let output = try await self.runProcess(
                     stepName: "Backup Zoom state",
                     executable: Constants.bashPath,
                     arguments: ["-c", ShellCommands.makeBackupZoomDataCommand()],
-                    timeout: 30
+                    timeout: 60
                 )
                 let backupPath = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !backupPath.isEmpty else {
+                    throw self.appError("Backup completed without returning a recovery location.")
+                }
+                self.latestBackupPath = backupPath
                 self.markStepDone("backup", succeeded: true)
-                results.append(.init(id: "backup", name: "Backup State", succeeded: true, detail: backupPath.isEmpty ? nil : "Saved to \(backupPath)"))
+                results.append(.init(id: "backup", name: "Backup State", outcome: .success, detail: "Saved to \(backupPath)"))
             } catch {
-                backupSucceeded = false
+                try Task.checkCancellation()
                 self.markStepDone("backup", succeeded: false)
-                results.append(.init(id: "backup", name: "Backup State", succeeded: false, detail: error.localizedDescription))
-                self.appendLog("Error: Backup failed: \(error.localizedDescription)")
+                results.append(.init(id: "backup", name: "Backup State", outcome: .failed, detail: error.localizedDescription))
+                throw self.appError("Backup failed, so no network or Zoom data changes were made. \(error.localizedDescription)")
             }
 
-            // Never delete Zoom's local state without a backup of it.
-            guard backupSucceeded else {
-                let message = "Backup failed, so Zoom's local data was not cleared and nothing was deleted. Fix the backup problem (for example free disk space) and run Start Zoom again."
-                self.markStepSkipped("resetData")
-                self.markStepSkipped("dns")
-                results.append(.init(id: "resetData", name: "Clear Local State", succeeded: false, detail: "Skipped: backup failed."))
-                results.append(.init(id: "dns", name: "DNS Flush", succeeded: false, detail: "Skipped: backup failed."))
-                self.lastRunResults = results
-                throw self.appError(message)
+            // 3. Network handling. Failures are non-destructive warnings because the
+            // private backup already exists and the remaining Zoom reset can still help.
+            self.workflowState = ShellCommands.isMacSpoofingDisabledForCurrentOS() ? .checkingNetwork : .spoofingMAC
+            self.markStepRunning("network")
+            self.appendLog(ShellCommands.isMacSpoofingDisabledForCurrentOS()
+                ? "Step: Check active network; legacy MAC spoofing is disabled on macOS 14+"
+                : "Step: Spoof MAC and reconnect active network (admin prompt expected)")
+            do {
+                let networkResult = try await self.spoofMACAndReconnectActiveInterface()
+                let outcome: StepResult.Outcome
+                if networkResult.wasSkipped {
+                    outcome = .skipped
+                    self.markStepSkipped("network")
+                } else if networkResult.hasWarning {
+                    outcome = .warning
+                    self.markStepWarning("network")
+                } else {
+                    outcome = .success
+                    self.markStepDone("network", succeeded: true)
+                }
+                results.append(.init(
+                    id: "network",
+                    name: ShellCommands.isMacSpoofingDisabledForCurrentOS() ? "Network Check" : "MAC Spoof & Network",
+                    outcome: outcome,
+                    detail: networkResult.summary
+                ))
+            } catch {
+                try Task.checkCancellation()
+                self.markStepWarning("network")
+                results.append(.init(id: "network", name: "Network Check", outcome: .warning, detail: error.localizedDescription))
+                self.appendLog("Warning: Network identity was not changed: \(error.localizedDescription)")
             }
 
             // 4. Reset Zoom data
@@ -258,16 +355,21 @@ final class AppViewModel: ObservableObject {
                 let resetSucceeded = lines.contains("__1132_RESET_STATUS__=0")
                 let detail = lines.filter { !$0.hasPrefix("__1132_") }.joined(separator: "\n")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                self.markStepDone("resetData", succeeded: resetSucceeded)
-                results.append(.init(id: "resetData", name: "Clear Local State", succeeded: resetSucceeded,
+                if resetSucceeded {
+                    self.markStepDone("resetData", succeeded: true)
+                } else {
+                    self.markStepWarning("resetData")
+                }
+                results.append(.init(id: "resetData", name: "Clear Local State", outcome: resetSucceeded ? .success : .warning,
                                      detail: resetSucceeded ? (detail.isEmpty ? nil : detail) : "Could not clear all Zoom data. \(detail)"))
             } catch {
-                self.markStepDone("resetData", succeeded: false)
-                results.append(.init(id: "resetData", name: "Clear Local State", succeeded: false, detail: error.localizedDescription))
+                try Task.checkCancellation()
+                self.markStepWarning("resetData")
+                results.append(.init(id: "resetData", name: "Clear Local State", outcome: .warning, detail: error.localizedDescription))
                 self.appendLog("Warning: \(error.localizedDescription)")
             }
 
-            // 5. DNS flush. This is the only step that needs administrator privileges.
+            // 5. DNS flush. macOS requests administrator privileges for this step.
             self.workflowState = .flushingDNS
             self.markStepRunning("dns")
             self.appendLog("Step: Refresh DNS cache (admin prompt may appear)")
@@ -286,12 +388,17 @@ final class AppViewModel: ObservableObject {
                 let dnsSucceeded = lines.contains("__1132_DNS_STATUS__=0")
                 let detail = lines.filter { !$0.hasPrefix("__1132_") }.joined(separator: "\n")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                self.markStepDone("dns", succeeded: dnsSucceeded)
-                results.append(.init(id: "dns", name: "DNS Flush", succeeded: dnsSucceeded,
+                if dnsSucceeded {
+                    self.markStepDone("dns", succeeded: true)
+                } else {
+                    self.markStepWarning("dns")
+                }
+                results.append(.init(id: "dns", name: "DNS Flush", outcome: dnsSucceeded ? .success : .warning,
                                      detail: dnsSucceeded ? (detail.isEmpty ? nil : detail) : "Could not refresh DNS cache. \(detail)"))
             } catch {
-                self.markStepDone("dns", succeeded: false)
-                results.append(.init(id: "dns", name: "DNS Flush", succeeded: false, detail: error.localizedDescription))
+                try Task.checkCancellation()
+                self.markStepWarning("dns")
+                results.append(.init(id: "dns", name: "DNS Flush", outcome: .warning, detail: error.localizedDescription))
                 self.appendLog("Warning: \(error.localizedDescription)")
             }
 
@@ -306,10 +413,11 @@ final class AppViewModel: ObservableObject {
                     arguments: ["-c", self.stopZoomUpdatersCommand]
                 )
                 self.markStepDone("updaters", succeeded: true)
-                results.append(.init(id: "updaters", name: "Stop Updaters", succeeded: true, detail: output.isEmpty ? nil : output))
+                results.append(.init(id: "updaters", name: "Stop Updaters", outcome: .success, detail: output.isEmpty ? nil : output))
             } catch {
-                self.markStepDone("updaters", succeeded: false)
-                results.append(.init(id: "updaters", name: "Stop Updaters", succeeded: false, detail: error.localizedDescription))
+                try Task.checkCancellation()
+                self.markStepWarning("updaters")
+                results.append(.init(id: "updaters", name: "Stop Updaters", outcome: .warning, detail: error.localizedDescription))
                 self.appendLog("Warning: \(error.localizedDescription)")
             }
 
@@ -324,10 +432,11 @@ final class AppViewModel: ObservableObject {
             do {
                 let detail = try await self.ensureMediaAccessForSandboxedZoom()
                 self.markStepDone("mediaAccess", succeeded: true)
-                results.append(.init(id: "mediaAccess", name: "Camera & Mic", succeeded: true, detail: detail))
+                results.append(.init(id: "mediaAccess", name: "Camera & Mic", outcome: .success, detail: detail))
             } catch {
-                self.markStepDone("mediaAccess", succeeded: false)
-                results.append(.init(id: "mediaAccess", name: "Camera & Mic", succeeded: false, detail: error.localizedDescription))
+                try Task.checkCancellation()
+                self.markStepWarning("mediaAccess")
+                results.append(.init(id: "mediaAccess", name: "Camera & Mic", outcome: .warning, detail: error.localizedDescription))
                 self.appendLog("Warning: \(error.localizedDescription)")
             }
 
@@ -345,27 +454,15 @@ final class AppViewModel: ObservableObject {
                     timeout: 120
                 )
                 self.markStepDone("launch", succeeded: true)
-                results.append(.init(id: "launch", name: "Launch Zoom", succeeded: true, detail: output.isEmpty ? nil : output))
+                results.append(.init(id: "launch", name: "Launch Zoom", outcome: .success, detail: output.isEmpty ? nil : output))
             } catch {
+                try Task.checkCancellation()
                 self.markStepDone("launch", succeeded: false)
-                results.append(.init(id: "launch", name: "Launch Zoom", succeeded: false, detail: error.localizedDescription))
+                results.append(.init(id: "launch", name: "Launch Zoom", outcome: .failed, detail: error.localizedDescription))
                 throw error // Launch failure is fatal
             }
 
-            self.lastRunResults = results
-
-            let allSucceeded = results.allSatisfy(\.succeeded)
-            let failedSteps = results.filter { !$0.succeeded }.map(\.name)
-            let summaryParts = results.map { step in
-                "\(step.succeeded ? "OK" : "WARN") \(step.name)\(step.detail.map { ": \($0.prefix(80))" } ?? "")"
-            }
-
-            let header = allSucceeded
-                ? "All steps completed successfully."
-                : "Completed with warnings: \(failedSteps.joined(separator: ", "))"
-
-            return header + "\n" + summaryParts
-                .joined(separator: "\n")
+            return WorkflowResultFormatter.summary(for: results)
         }
     }
 
@@ -391,6 +488,13 @@ final class AppViewModel: ObservableObject {
         workflowProgress = progress
     }
 
+    private func markStepWarning(_ id: String) {
+        guard var progress = workflowProgress,
+              let idx = progress.steps.firstIndex(where: { $0.id == id }) else { return }
+        progress.steps[idx].state = .warning
+        workflowProgress = progress
+    }
+
     private func markStepSkipped(_ id: String) {
         guard var progress = workflowProgress,
               let idx = progress.steps.firstIndex(where: { $0.id == id }) else { return }
@@ -398,17 +502,32 @@ final class AppViewModel: ObservableObject {
         workflowProgress = progress
     }
 
-    func cancelWorkflow() {
-        runningTask?.cancel()
-        if let process = currentProcess {
-            Self.terminateProcessTree(process)
+    private func markUnfinishedStepsSkipped() {
+        guard var progress = workflowProgress else { return }
+        for index in progress.steps.indices {
+            switch progress.steps[index].state {
+            case .pending, .running:
+                progress.steps[index].state = .skipped
+            case .succeeded, .warning, .failed, .skipped:
+                break
+            }
         }
-        workflowState = .canceled
-        appendLog("Workflow canceled by user.")
-        isRunning = false
+        workflowProgress = progress
+    }
+
+    func cancelWorkflow() {
+        guard isRunning, !isCanceling else { return }
+        isCanceling = true
+        workflowState = .canceling
+        appendLog("Cancel requested. Finishing the current step safely…")
+        runningTask?.cancel()
     }
 
     func dryRun() {
+        guard !isRunning else {
+            appendLog("Another task is already running.")
+            return
+        }
         lastRunResults = nil
         workflowProgress = nil
         runTask("Dry Run") {
@@ -422,11 +541,33 @@ final class AppViewModel: ObservableObject {
             let arch = ShellCommands.machineArchitecture()
             results.append("Architecture: \(arch == "arm64" ? "Apple Silicon" : (arch == "x86_64" ? "Intel" : arch))")
 
-            // Check Zoom
-            let zoomInstalled = FileManager.default.fileExists(atPath: self.zoomBinaryPath)
-            results.append("Zoom binary: \(zoomInstalled ? "Found" : "NOT FOUND") at \(self.zoomBinaryPath)")
-            if self.customZoomAppPath != nil {
-                results.append("Zoom location: Custom (\(self.zoomAppPath))")
+            // Verify Zoom and the required launch profile using the same checks as a real run.
+            do {
+                let verified = try await self.verifiedZoomBinaryPath()
+                results.append("Zoom signature: Verified")
+                results.append("Zoom binary: \(verified)")
+            } catch {
+                try Task.checkCancellation()
+                results.append("Zoom signature: FAILED — \(error.localizedDescription)")
+            }
+
+            do {
+                _ = try await self.runProcess(
+                    stepName: "Validate Zoom sandbox profile",
+                    executable: Constants.bashPath,
+                    arguments: ["-c", ShellCommands.makeSandboxProfileValidationCommand()],
+                    timeout: 15
+                )
+                results.append("Sandbox profile: Valid")
+            } catch {
+                try Task.checkCancellation()
+                results.append("Sandbox profile: FAILED — \(error.localizedDescription)")
+            }
+
+            if let availableBytes = BackupStore.availableCapacityBytes() {
+                results.append("Backup space available: \(ByteCountFormatter.string(fromByteCount: availableBytes, countStyle: .file))")
+            } else {
+                results.append("Backup space available: Could not determine")
             }
 
             let zoomRunning = (try? await self.runProcess(
@@ -466,8 +607,14 @@ final class AppViewModel: ObservableObject {
                     }
                 }
             } catch {
+                try Task.checkCancellation()
                 results.append("Network: \(error.localizedDescription)")
             }
+
+            let camera = Self.mediaAccessPreflightValue(for: .video)
+            let microphone = Self.mediaAccessPreflightValue(for: .audio)
+            results.append("Camera access: \(camera.value)")
+            results.append("Microphone access: \(microphone.value)")
 
             results.append("")
             results.append("Dry run complete. No changes were made to your system.")
@@ -480,29 +627,90 @@ final class AppViewModel: ObservableObject {
     }
 
     func runPreflight() {
+        preflightTask?.cancel()
+        let preflightID = UUID()
+        activePreflightID = preflightID
         preflight = PreflightInfo(status: .loading, checks: [])
-        Task {
+        let selectedZoomPath = zoomAppPath
+        let selectedZoomIsCustom = customZoomAppPath != nil
+
+        preflightTask = Task { [weak self] in
+            guard let self else { return }
             var checks: [PreflightInfo.Check] = []
 
             // macOS version
             let osVersion = ProcessInfo.processInfo.operatingSystemVersion
             let osString = "macOS \(osVersion.majorVersion).\(osVersion.minorVersion).\(osVersion.patchVersion)"
-            checks.append(.init(id: "os", label: "macOS", value: osString, isWarning: osVersion.majorVersion < 13))
+            checks.append(.init(
+                id: "os",
+                label: "macOS",
+                value: osString,
+                isWarning: osVersion.majorVersion < 13,
+                isBlocking: osVersion.majorVersion < 13
+            ))
 
             // Architecture
             let arch = ShellCommands.machineArchitecture()
             let archLabel = arch == "arm64" ? "Apple Silicon" : (arch == "x86_64" ? "Intel" : arch)
             checks.append(.init(id: "arch", label: "Architecture", value: archLabel, isWarning: false))
 
-            // Zoom installed
-            let zoomInstalled = FileManager.default.fileExists(atPath: zoomBinaryPath)
-            let zoomValue: String
-            if zoomInstalled {
-                zoomValue = customZoomAppPath != nil ? "Installed (custom location)" : "Installed"
-            } else {
-                zoomValue = "Not found"
+            // Verify the selected Zoom bundle without touching it.
+            do {
+                _ = try await Task.detached(priority: .userInitiated) {
+                    try ZoomBundleVerifier.verify(appPath: selectedZoomPath)
+                }.value
+                checks.append(.init(
+                    id: "zoom",
+                    label: "Zoom App",
+                    value: selectedZoomIsCustom ? "Verified (custom location)" : "Verified",
+                    isWarning: false
+                ))
+            } catch {
+                guard !Task.isCancelled else { return }
+                checks.append(.init(
+                    id: "zoom",
+                    label: "Zoom App",
+                    value: error.localizedDescription,
+                    isWarning: true,
+                    isBlocking: true
+                ))
             }
-            checks.append(.init(id: "zoom", label: "Zoom App", value: zoomValue, isWarning: !zoomInstalled))
+
+            // Compile the same sandbox profile used at launch. A rejected profile is
+            // blocking because the app must never fall back to an unsandboxed launch.
+            do {
+                _ = try await self.runProcess(
+                    stepName: "Preflight: validate sandbox",
+                    executable: Constants.bashPath,
+                    arguments: ["-c", ShellCommands.makeSandboxProfileValidationCommand()],
+                    timeout: 15
+                )
+                checks.append(.init(id: "sandbox", label: "Sandbox", value: "Profile validated", isWarning: false))
+            } catch {
+                guard !Task.isCancelled else { return }
+                checks.append(.init(
+                    id: "sandbox",
+                    label: "Sandbox",
+                    value: error.localizedDescription,
+                    isWarning: true,
+                    isBlocking: true
+                ))
+            }
+
+            // Low space is a warning before it becomes a fail-closed backup error.
+            if let availableBytes = BackupStore.availableCapacityBytes() {
+                let warningThreshold: Int64 = 1_073_741_824
+                let blockingThreshold: Int64 = 134_217_728
+                checks.append(.init(
+                    id: "storage",
+                    label: "Backup Space",
+                    value: "\(ByteCountFormatter.string(fromByteCount: availableBytes, countStyle: .file)) available",
+                    isWarning: availableBytes < warningThreshold,
+                    isBlocking: availableBytes < blockingThreshold
+                ))
+            } else {
+                checks.append(.init(id: "storage", label: "Backup Space", value: "Could not determine", isWarning: true))
+            }
 
             // Active interface & VPN
             var activeInterfaceKind: ShellCommands.InterfaceKind?
@@ -510,24 +718,23 @@ final class AppViewModel: ObservableObject {
                 let routeOutput = try await runProcess(
                     stepName: "Preflight: detect interface",
                     executable: Constants.bashPath,
-                    arguments: ["-c", "/sbin/route -n get default 2>/dev/null"],
-                    trackAsCurrent: false
+                    arguments: ["-c", "/sbin/route -n get default 2>/dev/null"]
                 )
                 let device = try ShellCommands.parseDefaultRouteInterface(from: routeOutput)
 
                 let portsOutput = try await runProcess(
                     stepName: "Preflight: hardware ports",
                     executable: Constants.bashPath,
-                    arguments: ["-c", "/usr/sbin/networksetup -listallhardwareports"],
-                    trackAsCurrent: false
+                    arguments: ["-c", "/usr/sbin/networksetup -listallhardwareports"]
                 )
                 let portMap = ShellCommands.parseHardwarePorts(from: portsOutput)
                 let portName = portMap[device] ?? "Unknown"
-                activeInterfaceKind = try? ShellCommands.classifySupportedInterface(hardwarePortName: portName)
+                activeInterfaceKind = try ShellCommands.classifySupportedInterface(hardwarePortName: portName)
 
                 checks.append(.init(id: "iface", label: "Active Interface", value: "\(portName) (\(device))", isWarning: false))
-                checks.append(.init(id: "vpn", label: "VPN", value: "Not detected", isWarning: false))
+                checks.append(.init(id: "vpn", label: "VPN", value: "No VPN default route detected", isWarning: false))
             } catch {
+                guard !Task.isCancelled else { return }
                 let msg = error.localizedDescription
                 if msg.contains("VPN detected") {
                     checks.append(.init(id: "vpn", label: "VPN", value: "Active (turn off before running)", isWarning: true))
@@ -540,16 +747,42 @@ final class AppViewModel: ObservableObject {
             checks.append(.init(id: "admin", label: "Admin Prompts", value: "Expected", isWarning: false))
 
             // How the workflow can change network identity on this OS and interface.
-            switch ShellCommands.networkIdentityStrategy(isWiFi: activeInterfaceKind == .wifi) {
-            case .rotatingPrivateWiFiAddress:
-                checks.append(.init(id: "macspoof", label: "Network Identity", value: "Rotating Private Wi-Fi Address", isWarning: false))
-            case .unsupported:
-                checks.append(.init(id: "macspoof", label: "Network Identity", value: "Unavailable — MAC spoofing is disabled on macOS 14+", isWarning: true))
-            case .legacyMACSpoof:
-                checks.append(.init(id: "macspoof", label: "Network Identity", value: "MAC spoofing available", isWarning: false))
+            if let activeInterfaceKind {
+                switch ShellCommands.networkIdentityStrategy(isWiFi: activeInterfaceKind == .wifi) {
+                case .rotatingPrivateWiFiAddress:
+                    checks.append(.init(id: "macspoof", label: "Network Identity", value: "Rotating Private Wi-Fi Address", isWarning: false))
+                case .unsupported:
+                    checks.append(.init(id: "macspoof", label: "Network Identity", value: "Unavailable on this macOS/interface", isWarning: true))
+                case .legacyMACSpoof:
+                    checks.append(.init(id: "macspoof", label: "Network Identity", value: "MAC spoofing available", isWarning: false))
+                }
+            } else {
+                checks.append(.init(id: "macspoof", label: "Network Identity", value: "Could not determine", isWarning: true))
             }
 
-            preflight = PreflightInfo(status: .ready, checks: checks)
+            let camera = Self.mediaAccessPreflightValue(for: .video)
+            checks.append(.init(id: "camera", label: "Camera", value: camera.value, isWarning: camera.isWarning))
+            let microphone = Self.mediaAccessPreflightValue(for: .audio)
+            checks.append(.init(id: "microphone", label: "Microphone", value: microphone.value, isWarning: microphone.isWarning))
+
+            guard self.activePreflightID == preflightID, !Task.isCancelled else { return }
+            self.preflight = PreflightInfo(status: .ready, checks: checks)
+            self.preflightTask = nil
+        }
+    }
+
+    private static func mediaAccessPreflightValue(for mediaType: AVMediaType) -> (value: String, isWarning: Bool) {
+        switch AVCaptureDevice.authorizationStatus(for: mediaType) {
+        case .authorized:
+            return ("Allowed", false)
+        case .notDetermined:
+            return ("Will request access when needed", true)
+        case .denied:
+            return ("Denied in System Settings", true)
+        case .restricted:
+            return ("Restricted by macOS or device management", true)
+        @unknown default:
+            return ("Unknown", true)
         }
     }
 
@@ -564,24 +797,27 @@ final class AppViewModel: ObservableObject {
     }
 
     func exportDiagnostics(appVersion: String) {
-        let diagnostics = makeDiagnosticsExport(appVersion: appVersion)
-
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = diagnostics.fileName
+        panel.nameFieldStringValue = Self.diagnosticsFileName
         panel.allowedContentTypes = [.plainText]
         panel.canCreateDirectories = true
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
-        do {
-            try diagnostics.content.write(to: url, atomically: true, encoding: .utf8)
-            appendLog("Diagnostics exported to \(url.lastPathComponent)")
-        } catch {
-            appendLog("Failed to export diagnostics: \(error.localizedDescription)")
+        Task {
+            let diagnostics = await makeDiagnosticsExport(appVersion: appVersion)
+            do {
+                try await Task.detached(priority: .utility) {
+                    try diagnostics.content.write(to: url, atomically: true, encoding: .utf8)
+                }.value
+                appendLog("Diagnostics exported to \(url.lastPathComponent)")
+            } catch {
+                appendLog("Failed to export diagnostics: \(error.localizedDescription)")
+            }
         }
     }
 
-    func makeBugReportDraft(appVersion: String) -> BugReportDraft {
+    func makeBugReportDraft(appVersion: String) async -> BugReportDraft {
         let now = Date()
         let title = "Bug Report \(Self.bugTitleFormatter.string(from: now))"
         let timestamp = Self.logTimestampFormatter.string(from: now)
@@ -595,7 +831,10 @@ Architecture: \(architecture)
 Timestamp: \(timestamp)
 Last action status: \(lastStatus)
 """
-        let diagnostics = makeDiagnosticsExport(appVersion: appVersion)
+        let diagnostics = await makeDiagnosticsExport(
+            appVersion: appVersion,
+            maxLogLines: Self.maxInMemoryLogEntries
+        )
         return BugReportDraft(
             title: title,
             systemInfo: systemInfo,
@@ -604,11 +843,17 @@ Last action status: \(lastStatus)
         )
     }
 
-    private func makeDiagnosticsExport(appVersion: String, maxLogLines: Int? = nil) -> (fileName: String, content: String) {
+    private func makeDiagnosticsExport(appVersion: String, maxLogLines: Int? = nil) async -> (fileName: String, content: String) {
         let osVersion = ProcessInfo.processInfo.operatingSystemVersionString
         let arch = ShellCommands.machineArchitecture()
         let lastStatus = inferLastActionStatus()
         let timestamp = Self.logTimestampFormatter.string(from: Date())
+        let stepResults = lastRunResults
+        let preflightChecks = preflight.checks
+        let capturedLogs = maxLogLines.map { Array(logs.suffix($0)) } ?? logs
+        let environmentSnapshot = await Task.detached(priority: .utility) {
+            DiagnosticsCollector.makeSnapshot()
+        }.value
 
         var lines: [String] = []
         lines.append("1132 Fixer Diagnostics Report")
@@ -618,36 +863,28 @@ Last action status: \(lastStatus)
         lines.append("Architecture: \(arch)")
         lines.append("Last action status: \(lastStatus)")
         lines.append("")
-        lines.append(contentsOf: DiagnosticsCollector.makeSnapshot())
+        lines.append(contentsOf: environmentSnapshot)
         lines.append("")
 
-        if let results = lastRunResults {
+        if let results = stepResults {
             lines.append("--- Step Results ---")
             for step in results {
-                let mark = step.succeeded ? "OK" : "WARN"
-                lines.append("[\(mark)] \(step.name)\(step.detail.map { " — \($0)" } ?? "")")
+                lines.append("[\(step.outcome.label)] \(step.name)\(step.detail.map { " — \($0)" } ?? "")")
             }
             lines.append("")
         }
 
-        if !preflight.checks.isEmpty {
+        if !preflightChecks.isEmpty {
             lines.append("--- Preflight Checks ---")
-            for check in preflight.checks {
-                let mark = check.isWarning ? "!" : "+"
+            for check in preflightChecks {
+                let mark = check.isBlocking ? "x" : (check.isWarning ? "!" : "+")
                 lines.append("[\(mark)] \(check.label): \(check.value)")
             }
             lines.append("")
         }
 
-        let logLines: [String]
-        if let maxLogLines {
-            logLines = Array(logs.suffix(maxLogLines))
-        } else {
-            logLines = logs
-        }
-
-        lines.append("--- Activity Log (\(logLines.count) entries) ---")
-        lines.append(contentsOf: logLines)
+        lines.append("--- Activity Log (\(capturedLogs.count) entries) ---")
+        lines.append(contentsOf: capturedLogs)
 
         // This content is uploaded with bug reports, so strip the local account name.
         let content = DiagnosticsCollector.redactingHomeDirectory(lines.joined(separator: "\n"))
@@ -663,18 +900,27 @@ Last action status: \(lastStatus)
             return
         }
 
+        guard let runID = runGate.begin() else {
+            appendLog("Another task still owns the workflow lock.")
+            return
+        }
         isRunning = true
+        isCanceling = false
         appendLog("=== \(title) ===")
 
         runningTask = Task {
             defer {
-                isRunning = false
-                runningTask = nil
-                currentProcess = nil
+                if runGate.finish(runID) {
+                    isRunning = false
+                    isCanceling = false
+                    runningTask = nil
+                    runPreflight()
+                }
             }
             do {
                 try Task.checkCancellation()
                 let output = try await action()
+                try Task.checkCancellation()
                 if !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     appendLog(output)
                 }
@@ -682,9 +928,17 @@ Last action status: \(lastStatus)
                 appendLog("=== Completed ===")
             } catch is CancellationError {
                 workflowState = .canceled
-                appendLog("=== Canceled ===")
+                markUnfinishedStepsSkipped()
+                appendLog("=== Canceled safely ===")
             } catch {
+                if Task.isCancelled {
+                    workflowState = .canceled
+                    markUnfinishedStepsSkipped()
+                    appendLog("=== Canceled safely ===")
+                    return
+                }
                 workflowState = .failed(error.localizedDescription)
+                markUnfinishedStepsSkipped()
                 appendLog("Error: \(error.localizedDescription)")
                 appendLog("=== Failed ===")
             }
@@ -693,6 +947,9 @@ Last action status: \(lastStatus)
 
     private func appendLog(_ text: String) {
         let timestamp = Self.logTimestampFormatter.string(from: Date())
+        if logs.count >= Self.maxInMemoryLogEntries {
+            logs.removeFirst(logs.count - Self.maxInMemoryLogEntries + 1)
+        }
         logs.append("[\(timestamp)] \(text)")
     }
 
@@ -703,6 +960,9 @@ Last action status: \(lastStatus)
             }
             if line.contains("=== Completed ===") {
                 return "Completed"
+            }
+            if line.contains("=== Canceled safely ===") {
+                return "Canceled"
             }
             if line.contains("=== Start Zoom ===") {
                 return "In Progress"
@@ -721,7 +981,7 @@ Last action status: \(lastStatus)
         case .unsupported:
             return MACSpoofResult(
                 summary: "MAC spoofing is disabled on macOS 14 and later because the old spoofing method no longer works reliably. Active network: \(interface.kind.rawValue) (\(interface.device), service: \(interface.networkService)).",
-                hasWarning: false,
+                hasWarning: true,
                 wasSkipped: true
             )
         case .legacyMACSpoof:
@@ -747,6 +1007,7 @@ Last action status: \(lastStatus)
                 timeout: 90
             )
         } catch {
+            try Task.checkCancellation()
             // Network step failed midway — log the exact commands and provide recovery
             appendLog("Network recovery: MAC spoof command failed. Commands attempted:")
             appendLog("  \(spoofScript)")
@@ -766,8 +1027,10 @@ Network recovery: Your network interface may be in an inconsistent state. To res
             executable: Constants.bashPath,
             arguments: ["-c", verifyScript]
         ))?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        try Task.checkCancellation()
         let macVerified = !actualMAC.isEmpty && actualMAC == spoofedMAC.lowercased()
 
+        var warnings: [String] = []
         let summary: String
         if macVerified {
             summary = "MAC spoofed on \(interface.kind.rawValue) (\(interface.device), service: \(interface.networkService)) -> \(spoofedMAC); network service restarted"
@@ -777,38 +1040,55 @@ Network recovery: Your network interface may be in an inconsistent state. To res
                 : "Current MAC (\(actualMAC)) does not match target (\(spoofedMAC))."
             appendLog("Network recovery: MAC change was not applied. Commands attempted:")
             appendLog("  \(spoofScript)")
-            summary = """
+            let warning = """
 Warning: MAC address was not changed on \(interface.kind.rawValue) (\(interface.device)). \(detail)
-This is a known macOS limitation on Apple Silicon Macs (macOS Sonoma 14 and later): \
+This is a known macOS limitation on Apple Silicon Macs (macOS Sonoma 14 and later):
 the OS blocks Wi-Fi MAC spoofing at the driver level. Zoom will likely still show error 1132.
 What you can try:
   1. Connect via Ethernet — MAC spoofing still works on Ethernet adapters.
   2. Use your phone as a hotspot — this gives you a different network identity entirely.
-  3. Turn on Private Wi-Fi Address for your network in System Settings > Wi-Fi, \
+  3. Turn on Private Wi-Fi Address for your network in System Settings > Wi-Fi,
 disconnect, and reconnect before running Start Zoom again.
 If your network connection is disrupted after this step:
   - Open System Settings > Network and toggle '\(interface.networkService)' off then on
   - Or run in Terminal: sudo /sbin/ifconfig \(interface.device) up
 """
+            warnings.append(warning)
+            summary = warning
+        }
+
+        let recoveryWarning = try await verifyNetworkRecovered(expectedDevice: interface.device)
+        if let recoveryWarning {
+            warnings.append(recoveryWarning)
         }
 
         let trimmedCommandOutput = commandOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-        let combinedSummary: String
+        var summaryParts = [summary]
 
-        if trimmedCommandOutput.isEmpty {
-            combinedSummary = summary
-        } else {
-            combinedSummary = "\(summary)\n\(trimmedCommandOutput)"
+        if !trimmedCommandOutput.isEmpty {
+            summaryParts.append(trimmedCommandOutput)
         }
+        for warning in warnings where warning != summary {
+            summaryParts.append(warning)
+        }
+        let combinedSummary = summaryParts.joined(separator: "\n")
 
         return MACSpoofResult(
             summary: combinedSummary,
-            hasWarning: combinedSummary.contains("Warning:"),
+            hasWarning: !warnings.isEmpty,
             wasSkipped: false
         )
     }
 
     private func resetPrivateWiFiAddressAndReconnect(networkService: String, device: String) async throws -> MACSpoofResult {
+        let verifyScript = ShellCommands.makeVerifyMACCommand(device: device)
+        let previousMAC = (try? await runProcess(
+            stepName: "Read current MAC address",
+            executable: Constants.bashPath,
+            arguments: ["-c", verifyScript]
+        ))?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        try Task.checkCancellation()
+
         // 1. Check current private address mode
         let getModeCmd = ShellCommands.makeGetPrivateAddressModeCommand(networkService: networkService)
         let currentModeOutput = (try? await runProcess(
@@ -816,6 +1096,7 @@ If your network connection is disrupted after this step:
             executable: Constants.bashPath,
             arguments: ["-c", getModeCmd]
         )) ?? "unsupported"
+        try Task.checkCancellation()
         let currentMode = ShellCommands.normalizePrivateAddressModeOutput(currentModeOutput)
 
         appendLog("Private Wi-Fi Address mode: \(currentMode)")
@@ -842,6 +1123,7 @@ If your network connection is disrupted after this step:
                 modeWasChanged = true
                 appendLog("Private Wi-Fi Address set to rotating (was: \(currentMode))")
             } catch {
+                try Task.checkCancellation()
                 let warning = "Warning: Could not set Private Wi-Fi Address to rotating: \(error.localizedDescription)"
                 warnings.append(warning)
                 appendLog(warning)
@@ -862,6 +1144,7 @@ If your network connection is disrupted after this step:
                 timeout: 30
             )
         } catch {
+            try Task.checkCancellation()
             let warning = "Warning: Wi-Fi cycle encountered an error: \(error.localizedDescription)"
             warnings.append(warning)
             appendLog(warning)
@@ -869,12 +1152,33 @@ If your network connection is disrupted after this step:
         }
 
         // 4. Read the new MAC for logging
-        let verifyScript = ShellCommands.makeVerifyMACCommand(device: device)
         let newMAC = (try? await runProcess(
             stepName: "Read new MAC address",
             executable: Constants.bashPath,
             arguments: ["-c", verifyScript]
-        ))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "(could not read)"
+        ))?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        try Task.checkCancellation()
+
+        let verifiedModeOutput = (try? await runProcess(
+            stepName: "Verify Private Wi-Fi Address mode",
+            executable: Constants.bashPath,
+            arguments: ["-c", getModeCmd]
+        )) ?? "unsupported"
+        try Task.checkCancellation()
+        let verifiedMode = ShellCommands.normalizePrivateAddressModeOutput(verifiedModeOutput)
+
+        if verifiedMode != "rotating" {
+            warnings.append("Warning: Private Wi-Fi Address mode is '\(verifiedMode)' after the change; rotating mode was not verified.")
+        }
+        if newMAC.isEmpty {
+            warnings.append("Warning: The current MAC address could not be read after cycling Wi-Fi.")
+        } else if !previousMAC.isEmpty && newMAC == previousMAC {
+            warnings.append("Warning: Wi-Fi reconnected, but the MAC address did not change (\(newMAC)).")
+        }
+        let recoveryWarning = try await verifyNetworkRecovered(expectedDevice: device)
+        if let recoveryWarning {
+            warnings.append(recoveryWarning)
+        }
 
         let modeNote: String
         if currentMode == "unsupported" {
@@ -887,7 +1191,8 @@ If your network connection is disrupted after this step:
             modeNote = "Private Wi-Fi Address remained \(currentMode). "
         }
 
-        var summaryParts = ["\(modeNote)Wi-Fi cycled to generate new rotating MAC. Current MAC: \(newMAC)"]
+        let displayedMAC = newMAC.isEmpty ? "(could not read)" : newMAC
+        var summaryParts = ["\(modeNote)Wi-Fi cycled for a rotating MAC. Current MAC: \(displayedMAC)"]
         summaryParts.append(contentsOf: warnings)
 
         return MACSpoofResult(
@@ -895,6 +1200,25 @@ If your network connection is disrupted after this step:
             hasWarning: !warnings.isEmpty,
             wasSkipped: false
         )
+    }
+
+    private func verifyNetworkRecovered(expectedDevice: String) async throws -> String? {
+        do {
+            let routeOutput = try await runProcess(
+                stepName: "Verify network recovery",
+                executable: Constants.bashPath,
+                arguments: ["-c", "/sbin/route -n get default 2>/dev/null"],
+                timeout: 15
+            )
+            let recoveredDevice = try ShellCommands.parseDefaultRouteInterface(from: routeOutput)
+            guard recoveredDevice == expectedDevice else {
+                return "Warning: The default route moved from \(expectedDevice) to \(recoveredDevice) after the network change."
+            }
+            return nil
+        } catch {
+            try Task.checkCancellation()
+            return "Warning: The network did not regain a verified default route: \(error.localizedDescription)"
+        }
     }
 
     private func resolveActiveSupportedInterface() async throws -> NetworkInterfaceInfo {
@@ -936,10 +1260,6 @@ If your network connection is disrupted after this step:
             networkService: networkService,
             kind: kind
         )
-    }
-
-    private func makeLaunchZoomCommand() -> String {
-        ShellCommands.makeLaunchZoomCommand(zoomBinaryPath: zoomBinaryPath)
     }
 
     // MARK: - Zoom Location
@@ -999,6 +1319,19 @@ If your network connection is disrupted after this step:
         customZoomAppPath = nil
         appendLog("Zoom location reset to default: \(ZoomLocation.defaultAppPath)")
         runPreflight()
+    }
+
+    func revealLatestBackup() {
+        let candidate = latestBackupPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? BackupStore.latestBackupURL()
+        guard let candidate, BackupStore.isManagedBackupURL(candidate) else {
+            latestBackupPath = nil
+            appendLog("No managed Zoom backup is available to reveal.")
+            return
+        }
+
+        latestBackupPath = candidate.path
+        NSWorkspace.shared.activateFileViewerSelecting([candidate])
     }
 
     /// How long to wait for an answer to a camera/microphone prompt before
@@ -1181,15 +1514,13 @@ If your network connection is disrupted after this step:
 
     /// Runs a process and returns its combined output.
     ///
-    /// `trackAsCurrent` registers the process as the one `cancelWorkflow()` stops. Background
-    /// work such as the preflight refresh passes `false` so it can neither be cancelled by,
-    /// nor replace the handle of, the user's running workflow.
+    /// Cancellation is scoped to the task that launched this process, so a preflight refresh
+    /// and a user workflow cannot cancel one another's subprocess.
     private func runProcess(
         stepName: String,
         executable: String,
         arguments: [String],
-        timeout: TimeInterval = 60,
-        trackAsCurrent: Bool = true
+        timeout: TimeInterval = 60
     ) async throws -> String {
         try Task.checkCancellation()
 
@@ -1201,107 +1532,124 @@ If your network connection is disrupted after this step:
         let errPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = errPipe
+        let cancellationFlag = LockedFlag()
+        let timeoutFlag = LockedFlag()
 
-        return try await withCheckedThrowingContinuation { continuation in
-            let stdoutBuffer = LockedDataBuffer()
-            let stderrBuffer = LockedDataBuffer()
-            let resumeGate = ContinuationResumeGate()
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                let stdoutBuffer = LockedDataBuffer()
+                let stderrBuffer = LockedDataBuffer()
+                let resumeGate = ContinuationResumeGate()
             // Each pipe is read to EOF on its own thread. The termination handler only
             // finishes once both reads are done, so trailing output (for example the
             // `__1132_RESET_STATUS__=` lines) cannot be lost to a handler that had not run yet.
-            let readGroup = DispatchGroup()
+                let readGroup = DispatchGroup()
 
-            @Sendable func safeResume(_ result: Result<String, Error>) {
-                guard resumeGate.beginResume() else { return }
-                switch result {
-                case .success(let value): continuation.resume(returning: value)
-                case .failure(let error): continuation.resume(throwing: error)
+                @Sendable func safeResume(_ result: Result<String, Error>) {
+                    guard resumeGate.beginResume() else { return }
+                    switch result {
+                    case .success(let value): continuation.resume(returning: value)
+                    case .failure(let error): continuation.resume(throwing: error)
+                    }
                 }
-            }
 
             // Timeout timer. It is cancelled only after the output has been drained, so a
             // grandchild that keeps a pipe open still ends in a timeout instead of a hang.
-            let timer = DispatchSource.makeTimerSource(queue: .global())
-            timer.schedule(deadline: .now() + timeout)
-            timer.setEventHandler {
-                AppViewModel.terminateProcessTree(process)
-                DispatchQueue.main.async {
-                    self.appendLog("Timeout: '\(stepName)' did not complete within \(Int(timeout))s — terminating.")
-                }
-                safeResume(.failure(AppError.processTimeout("\(stepName): Timed out after \(Int(timeout)) seconds.")))
-            }
-            timer.resume()
-
-            process.terminationHandler = { terminatedProcess in
-                let terminationStatus = terminatedProcess.terminationStatus
-
-                readGroup.notify(queue: .global()) {
-                    timer.cancel()
-
-                    let stdout = String(data: stdoutBuffer.snapshot(), encoding: .utf8) ?? ""
-                    let stderr = String(data: stderrBuffer.snapshot(), encoding: .utf8) ?? ""
-                    let combined = [stdout, stderr]
-                        .filter { !$0.isEmpty }
-                        .joined(separator: "\n")
-
-                    if terminationStatus == 0 {
-                        safeResume(.success(combined))
-                        return
+                let timer = DispatchSource.makeTimerSource(queue: .global())
+                timer.schedule(deadline: .now() + timeout)
+                timer.setEventHandler {
+                    timeoutFlag.set()
+                    AppViewModel.terminateProcessTree(process)
+                    DispatchQueue.main.async {
+                        self.appendLog("Timeout: '\(stepName)' did not complete within \(Int(timeout))s — terminating.")
                     }
-
-                    let trimmedOutput = combined.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let message: String
-                    if !trimmedOutput.isEmpty {
-                        message = "\(stepName): \(trimmedOutput)"
-                    } else if executable == Constants.osascriptPath {
-                        message = "\(stepName): Admin authorization was canceled or failed. This step requires your macOS password to run with elevated privileges. Click Start Zoom again and enter your password when prompted."
-                    } else {
-                        message = "\(stepName): Command failed with exit code \(terminationStatus)."
-                    }
-
-                    safeResume(.failure(AppError.processFailed(
-                        exitCode: Int(terminationStatus),
-                        message: message
-                    )))
                 }
+                timer.resume()
 
-                if trackAsCurrent {
-                    Task { @MainActor in
-                        if self.currentProcess === terminatedProcess {
-                            self.currentProcess = nil
+                process.terminationHandler = { terminatedProcess in
+                    let terminationStatus = terminatedProcess.terminationStatus
+
+                    readGroup.notify(queue: .global()) {
+                        timer.cancel()
+
+                        let stdout = String(data: stdoutBuffer.snapshot(), encoding: .utf8) ?? ""
+                        let stderr = String(data: stderrBuffer.snapshot(), encoding: .utf8) ?? ""
+                        let combined = [stdout, stderr]
+                            .filter { !$0.isEmpty }
+                            .joined(separator: "\n")
+
+                        if cancellationFlag.isSet {
+                            safeResume(.failure(CancellationError()))
+                            return
                         }
+
+                        if timeoutFlag.isSet {
+                            safeResume(.failure(AppError.processTimeout("\(stepName): Timed out after \(Int(timeout)) seconds.")))
+                            return
+                        }
+
+                        if terminationStatus == 0 {
+                            safeResume(.success(combined))
+                            return
+                        }
+
+                        let trimmedOutput = combined.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let message: String
+                        if !trimmedOutput.isEmpty {
+                            message = "\(stepName): \(trimmedOutput)"
+                        } else if executable == Constants.osascriptPath {
+                            message = "\(stepName): Admin authorization was canceled or failed. This step requires your macOS password to run with elevated privileges. Click Start Zoom again and enter your password when prompted."
+                        } else {
+                            message = "\(stepName): Command failed with exit code \(terminationStatus)."
+                        }
+
+                        safeResume(.failure(AppError.processFailed(
+                            exitCode: Int(terminationStatus),
+                            message: message
+                        )))
                     }
+
                 }
-            }
 
-            // Registered before launch so the group is never empty when the process exits.
-            readGroup.enter()
-            readGroup.enter()
+                // Registered before launch so the group is never empty when the process exits.
+                readGroup.enter()
+                readGroup.enter()
 
-            do {
-                try process.run()
-            } catch {
-                readGroup.leave()
-                readGroup.leave()
-                timer.cancel()
-                safeResume(.failure(error))
-                return
-            }
-
-            // Only a launched process may be tracked (and later terminated).
-            if trackAsCurrent {
-                currentProcess = process
-            }
-
-            for (pipe, buffer) in [(outPipe, stdoutBuffer), (errPipe, stderrBuffer)] {
-                DispatchQueue.global().async {
-                    if let data = try? pipe.fileHandleForReading.readToEnd() {
-                        buffer.append(data)
-                    }
+                if cancellationFlag.isSet {
                     readGroup.leave()
+                    readGroup.leave()
+                    timer.cancel()
+                    safeResume(.failure(CancellationError()))
+                    return
+                }
+
+                do {
+                    try process.run()
+                } catch {
+                    readGroup.leave()
+                    readGroup.leave()
+                    timer.cancel()
+                    safeResume(.failure(error))
+                    return
+                }
+
+                for (pipe, buffer) in [(outPipe, stdoutBuffer), (errPipe, stderrBuffer)] {
+                    DispatchQueue.global().async {
+                        if let data = try? pipe.fileHandleForReading.readToEnd() {
+                            buffer.append(data)
+                        }
+                        readGroup.leave()
+                    }
                 }
             }
-        }
+        }, onCancel: {
+            cancellationFlag.set()
+            // Privileged AppleScript shells cannot be killed safely from this process.
+            // Let their bounded watchdog finish, keeping the run locked until they exit.
+            if executable != Constants.osascriptPath {
+                AppViewModel.terminateProcessTree(process)
+            }
+        })
     }
 
 }

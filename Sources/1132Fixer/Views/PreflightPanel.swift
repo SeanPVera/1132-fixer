@@ -14,61 +14,95 @@ struct PreflightPanel: View {
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.medium) {
             Label("Preflight Checks", systemImage: "checklist")
-                .font(.system(size: 14, weight: .bold, design: .monospaced))
-                .foregroundStyle(Theme.Colors.accent)
+                .font(Theme.Typography.heading)
+                .foregroundStyle(Theme.Colors.textPrimary)
 
             switch preflight.status {
             case .loading:
-                HStack(spacing: 8) {
+                HStack(spacing: Theme.Spacing.small) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("Checking system...")
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundStyle(Theme.Colors.textMuted)
+                    Text("Checking system…")
+                        .font(Theme.Typography.body)
+                        .foregroundStyle(Theme.Colors.textSecondary)
                 }
-            case .error(let msg):
-                Text(msg)
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .accessibilityElement(children: .combine)
+            case .error(let message):
+                Label(message, systemImage: "xmark.circle.fill")
+                    .font(Theme.Typography.body)
                     .foregroundStyle(Theme.Colors.error)
             case .ready:
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 6) {
+                LazyVGrid(
+                    columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
+                    alignment: .leading,
+                    spacing: Theme.Spacing.small
+                ) {
                     ForEach(preflight.checks) { check in
-                        HStack(spacing: 6) {
-                            Text(check.isWarning ? "[WARN]" : "[OK]")
-                                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                .foregroundStyle(check.isWarning ? Theme.Colors.warning : Theme.Colors.success)
-                            Text(check.label + ":")
-                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(Theme.Colors.textMuted)
-                            Text(check.value)
-                                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                .foregroundStyle(Theme.Colors.text)
-                        }
+                        PreflightCheckRow(check: check)
                     }
                 }
             }
 
-            Divider().background(Theme.Colors.border.opacity(0.5))
+            Divider().overlay(Theme.Colors.border)
 
-            HStack(spacing: 6) {
-                Text("Supported:")
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(Theme.Colors.textMuted)
-                ForEach(Self.supportMatrix, id: \.label) { item in
-                    Text(item.label)
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(item.supported ? Theme.Colors.text : Theme.Colors.textMuted)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(item.supported ? Theme.Colors.success.opacity(0.2) : Theme.Colors.error.opacity(0.2))
-                        .border(item.supported ? Theme.Colors.success.opacity(0.5) : Theme.Colors.error.opacity(0.5), width: 1)
-                }
+            ViewThatFits(in: .horizontal) {
+                supportPills
+                VStack(alignment: .leading, spacing: Theme.Spacing.small) { supportPills }
             }
         }
-        .padding(14)
+        .padding(Theme.Spacing.large)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .terminalPanel()
+        .themedPanel()
+    }
+
+    private var supportPills: some View {
+        HStack(spacing: Theme.Spacing.small) {
+            Text("Supported")
+                .font(Theme.Typography.label)
+                .foregroundStyle(Theme.Colors.textSecondary)
+            ForEach(Self.supportMatrix, id: \.label) { item in
+                Text(item.label)
+                    .font(Theme.Typography.caption)
+                    .foregroundStyle(item.supported ? Theme.Colors.success : Theme.Colors.error)
+                    .padding(.horizontal, Theme.Spacing.small)
+                    .padding(.vertical, Theme.Spacing.xSmall)
+                    .background((item.supported ? Theme.Colors.success : Theme.Colors.error).opacity(0.14))
+                    .clipShape(Capsule())
+                    .accessibilityLabel("\(item.label): \(item.supported ? "supported" : "not supported")")
+            }
+        }
+    }
+}
+
+private struct PreflightCheckRow: View {
+    let check: AppViewModel.PreflightInfo.Check
+
+    private var status: (label: String, image: String, color: Color) {
+        if check.isBlocking {
+            return ("Blocked", "xmark.circle.fill", Theme.Colors.error)
+        }
+        if check.isWarning {
+            return ("Warning", "exclamationmark.triangle.fill", Theme.Colors.warning)
+        }
+        return ("Passed", "checkmark.circle.fill", Theme.Colors.success)
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.small) {
+            Image(systemName: status.image)
+                .foregroundStyle(status.color)
+                .accessibilityHidden(true)
+            Text("\(check.label):")
+                .font(Theme.Typography.label)
+                .foregroundStyle(Theme.Colors.textPrimary)
+            Text(check.value)
+                .font(Theme.Typography.body)
+                .foregroundStyle(Theme.Colors.textSecondary)
+                .lineLimit(2)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(status.label). \(check.label): \(check.value)")
     }
 }

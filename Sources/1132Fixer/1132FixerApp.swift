@@ -20,6 +20,7 @@ struct Fixer1132App: App {
         WindowGroup("1132 Fixer") {
             ContentView()
         }
+        .defaultSize(width: 900, height: 760)
         .windowResizability(.contentMinSize)
     }
 }

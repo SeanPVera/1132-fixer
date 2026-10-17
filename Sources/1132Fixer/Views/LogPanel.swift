@@ -1,75 +1,81 @@
 import SwiftUI
 
 struct LogPanel: View {
+    @State private var isExpanded = false
+
     let logs: [String]
     let onCopy: () -> Void
     let onClear: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.medium) {
             HStack {
-                Label("Activity Log", systemImage: "terminal")
-                    .font(.system(size: 16, weight: .bold, design: .monospaced))
-                    .foregroundStyle(Theme.Colors.accent)
+                Label("Activity Log", systemImage: "text.alignleft")
+                    .font(Theme.Typography.heading)
+                    .foregroundStyle(Theme.Colors.textPrimary)
 
                 Spacer()
 
-                Button("Copy") {
-                    onCopy()
+                Button(action: onCopy) {
+                    Label("Copy", systemImage: "doc.on.doc")
                 }
-                .buttonStyle(.plain)
-                .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                .foregroundStyle(Theme.Colors.accent)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .border(Theme.Colors.border, width: 1)
+                .buttonStyle(ThemedButtonStyle(variant: .secondary))
                 .disabled(logs.isEmpty)
 
-                Button("Clear") {
-                    onClear()
+                Button(action: onClear) {
+                    Label("Clear", systemImage: "trash")
                 }
-                .buttonStyle(.plain)
-                .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                .foregroundStyle(Theme.Colors.warning)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .border(Theme.Colors.warning.opacity(0.5), width: 1)
+                .buttonStyle(ThemedButtonStyle(variant: .destructive))
                 .disabled(logs.isEmpty)
+
+                Button {
+                    isExpanded.toggle()
+                } label: {
+                    Label(
+                        isExpanded ? "Collapse" : "Expand",
+                        systemImage: isExpanded ? "chevron.up" : "chevron.down"
+                    )
+                    .labelStyle(.iconOnly)
+                }
+                .buttonStyle(ThemedButtonStyle(variant: .secondary))
+                .accessibilityLabel(isExpanded ? "Collapse activity log" : "Expand activity log")
             }
 
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
+                    LazyVStack(alignment: .leading, spacing: Theme.Spacing.small) {
                         if logs.isEmpty {
                             Text("No logs yet. Run an action to see output.")
-                                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.72))
-                                .padding(.top, 2)
+                                .font(Theme.Typography.body)
+                                .foregroundStyle(Theme.Colors.textSecondary)
+                                .padding(.top, Theme.Spacing.xSmall)
                         } else {
                             ForEach(Array(logs.enumerated()), id: \.offset) { index, line in
                                 Text(line)
-                                    .font(.system(size: 12, weight: .regular, design: .monospaced))
-                                    .foregroundStyle(Theme.Colors.text)
+                                    .font(Theme.Typography.mono)
+                                    .foregroundStyle(Theme.Colors.textPrimary)
                                     .textSelection(.enabled)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.vertical, 2)
-                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, Theme.Spacing.xSmall)
                                     .id(index)
                             }
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .onChange(of: logs.count) { _ in
-                        if !logs.isEmpty {
-                            withAnimation {
-                                proxy.scrollTo(logs.count - 1, anchor: .bottom)
-                            }
-                        }
+                        guard !logs.isEmpty else { return }
+                        // Diagnostic output should append instantly; never animate the log.
+                        proxy.scrollTo(logs.count - 1, anchor: .bottom)
                     }
                 }
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .terminalPanel()
+        .padding(Theme.Spacing.large)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: Theme.Spacing.section * (isExpanded ? 7 : 4),
+            alignment: .topLeading
+        )
+        .themedPanel()
     }
 }

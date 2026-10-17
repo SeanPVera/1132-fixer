@@ -8,8 +8,8 @@ struct ReleaseInfo: Equatable {
 
 enum UpdateChecker {
     // Keep this aligned with the repository link in ContentView.
-    static let owner = "1132-Fixer"
-    static let repo = "macos"
+    static let owner = "PrimeUpYourLife"
+    static let repo = "1132-fixer"
     static let errorDomain = "1132Fixer.UpdateChecker"
     private static let userAgent = "1132Fixer"
 
@@ -72,7 +72,8 @@ enum UpdateChecker {
         return ReleaseInfo(version: version, htmlURL: htmlURL, releaseNotes: decoded.body)
     }
 
-    /// Release links are opened in the browser, so accept only `https://github.com/...`.
+    /// Release links are opened in the browser, so accept only this app's canonical
+    /// `https://github.com/PrimeUpYourLife/1132-fixer/...` path.
     /// The host must match exactly: a substring check would also accept hosts such as
     /// `evilgithub.com` or `github.com.evil.example`.
     static func isTrustedReleaseURL(_ url: URL) -> Bool {
@@ -82,7 +83,11 @@ enum UpdateChecker {
               url.port == nil || url.port == 443 else {
             return false
         }
-        return true
+
+        let canonicalRepositoryPath = "/\(owner)/\(repo)".lowercased()
+        let candidatePath = url.path.lowercased()
+        return candidatePath == canonicalRepositoryPath
+            || candidatePath.hasPrefix(canonicalRepositoryPath + "/")
     }
 
     static func normalizeVersion(_ raw: String) -> String {

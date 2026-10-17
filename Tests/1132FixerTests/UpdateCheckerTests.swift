@@ -65,6 +65,10 @@ final class UpdateCheckerTests: XCTestCase {
         let data = jsonString.data(using: .utf8)!
 
         MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(
+                request.url?.absoluteString,
+                "https://api.github.com/repos/PrimeUpYourLife/1132-fixer/releases/latest"
+            )
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
             return (response, data)
         }
@@ -224,9 +228,9 @@ final class UpdateCheckerTests: XCTestCase {
 struct UpdateCheckerURLTests {
 
     @Test func acceptsGitHubReleaseURLs() {
-        #expect(UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/1132-Fixer/macos/releases/tag/v1.7.7")!))
-        #expect(UpdateChecker.isTrustedReleaseURL(URL(string: "https://GitHub.com/1132-Fixer/macos")!))
-        #expect(UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com:443/1132-Fixer/macos")!))
+        #expect(UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/PrimeUpYourLife/1132-fixer/releases/tag/v1.8.0")!))
+        #expect(UpdateChecker.isTrustedReleaseURL(URL(string: "https://GitHub.com/PrimeUpYourLife/1132-fixer")!))
+        #expect(UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com:443/PrimeUpYourLife/1132-fixer/releases/latest")!))
     }
 
     @Test func rejectsLookalikeHosts() {
@@ -243,5 +247,11 @@ struct UpdateCheckerURLTests {
         #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "ftp://github.com/x")!))
         #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "file:///etc/hosts")!))
         #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com:8443/x")!))
+    }
+
+    @Test func rejectsAnotherGitHubRepository() {
+        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/1132-Fixer/macos/releases/latest")!))
+        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/PrimeUpYourLife/another-app/releases/latest")!))
+        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/PrimeUpYourLife/1132-fixer-evil/releases/latest")!))
     }
 }

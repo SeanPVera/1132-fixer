@@ -1,0 +1,102 @@
+name: Publish Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Sign, notarize, and publish universal DMG
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Verify tag matches app version
+        id: metadata
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          if [[ "$RELEASE_TAG" != "v$version" ]]; then
+            echo "Release tag $RELEASE_TAG does not match VERSION ($version)." >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Require distribution credentials
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!name}" ]]; then
+              echo "Required release secret $name is not configured." >&2
+              exit 1
+            fi
+          done
+
+      - name: Build signed and notarized DMG
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          FIXER_BUG_REPORT_ENDPOINT: ${{ secrets.FIXER_BUG_REPORT_ENDPOINT }}
+          FIXER_BUG_REPORT_TOKEN: ${{ secrets.FIXER_BUG_REPORT_TOKEN }}
+          APP_BUILD: ${{ github.run_number }}
+          NOTARIZE: "1"
+        run: ./scripts/build-universal-dmg.sh
+
+      - name: Verify and checksum release asset
+        id: asset
+        env:
+          VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          asset_name="1132-Fixer-v$VERSION-universal.dmg"
+          source="dist/1132 Fixer-v$VERSION-universal.dmg"
+          asset="dist/$asset_name"
+          test -f "$source"
+          mv "$source" "$asset"
+          codesign --verify --strict --verbose=2 "$asset"
+          xcrun stapler validate "$asset"
+          ( cd dist && shasum -a 256 "$asset_name" > "$asset_name.sha256" )
+          echo "path=$asset" >> "$GITHUB_OUTPUT"
+          echo "checksum=$asset.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          ASSET_PATH: ${{ steps.asset.outputs.path }}
+          CHECKSUM_PATH: ${{ steps.asset.outputs.checksum }}
+        run: |
+          set -euo pipefail
+          if is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' 2>/dev/null)"; then
+            gh release upload "$RELEASE_TAG" "$ASSET_PATH" "$CHECKSUM_PATH" --clobber
+            if [[ "$is_draft" == "true" ]]; then
+              gh release edit "$RELEASE_TAG" --draft=false
+            fi
+          else
+            gh release create "$RELEASE_TAG" "$ASSET_PATH" "$CHECKSUM_PATH" \
+              --verify-tag \
+              --title "1132 Fixer $RELEASE_TAG" \
+              --generate-notes
+          fi

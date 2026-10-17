@@ -244,6 +244,23 @@ struct ShellCommandsTests {
         #expect(cmd.contains("'02:ab:cd:ef:12:34'"))
         #expect(cmd.contains("networksetup"))
         #expect(cmd.contains("'Wi-Fi'"))
+        #expect(cmd.contains("trap restore_network EXIT"))
+        #expect(cmd.contains("Could not re-enable the active network service"))
+    }
+
+    @Test func networkRecoveryCommandsAlwaysAttemptToRestoreConnectivity() {
+        let rotating = ShellCommands.makeRotatingMACResetCommand(device: "en0")
+        #expect(rotating.contains("restore_wifi"))
+        #expect(rotating.contains("trap restore_wifi EXIT"))
+        #expect(rotating.contains("networksetup -setairportpower 'en0' on"))
+
+        let legacy = ShellCommands.makeSpoofCommand(
+            device: "en0",
+            spoofedMAC: "02:ab:cd:ef:12:34",
+            networkService: "Office Wi-Fi"
+        )
+        #expect(legacy.contains("restore_network"))
+        #expect(legacy.contains("networksetup -setnetworkserviceenabled 'Office Wi-Fi' on"))
     }
 
     @Test func makeVerifyMACCommand() {
@@ -272,15 +289,25 @@ struct ShellCommandsTests {
     @Test func backupCommandPrunesOlderSnapshots() {
         let cmd = ShellCommands.makeBackupZoomDataCommand()
         // Default retention of 5 keeps entries 1...5 and deletes from entry 6 on.
-        #expect(cmd.contains("/usr/bin/tail -n +6"))
+        #expect(cmd.contains(#"[ "$snapshot_index" -ge 6 ]"#))
+        #expect(cmd.contains(#"[ "$total_kb" -gt 2097152 ]"#))
         #expect(cmd.contains(#"/bin/rm -rf "$backup_root/$stale""#))
     }
 
     @Test func backupCommandRetentionIsConfigurable() {
-        #expect(ShellCommands.makeBackupZoomDataCommand(retainedBackupCount: 1).contains("/usr/bin/tail -n +2"))
-        #expect(ShellCommands.makeBackupZoomDataCommand(retainedBackupCount: 10).contains("/usr/bin/tail -n +11"))
+        #expect(ShellCommands.makeBackupZoomDataCommand(retainedBackupCount: 1).contains(#"[ "$snapshot_index" -ge 2 ]"#))
+        #expect(ShellCommands.makeBackupZoomDataCommand(retainedBackupCount: 10).contains(#"[ "$snapshot_index" -ge 11 ]"#))
         // A zero/negative count must still keep the snapshot just written.
-        #expect(ShellCommands.makeBackupZoomDataCommand(retainedBackupCount: 0).contains("/usr/bin/tail -n +2"))
+        #expect(ShellCommands.makeBackupZoomDataCommand(retainedBackupCount: 0).contains(#"[ "$snapshot_index" -ge 2 ]"#))
+        #expect(ShellCommands.makeBackupZoomDataCommand(retainedBackupMegabytes: 512).contains(#"[ "$total_kb" -gt 524288 ]"#))
+    }
+
+    @Test func backupCommandUsesUniquePrivateSnapshotsAndCleansPartialCopies() {
+        let cmd = ShellCommands.makeBackupZoomDataCommand()
+        #expect(cmd.contains(#"/usr/bin/mktemp -d "$backup_root/snapshot-"#))
+        #expect(cmd.contains("cleanup_partial_backup"))
+        #expect(cmd.contains(#"[ "$backup_complete" -ne 1 ]"#))
+        #expect(cmd.contains(#": > "$backup_dir/.1132fixer-backup""#))
     }
 
     @Test func backupCommandEchoesOnlyTheBackupPath() {
@@ -514,6 +541,8 @@ struct ShellCommandsTests {
     @Test func stopZoomCommandsClearCaptureHelpers() {
         #expect(ShellCommands.stopZoom.contains(#""caphost""#))
         #expect(ShellCommands.stopZoom.contains(#""CptHost""#))
+        #expect(ShellCommands.stopZoom.contains("refusing to modify Zoom data"))
+        #expect(ShellCommands.stopZoom.contains("exit 1"))
 
         let cmd = ShellCommands.makeLaunchZoomCommand(zoomBinaryExists: true)
         #expect(cmd.contains(#""caphost""#))
@@ -542,6 +571,15 @@ struct ShellCommandsTests {
         }
         #expect(validate < launch)
         #expect(cmd.contains("macOS rejected the Zoom sandbox profile"))
+    }
+
+    @Test func standaloneSandboxValidationDoesNotTouchZoom() {
+        let cmd = ShellCommands.makeSandboxProfileValidationCommand()
+        #expect(cmd.contains(#"/usr/bin/sandbox-exec -f "$profile_path" /usr/bin/true"#))
+        #expect(cmd.contains("sandbox-exec is unavailable"))
+        #expect(cmd.contains("1132fixer.zoom-sandbox-check"))
+        #expect(!cmd.contains("killall"))
+        #expect(!cmd.contains("zoom_binary"))
     }
 
     @Test func launchCommandWritesProfileToThePerUserTempDirectory() {
@@ -741,7 +779,8 @@ struct ShellCommandsTests {
         #expect(cmd.contains("umask 077"))
         #expect(cmd.contains("chmod 700"))
         #expect(cmd.contains("exit 1"))
-        #expect(!cmd.contains("|| true"))
+        #expect(cmd.contains("backup_failed=1"))
+        #expect(!cmd.contains(#"cp -a "$src" "$backup_dir/" 2>/dev/null || true"#))
     }
 
     // MARK: - Machine Architecture

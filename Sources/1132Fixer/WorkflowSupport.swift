@@ -1,0 +1,37 @@
+import Foundation
+
+/// Owns the single active workflow token. A stale task cannot clear a newer run.
+struct WorkflowRunGate {
+    private(set) var activeRunID: UUID?
+
+    var isActive: Bool { activeRunID != nil }
+
+    mutating func begin() -> UUID? {
+        guard activeRunID == nil else { return nil }
+        let runID = UUID()
+        activeRunID = runID
+        return runID
+    }
+
+    mutating func finish(_ runID: UUID) -> Bool {
+        guard activeRunID == runID else { return false }
+        activeRunID = nil
+        return true
+    }
+}
+
+@MainActor
+enum WorkflowResultFormatter {
+    static func summary(for results: [AppViewModel.StepResult]) -> String {
+        let allSucceeded = results.allSatisfy { $0.outcome == .success }
+        let issueSteps = results.filter { $0.outcome != .success }.map(\.name)
+        let summaryParts = results.map { step in
+            "[\(step.outcome.label)] \(step.name)\(step.detail.map { ": \($0.prefix(80))" } ?? "")"
+        }
+
+        let header = allSucceeded
+            ? "All steps completed successfully."
+            : "Completed with attention needed: \(issueSteps.joined(separator: ", "))"
+        return header + "\n" + summaryParts.joined(separator: "\n")
+    }
+}
