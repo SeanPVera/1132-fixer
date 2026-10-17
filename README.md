@@ -8,9 +8,10 @@
 
 ![GitHub Release](https://img.shields.io/github/v/release/PrimeUpYourLife/1132-fixer?style=for-the-badge) ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/PrimeUpYourLife/1132-fixer/total?style=for-the-badge) ![Static Badge](https://img.shields.io/badge/mac-silicone-yellow?logo=apple&style=for-the-badge) ![Static Badge](https://img.shields.io/badge/mac-intel-purple?logo=apple&style=for-the-badge) ![Static Badge](https://img.shields.io/badge/mac-universal-green?logo=apple&style=for-the-badge)
 
-## Minimal macOS app with two actions
+## macOS Zoom diagnostic and repair app
 
-- `Start Zoom`: closes Zoom if it is running, checks the active network, backs up and then clears Zoom local data/cache/preferences/log state, requests admin access to flush system DNS caches, stops Zoom's updaters for the current login session, then launches Zoom in the required sandbox mode with camera/microphone access preserved.
+- `Start Zoom Repair`: validates the signed Zoom bundle and sandbox profile, shows every planned change for confirmation, closes Zoom, creates a recovery backup, handles the active network, clears Zoom local data/cache/preferences/log state, requests admin access to flush system DNS caches, stops Zoom's updaters for the current login session, then launches Zoom in the required sandbox mode with camera/microphone access preserved.
+- `Dry Run`: checks compatibility, the Zoom signature, sandbox profile, backup capacity, media permissions, and network support without modifying the system.
 - `Report a Bug`: opens a small form for optional email + message, then sends metadata plus an attached diagnostics file to the bug report API. The form lists exactly what the attachment contains, and `Export Diagnostics` in the app header shows you the file itself. Reports are sent to the project's server over HTTPS only (the app refuses other schemes and does not follow redirects), and the diagnostics attachment is capped at 1 MB (the newest log lines are kept).
 
 ### What Start Zoom does about network identity
@@ -27,9 +28,9 @@ The last two cases mean Zoom may still see the same network identity, so error 1
 
 ### Backups
 
-Before clearing Zoom's local state, the app copies it to `~/Library/Application Support/1132Fixer/Backups/`. The five most recent snapshots are kept and older ones are deleted automatically. Backups are readable only by your user account. If the backup fails, Start Zoom stops before anything is deleted.
+Before changing the network or clearing Zoom's local state, the app copies Zoom's state to `~/Library/Application Support/1132Fixer/Backups/`. Backups are readable only by your user account, use unique snapshot folders, and are cleaned up if a copy fails. The newest five snapshots are retained subject to a 2 GB aggregate cap; the newest snapshot is always preserved. After a run, **Reveal Backup** opens the recovery snapshot in Finder. If the backup fails, Start Zoom Repair stops before any network or Zoom-data changes.
 
-Before launching Zoom (and when you choose a custom Zoom location), the app verifies that the app is `zoom.us.app` and is signed by Zoom's Apple team; otherwise it refuses to run it.
+Before making changes and again before launch, the app verifies that the app is `zoom.us.app` and is signed by Zoom's Apple team. It also compiles the exact sandbox profile up front. Either failure blocks the repair rather than falling back to an unsandboxed launch.
 
 ## Updates
 

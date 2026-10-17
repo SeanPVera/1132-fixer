@@ -2,7 +2,6 @@ import Foundation
 
 enum DiagnosticsCollector {
     static func makeSnapshot() -> [String] {
-        let processInfo = ProcessInfo.processInfo
         let fileManager = FileManager.default
         let home = NSHomeDirectory()
         let zoomAppPath = ZoomLocation.appPath
@@ -14,9 +13,6 @@ enum DiagnosticsCollector {
             "--- Environment Snapshot ---",
             "OS build: \(run("/usr/bin/sw_vers", ["-buildVersion"]) ?? "unknown")",
             "Host architecture: \(ShellCommands.machineArchitecture())",
-            "Processor count: \(processInfo.processorCount)",
-            "Physical memory: \(formatBytes(processInfo.physicalMemory))",
-            "System uptime: \(formatDuration(processInfo.systemUptime))",
             "Locale: \(Locale.current.identifier)",
             "Time zone: \(TimeZone.current.identifier)",
             "Sandbox launch required: yes",
@@ -80,10 +76,8 @@ enum DiagnosticsCollector {
     /// tool writes more than the pipe buffer (about 64 KB): it blocks writing while this
     /// side blocks waiting.
     ///
-    /// This is synchronous and `makeSnapshot()` runs several of these, so callers on the main
-    /// thread (diagnostics export and bug reports are built from `AppViewModel`) block it
-    /// briefly. The tools involved are fast; moving the snapshot off the main actor would
-    /// need an async API and is left as a follow-up.
+    /// This is synchronous because it drains a subprocess. `AppViewModel` always builds the
+    /// environment snapshot in a detached utility task so these calls never block the UI.
     static func run(_ executable: String, _ arguments: [String]) -> String? {
         let process = Process()
         let pipe = Pipe()

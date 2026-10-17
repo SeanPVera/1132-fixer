@@ -9,56 +9,77 @@ struct HeaderCard: View {
     let appVersion: String
 
     var body: some View {
-        HStack(alignment: .center, spacing: 14) {
+        HStack(alignment: .center, spacing: Theme.Spacing.large) {
             ZStack {
-                Rectangle()
-                    .fill(Theme.Colors.panelBackground)
-                    .border(Theme.Colors.border, width: 1)
-                    .frame(width: 58, height: 58)
-                Image(systemName: "terminal.fill")
-                    .font(.system(size: 28, weight: .bold))
-                    .foregroundStyle(Theme.Colors.accent)
+                RoundedRectangle(cornerRadius: Theme.Radius.medium, style: .continuous)
+                    .fill(Theme.Colors.primary.opacity(0.16))
+                    .frame(
+                        width: Theme.Spacing.section + Theme.Spacing.small,
+                        height: Theme.Spacing.section + Theme.Spacing.small
+                    )
+                Image(systemName: "video.fill")
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(Theme.Colors.primary)
+                    .accessibilityHidden(true)
             }
 
-            Text("1132 Fixer")
-                .font(.system(size: 29, weight: .black, design: .monospaced))
-                .foregroundStyle(Theme.Colors.accent)
+            VStack(alignment: .leading, spacing: Theme.Spacing.xSmall) {
+                Text("1132 Fixer")
+                    .font(Theme.Typography.display)
+                    .foregroundStyle(Theme.Colors.textPrimary)
+                Text("Zoom diagnostic & repair · v\(appVersion)")
+                    .font(Theme.Typography.caption)
+                    .foregroundStyle(Theme.Colors.textSecondary)
+            }
 
-            Spacer()
+            Spacer(minLength: Theme.Spacing.xLarge)
 
-            VStack(spacing: 6) {
-                HStack(spacing: 8) {
-                    HeaderLinkButton(title: "GitHub", systemImage: "link.circle.fill", destination: repositoryURL)
-                        .frame(maxWidth: .infinity)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Theme.Spacing.small) {
+                    HeaderLinkButton(title: "GitHub", systemImage: "link", destination: repositoryURL)
                     HeaderLinkButton(title: "Website", systemImage: "globe", destination: websiteURL)
-                        .frame(maxWidth: .infinity)
-                }
-                HStack(spacing: 8) {
                     HeaderActionButton(
                         title: "Report a bug",
-                        systemImage: "ladybug.fill",
+                        systemImage: "ladybug",
                         isDisabled: isReportBugDisabled,
                         action: onReportBug
                     )
-                    .frame(maxWidth: .infinity)
                     HeaderActionButton(
                         title: "Export Diagnostics",
                         systemImage: "square.and.arrow.up",
                         isDisabled: false,
                         action: onExportDiagnostics
                     )
-                    .frame(maxWidth: .infinity)
+                }
+                VStack(alignment: .trailing, spacing: Theme.Spacing.small) {
+                    HStack(spacing: Theme.Spacing.small) {
+                        HeaderLinkButton(title: "GitHub", systemImage: "link", destination: repositoryURL)
+                        HeaderLinkButton(title: "Website", systemImage: "globe", destination: websiteURL)
+                    }
+                    HStack(spacing: Theme.Spacing.small) {
+                        HeaderActionButton(
+                            title: "Report a bug",
+                            systemImage: "ladybug",
+                            isDisabled: isReportBugDisabled,
+                            action: onReportBug
+                        )
+                        HeaderActionButton(
+                            title: "Export Diagnostics",
+                            systemImage: "square.and.arrow.up",
+                            isDisabled: false,
+                            action: onExportDiagnostics
+                        )
+                    }
                 }
             }
-            .frame(width: 280)
         }
-        .padding(18)
-        .terminalPanel()
+        .padding(Theme.Spacing.large)
+        .themedPanel()
+        .accessibilityElement(children: .contain)
     }
 }
 
-
-struct HeaderLinkButton: View {
+private struct HeaderLinkButton: View {
     let title: String
     let systemImage: String
     let destination: URL
@@ -67,13 +88,12 @@ struct HeaderLinkButton: View {
         Link(destination: destination) {
             Label(title, systemImage: systemImage)
         }
-        .buttonStyle(.plain)
-        .modifier(HeaderButtonChrome())
+        .buttonStyle(ThemedButtonStyle(variant: .secondary))
+        .accessibilityHint("Opens in your default browser")
     }
 }
 
-
-struct HeaderActionButton: View {
+private struct HeaderActionButton: View {
     let title: String
     let systemImage: String
     let isDisabled: Bool
@@ -83,21 +103,8 @@ struct HeaderActionButton: View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ThemedButtonStyle(variant: .secondary))
         .disabled(isDisabled)
-        .opacity(isDisabled ? 0.58 : 1.0)
-        .modifier(HeaderButtonChrome())
-    }
-}
-
-
-struct HeaderButtonChrome: ViewModifier {
-    func body(content: Content) -> some View {
-        content
-            .font(.system(size: 12, weight: .semibold, design: .monospaced))
-            .foregroundStyle(Theme.Colors.accent)
-            .padding(.vertical, 10)
-            .padding(.horizontal, 14)
-            .terminalPanel()
+        .opacity(isDisabled ? 0.55 : 1)
     }
 }

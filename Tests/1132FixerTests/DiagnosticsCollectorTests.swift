@@ -82,4 +82,13 @@ struct DiagnosticsCollectorTests {
         #expect(DiagnosticsCollector.formatDuration(3660) == "1h 1m")
         #expect(DiagnosticsCollector.formatDuration(90000) == "25h 0m")
     }
+
+    @Test("snapshot omits unrelated device-capacity and uptime details")
+    func snapshotDataMinimization() {
+        let snapshot = DiagnosticsCollector.makeSnapshot().joined(separator: "\n")
+        #expect(!snapshot.contains("Processor count:"))
+        #expect(!snapshot.contains("Physical memory:"))
+        #expect(!snapshot.contains("System uptime:"))
+        #expect(snapshot.contains("Sandbox launch required: yes"))
+    }
 }

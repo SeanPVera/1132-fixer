@@ -1,8 +1,11 @@
 import SwiftUI
 
 struct BugReportFormSheet: View {
+    static let maximumMessageLength = 4_000
+
     @Binding var email: String
     @Binding var message: String
+    @Binding var submissionError: String?
     let isSubmitting: Bool
     let onCancel: () -> Void
     let onSubmit: () -> Void
@@ -10,68 +13,132 @@ struct BugReportFormSheet: View {
     /// A report always carries an attached diagnostics file. Spell out what is in it
     /// so sending is an informed choice rather than a surprise.
     static let attachedDiagnostics = [
-        "App version, macOS version and build, and Mac architecture",
-        "Locale and time zone",
-        "Whether Zoom is installed, where, and whether it is running",
-        "Preflight checks and the result of your last run",
-        "The activity log shown in the main window",
+        "App version, macOS version/build, architecture, locale, and time zone",
+        "Whether Zoom is installed, where it is, and whether its processes are running",
+        "Network interface type, preflight checks, and the latest workflow results",
+        "Up to 5,000 recent activity-log entries",
     ]
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Report a bug")
-                .font(.system(size: 18, weight: .bold, design: .monospaced))
+    private var trimmedMessage: String {
+        message.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
-            Text("Add an optional email and a message.")
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .foregroundStyle(.secondary)
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.large) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.small) {
+                Text("Report a bug")
+                    .font(Theme.Typography.heading)
+                    .foregroundStyle(Theme.Colors.textPrimary)
+
+                Text("Describe what happened. Your contact information is optional.")
+                    .font(Theme.Typography.body)
+                    .foregroundStyle(Theme.Colors.textSecondary)
+            }
 
             DisclosureGroup("What gets sent with your report") {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: Theme.Spacing.small) {
                     ForEach(Self.attachedDiagnostics, id: \.self) { item in
-                        Text("• \(item)")
+                        Label(item, systemImage: "checkmark.circle")
                     }
-                    Text("Home folder paths are replaced with ~. Use Export Diagnostics in the app header to read the exact file before sending. Reports are sent over HTTPS to the 1132 Fixer bug report service.")
-                        .padding(.top, 2)
+                    Text("Home-folder paths are replaced with ~. Use Export Diagnostics in the app header to inspect the exact attachment before sending. Reports are sent over HTTPS to the 1132 Fixer bug-report service.")
+                        .padding(.top, Theme.Spacing.xSmall)
                 }
-                .font(.system(size: 11, weight: .regular, design: .monospaced))
-                .foregroundStyle(.secondary)
+                .font(Theme.Typography.caption)
+                .foregroundStyle(Theme.Colors.textSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 4)
+                .padding(.top, Theme.Spacing.small)
             }
-            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+            .font(Theme.Typography.label)
+            .foregroundStyle(Theme.Colors.textPrimary)
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.small) {
                 Text("E-mail or Telegram (optional)")
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .font(Theme.Typography.label)
+                    .foregroundStyle(Theme.Colors.textPrimary)
                 TextField("user@example.com", text: $email)
-                    .textFieldStyle(.squareBorder)
-                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                    .textFieldStyle(.plain)
+                    .font(Theme.Typography.body)
+                    .padding(Theme.Spacing.medium)
+                    .background(Theme.Colors.surfaceModal)
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.small, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: Theme.Radius.small, style: .continuous)
+                            .stroke(Theme.Colors.border, lineWidth: 1)
+                    }
                     .disabled(isSubmitting)
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Message")
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+            VStack(alignment: .leading, spacing: Theme.Spacing.small) {
+                HStack {
+                    Text("Message")
+                        .font(Theme.Typography.label)
+                        .foregroundStyle(Theme.Colors.textPrimary)
+                    Text("Required")
+                        .font(Theme.Typography.caption)
+                        .foregroundStyle(Theme.Colors.error)
+                    Spacer()
+                    Text("\(message.count)/\(Self.maximumMessageLength)")
+                        .font(Theme.Typography.caption)
+                        .foregroundStyle(Theme.Colors.textSecondary)
+                }
+
                 TextEditor(text: $message)
-                    .font(.system(size: 12, weight: .regular, design: .monospaced))
-                    .frame(minHeight: 120)
-                    .padding(6)
-                    .background(Color.black.opacity(0.08))
-                    .border(Color.secondary.opacity(0.2), width: 1)
+                    .font(Theme.Typography.body)
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: Theme.Spacing.section * 3)
+                    .padding(Theme.Spacing.small)
+                    .background(Theme.Colors.surfaceModal)
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.small, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: Theme.Radius.small, style: .continuous)
+                            .stroke(Theme.Colors.border, lineWidth: 1)
+                    }
                     .disabled(isSubmitting)
+                    .onChange(of: message) { newValue in
+                        if newValue.count > Self.maximumMessageLength {
+                            message = String(newValue.prefix(Self.maximumMessageLength))
+                        }
+                        submissionError = nil
+                    }
+            }
+
+            if let submissionError {
+                Label(submissionError, systemImage: "exclamationmark.triangle.fill")
+                    .font(Theme.Typography.body)
+                    .foregroundStyle(Theme.Colors.error)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("Bug report error: \(submissionError)")
             }
 
             HStack {
-                Spacer()
                 Button("Cancel", role: .cancel, action: onCancel)
+                    .buttonStyle(ThemedButtonStyle(variant: .secondary))
                     .disabled(isSubmitting)
-                Button(isSubmitting ? "Sending..." : "Send Report", action: onSubmit)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(isSubmitting)
+
+                Spacer()
+
+                Button(action: onSubmit) {
+                    if isSubmitting {
+                        HStack(spacing: Theme.Spacing.small) {
+                            ProgressView().controlSize(.small)
+                            Text("Sending…")
+                        }
+                    } else {
+                        Text("Send Report")
+                    }
+                }
+                .buttonStyle(ThemedButtonStyle(variant: .primary))
+                .keyboardShortcut(.defaultAction)
+                .disabled(isSubmitting || trimmedMessage.isEmpty)
             }
         }
-        .padding(18)
-        .frame(width: 460)
+        .padding(Theme.Spacing.xLarge)
+        .frame(width: 520)
+        .background(Theme.Colors.surfaceModal)
+        .preferredColorScheme(.dark)
+        .interactiveDismissDisabled(isSubmitting)
+        .onExitCommand {
+            if !isSubmitting { onCancel() }
+        }
     }
 }
