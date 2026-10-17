@@ -561,7 +561,7 @@ struct ShellCommandsTests {
 
     @Test func stopZoomFailsClosedWhenProcessesSurviveForceKill() {
         guard let forceKill = ShellCommands.stopZoom.range(of: #"/usr/bin/killall -9 "$proc""#)?.upperBound,
-              let refusal = ShellCommands.stopZoom.range(of: "refusing to modify local state")?.lowerBound else {
+              let refusal = ShellCommands.stopZoom.range(of: "refusing to modify Zoom data")?.lowerBound else {
             Issue.record("Stop command is missing its force-kill or final refusal check")
             return
         }

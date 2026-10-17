@@ -17,7 +17,7 @@ struct AppViewModelWorkflowTests {
         #expect(viewModel.logs.count <= 2_000)
         #expect(viewModel.logs.reduce(0) { $0 + $1.utf8.count } <= 512 * 1_024)
         #expect(viewModel.logs.last?.contains("2999:") == true)
-        #expect(viewModel.logs.first?.contains("0:") == false)
+        #expect(viewModel.logs.first?.hasSuffix("] 0:\(payload)") == false)
     }
 
     @Test
@@ -87,7 +87,9 @@ struct AppViewModelWorkflowTests {
             zoomVerifier: { _ in
                 .init(
                     appPath: "/Applications/zoom.us.app",
-                    binaryPath: "/Applications/zoom.us.app/Contents/MacOS/zoom.us"
+                    // A successful verifier promises an executable path. Use a real
+                    // executable so this fake exercises the persistent-sandbox branch.
+                    binaryPath: "/usr/bin/true"
                 )
             },
             mediaAccessChecker: { "Camera and microphone test grants" },
