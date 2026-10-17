@@ -9,21 +9,23 @@ struct BackupStoreTests {
         defer { fixture.remove() }
 
         let older = try fixture.makeDirectory(named: "2026-01-01T00-00-00Z", modified: Date(timeIntervalSince1970: 10))
-        let newer = try fixture.makeDirectory(named: "snapshot-2026-01-02T00-00-00Z.ABC123", modified: Date(timeIntervalSince1970: 20))
-        _ = try fixture.makeDirectory(named: "unrelated", modified: Date(timeIntervalSince1970: 30))
+        let newer = try fixture.makeCompletedSnapshot(named: "snapshot-2026-01-02T00-00-00Z.ABC123", modified: Date(timeIntervalSince1970: 20))
+        let incomplete = try fixture.makeDirectory(named: "snapshot-2026-01-03T00-00-00Z.DEF456", modified: Date(timeIntervalSince1970: 30))
+        _ = try fixture.makeDirectory(named: "unrelated", modified: Date(timeIntervalSince1970: 40))
 
         let latestCandidate = try #require(BackupStore.latestBackupURL(rootURL: fixture.root))
         let latest = latestCandidate.resolvingSymlinksInPath().standardizedFileURL
         let expected = newer.resolvingSymlinksInPath().standardizedFileURL
         #expect(latest == expected)
         #expect(BackupStore.isManagedBackupURL(older, rootURL: fixture.root))
+        #expect(!BackupStore.isManagedBackupURL(incomplete, rootURL: fixture.root))
     }
 
     @Test func managedBackupMustBeADirectChildWithAnAppOwnedName() throws {
         let fixture = try BackupFixture()
         defer { fixture.remove() }
 
-        let valid = try fixture.makeDirectory(named: "snapshot-2026-01-02T00-00-00Z.ABC123")
+        let valid = try fixture.makeCompletedSnapshot(named: "snapshot-2026-01-02T00-00-00Z.ABC123")
         let unrelated = try fixture.makeDirectory(named: "photos")
         let nested = valid.appendingPathComponent("snapshot-nested", isDirectory: true)
         try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: false)
@@ -34,6 +36,22 @@ struct BackupStoreTests {
         #expect(!BackupStore.isManagedBackupURL(unrelated, rootURL: fixture.root))
         #expect(!BackupStore.isManagedBackupURL(nested, rootURL: fixture.root))
         #expect(!BackupStore.isManagedBackupURL(file, rootURL: fixture.root))
+    }
+
+    @Test func currentBackupRequiresARegularCompletionMarker() throws {
+        let fixture = try BackupFixture()
+        defer { fixture.remove() }
+
+        let backup = try fixture.makeDirectory(named: "snapshot-2026-01-02T00-00-00Z.ABC123")
+        #expect(!BackupStore.isManagedBackupURL(backup, rootURL: fixture.root))
+
+        let marker = backup.appendingPathComponent(".1132fixer-backup")
+        try FileManager.default.createDirectory(at: marker, withIntermediateDirectories: false)
+        #expect(!BackupStore.isManagedBackupURL(backup, rootURL: fixture.root))
+
+        try FileManager.default.removeItem(at: marker)
+        try Data().write(to: marker)
+        #expect(BackupStore.isManagedBackupURL(backup, rootURL: fixture.root))
     }
 
     @Test func managedBackupRejectsSymlinkEscapes() throws {
@@ -64,6 +82,13 @@ private struct BackupFixture {
     func makeDirectory(named name: String, modified: Date = Date()) throws -> URL {
         let url = root.appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+        try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
+        return url
+    }
+
+    func makeCompletedSnapshot(named name: String, modified: Date = Date()) throws -> URL {
+        let url = try makeDirectory(named: name)
+        try Data().write(to: url.appendingPathComponent(".1132fixer-backup"))
         try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
         return url
     }

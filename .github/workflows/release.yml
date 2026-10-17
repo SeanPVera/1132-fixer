@@ -70,13 +70,14 @@ jobs:
           VERSION: ${{ steps.metadata.outputs.version }}
         run: |
           set -euo pipefail
+          asset_name="1132-Fixer-v$VERSION-universal.dmg"
           source="dist/1132 Fixer-v$VERSION-universal.dmg"
-          asset="dist/1132-Fixer-v$VERSION-universal.dmg"
+          asset="dist/$asset_name"
           test -f "$source"
           mv "$source" "$asset"
           codesign --verify --strict --verbose=2 "$asset"
           xcrun stapler validate "$asset"
-          shasum -a 256 "$asset" > "$asset.sha256"
+          ( cd dist && shasum -a 256 "$asset_name" > "$asset_name.sha256" )
           echo "path=$asset" >> "$GITHUB_OUTPUT"
           echo "checksum=$asset.sha256" >> "$GITHUB_OUTPUT"
 
@@ -88,8 +89,11 @@ jobs:
           CHECKSUM_PATH: ${{ steps.asset.outputs.checksum }}
         run: |
           set -euo pipefail
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          if is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' 2>/dev/null)"; then
             gh release upload "$RELEASE_TAG" "$ASSET_PATH" "$CHECKSUM_PATH" --clobber
+            if [[ "$is_draft" == "true" ]]; then
+              gh release edit "$RELEASE_TAG" --draft=false
+            fi
           else
             gh release create "$RELEASE_TAG" "$ASSET_PATH" "$CHECKSUM_PATH" \
               --verify-tag \

@@ -4,6 +4,8 @@ import Foundation
 /// Backup creation and pruning stay in the shell command so they are part of the same
 /// fail-closed operation that gates deletion of Zoom state.
 enum BackupStore {
+    private static let completionMarkerName = ".1132fixer-backup"
+
     static var rootURL: URL {
         URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
             .appendingPathComponent("Library/Application Support/1132Fixer/Backups", isDirectory: true)
@@ -48,7 +50,19 @@ enum BackupStore {
         guard isCurrentName || isLegacyName else { return false }
 
         var isDirectory: ObjCBool = false
-        return fileManager.fileExists(atPath: resolvedURL.path, isDirectory: &isDirectory) && isDirectory.boolValue
+        guard fileManager.fileExists(atPath: resolvedURL.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return false
+        }
+
+        // Legacy timestamp-only backups predate completion markers. Current snapshots
+        // are usable only after the backup command records that every copy succeeded.
+        guard isCurrentName else { return true }
+        let markerURL = resolvedURL.appendingPathComponent(completionMarkerName, isDirectory: false)
+        guard let markerAttributes = try? fileManager.attributesOfItem(atPath: markerURL.path) else {
+            return false
+        }
+        return markerAttributes[.type] as? FileAttributeType == .typeRegular
     }
 
     static func availableCapacityBytes(at url: URL = URL(fileURLWithPath: NSHomeDirectory())) -> Int64? {
