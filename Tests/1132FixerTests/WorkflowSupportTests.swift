@@ -6,15 +6,20 @@ import Testing
 struct WorkflowRunGateTests {
     @Test func rejectsOverlapAndIgnoresStaleCompletion() throws {
         var gate = WorkflowRunGate()
-        let first = try #require(gate.begin())
+        let firstCandidate = gate.begin()
+        let first = try #require(firstCandidate)
 
         #expect(gate.isActive)
-        #expect(gate.begin() == nil)
-        #expect(!gate.finish(UUID()))
+        let overlappingRun = gate.begin()
+        #expect(overlappingRun == nil)
+        let staleCompletion = gate.finish(UUID())
+        #expect(!staleCompletion)
         #expect(gate.isActive)
-        #expect(gate.finish(first))
+        let activeCompletion = gate.finish(first)
+        #expect(activeCompletion)
         #expect(!gate.isActive)
-        #expect(gate.begin() != nil)
+        let secondRun = gate.begin()
+        #expect(secondRun != nil)
     }
 }
 
