@@ -5,20 +5,23 @@ import Testing
 @Suite("DiagnosticsCollector")
 struct DiagnosticsCollectorTests {
 
-    @Test func runReturnsTrimmedOutput() {
-        #expect(DiagnosticsCollector.run("/bin/echo", ["hello"]) == "hello")
+    @Test func runReturnsTrimmedOutput() async {
+        #expect(await DiagnosticsCollector.run("/bin/echo", ["hello"]) == "hello")
     }
 
-    @Test func runReturnsNilOnFailureOrMissingTool() {
-        #expect(DiagnosticsCollector.run("/usr/bin/false", []) == nil)
-        #expect(DiagnosticsCollector.run("/nonexistent/tool", []) == nil)
+    @Test func runReturnsNilOnFailureOrMissingTool() async {
+        #expect(await DiagnosticsCollector.run("/usr/bin/false", []) == nil)
+        #expect(await DiagnosticsCollector.run("/nonexistent/tool", []) == nil)
     }
 
-    @Test func runHandlesOutputLargerThanThePipeBuffer() {
-        // ~600 KB of output; waiting for exit before reading would deadlock here.
-        let output = DiagnosticsCollector.run("/usr/bin/seq", ["1", "100000"])
-        #expect(output?.hasSuffix("100000") == true)
-        #expect((output?.count ?? 0) > 65_536)
+    @Test func runDrainsLargeOutputButKeepsOnlyTheBoundedTail() async {
+        // ~600 KB of output; the executor must drain it without retaining it all.
+        let output = await DiagnosticsCollector.run(
+            "/bin/bash",
+            ["-c", "/usr/bin/yes 1234567890 | /usr/bin/head -n 60000; printf newest"]
+        )
+        #expect(output?.hasSuffix("newest") == true)
+        #expect((output?.utf8.count ?? 0) <= 32 * 1_024)
     }
 
     @Test("yesNo formats correctly")
@@ -84,8 +87,8 @@ struct DiagnosticsCollectorTests {
     }
 
     @Test("snapshot omits unrelated device-capacity and uptime details")
-    func snapshotDataMinimization() {
-        let snapshot = DiagnosticsCollector.makeSnapshot().joined(separator: "\n")
+    func snapshotDataMinimization() async {
+        let snapshot = (await DiagnosticsCollector.makeSnapshot()).joined(separator: "\n")
         #expect(!snapshot.contains("Processor count:"))
         #expect(!snapshot.contains("Physical memory:"))
         #expect(!snapshot.contains("System uptime:"))

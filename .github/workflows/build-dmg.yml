@@ -13,11 +13,13 @@ on:
         default: true
         type: boolean
   push:
+    branches: [main]
     # The packaging script is not covered by the test suite, so re-run it
     # whenever it changes to prove it still produces a DMG.
     paths:
       - ".github/workflows/build-dmg.yml"
       - "scripts/build-universal-dmg.sh"
+      - "scripts/check-dmg.sh"
 
 permissions:
   contents: read
@@ -29,15 +31,41 @@ concurrency:
 jobs:
   dmg:
     name: Universal DMG (macOS)
+    # Manual runs must use the reviewed workflow definition from main. The separate
+    # ref input still permits an ancestry-checked historical/main build.
+    if: github.ref == 'refs/heads/main'
     # Same image as the CI workflow so the packaged build uses the same toolchain.
     runs-on: macos-15
     timeout-minutes: 60
+    # Store signing/notarization secrets in this environment and restrict it to
+    # protected release refs. The in-workflow ancestry check below is defense in depth.
+    environment: release-signing
 
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate signing trust boundary
+        id: trust
+        shell: bash
+        run: |
+          set -euo pipefail
+          trusted=false
+          if git show-ref --verify --quiet refs/remotes/origin/main \
+            && git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            trusted=true
+          fi
+
+          echo "trusted=$trusted" >> "$GITHUB_OUTPUT"
+          if [[ "$trusted" == true ]]; then
+            echo "Selected commit is reachable from origin/main; release credentials may be used."
+          else
+            echo "::warning::Selected commit is not reachable from origin/main. Building ad-hoc without signing, notarization, or bug-report credentials."
+          fi
 
       - name: Toolchain versions
         run: |
@@ -57,14 +85,14 @@ jobs:
       - name: Select signing mode
         id: signing
         env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_CERTIFICATE: ${{ steps.trust.outputs.trusted == 'true' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ steps.trust.outputs.trusted == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_ID: ${{ steps.trust.outputs.trusted == 'true' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ steps.trust.outputs.trusted == 'true' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ steps.trust.outputs.trusted == 'true' && secrets.APPLE_TEAM_ID || '' }}
           # Notarization takes minutes on Apple's side, so only do it for
           # deliberate, on-demand builds.
-          NOTARIZE_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.notarize }}
+          NOTARIZE_REQUESTED: ${{ steps.trust.outputs.trusted == 'true' && github.event_name == 'workflow_dispatch' && inputs.notarize }}
         run: |
           set -euo pipefail
 
@@ -92,13 +120,13 @@ jobs:
           # Empty for a Developer ID build so the script imports the certificate
           # into a temporary keychain; "-" selects an ad-hoc signature.
           SIGN_IDENTITY: ${{ steps.signing.outputs.mode == 'adhoc' && '-' || '' }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          FIXER_BUG_REPORT_ENDPOINT: ${{ secrets.FIXER_BUG_REPORT_ENDPOINT }}
-          FIXER_BUG_REPORT_TOKEN: ${{ secrets.FIXER_BUG_REPORT_TOKEN }}
+          APPLE_CERTIFICATE: ${{ steps.trust.outputs.trusted == 'true' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ steps.trust.outputs.trusted == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_ID: ${{ steps.trust.outputs.trusted == 'true' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ steps.trust.outputs.trusted == 'true' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ steps.trust.outputs.trusted == 'true' && secrets.APPLE_TEAM_ID || '' }}
+          FIXER_BUG_REPORT_ENDPOINT: ${{ steps.trust.outputs.trusted == 'true' && secrets.FIXER_BUG_REPORT_ENDPOINT || '' }}
+          FIXER_BUG_REPORT_TOKEN: ${{ steps.trust.outputs.trusted == 'true' && secrets.FIXER_BUG_REPORT_TOKEN || '' }}
           NOTARIZE: ${{ steps.signing.outputs.notarize }}
           APP_BUILD: ${{ github.run_number }}
         run: ./scripts/build-universal-dmg.sh
@@ -130,6 +158,14 @@ jobs:
 
           codesign --verify --verbose=2 "dist/$name.dmg"
           echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke check finished DMG
+        env:
+          DMG_NAME: ${{ steps.package.outputs.name }}
+          MODE: ${{ steps.signing.outputs.mode }}
+          NOTARIZED: ${{ steps.signing.outputs.notarize }}
+          APP_BUILD: ${{ github.run_number }}
+        run: ./scripts/check-dmg.sh "dist/$DMG_NAME.dmg" "$MODE" "$NOTARIZED"
 
       - name: Upload DMG
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

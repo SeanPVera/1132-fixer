@@ -304,19 +304,29 @@ struct ShellCommandsTests {
 
     @Test func backupCommandUsesUniquePrivateSnapshotsAndCleansPartialCopies() {
         let cmd = ShellCommands.makeBackupZoomDataCommand()
-        #expect(cmd.contains(#"/usr/bin/mktemp -d "$backup_root/snapshot-"#))
-        #expect(cmd.contains("cleanup_partial_backup"))
+        #expect(cmd.contains(#"/usr/bin/mktemp -d "$backup_root/.incomplete.XXXXXX""#))
+        #expect(cmd.contains("cleanup_backup"))
         #expect(cmd.contains(#"[ "$backup_complete" -ne 1 ]"#))
-        #expect(cmd.contains(#": > "$backup_dir/.1132fixer-backup""#))
+        #expect(cmd.contains(#": > "$staging_dir/.1132fixer-backup""#))
     }
 
     @Test func backupCommandEchoesOnlyTheBackupPath() {
-        // AppViewModel consumes stdout as the backup path, so nothing else may print.
+        // AppViewModel consumes stdout as the backup path. Error messages go to stderr.
         let cmd = ShellCommands.makeBackupZoomDataCommand()
         let echoLines = cmd.split(separator: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { $0.hasPrefix("echo ") }
+            .filter { $0.hasPrefix("echo ") && !$0.contains(">&2") }
         #expect(echoLines == [#"echo "$backup_dir""#])
+    }
+
+    @Test func backupCommandUsesTheProvidedHomeAndAtomicStaging() {
+        let cmd = ShellCommands.makeBackupZoomDataCommand(homeDirectory: "/Users/test user's home")
+        #expect(cmd.contains(#"home='/Users/test user'\''s home'"#))
+        #expect(!cmd.contains(#"$HOME/Library"#))
+        #expect(cmd.contains(#"mktemp -d "$backup_root/.incomplete.XXXXXX""#))
+        #expect(cmd.contains(#"/bin/mv "$staging_dir" "$backup_dir""#))
+        #expect(cmd.contains("backup-manifest.txt"))
+        #expect(cmd.contains("trap cleanup_backup EXIT"))
     }
 
     // MARK: - Updaters
@@ -549,6 +559,49 @@ struct ShellCommandsTests {
         #expect(cmd.contains(#""CptHost""#))
     }
 
+    @Test func stopZoomFailsClosedWhenProcessesSurviveForceKill() {
+        guard let forceKill = ShellCommands.stopZoom.range(of: #"/usr/bin/killall -9 "$proc""#)?.upperBound,
+              let refusal = ShellCommands.stopZoom.range(of: "refusing to modify local state")?.lowerBound else {
+            Issue.record("Stop command is missing its force-kill or final refusal check")
+            return
+        }
+        #expect(forceKill < refusal)
+        #expect(ShellCommands.stopZoom.contains("exit 1"))
+    }
+
+    @Test func sandboxReadinessCompilesProfileWithoutLaunchingZoom() {
+        let cmd = ShellCommands.makeSandboxProfileValidationCommand(homeDirectory: "/Users/test")
+        #expect(cmd.contains(#"[ ! -x /usr/bin/sandbox-exec ]"#))
+        #expect(cmd.contains(#"/usr/bin/sandbox-exec -f "$profile_path" /usr/bin/true"#))
+        #expect(!cmd.contains("zoom.us"))
+        #expect(!cmd.contains("/usr/bin/open"))
+    }
+
+    @Test func readinessAndLaunchUseTheSameProvidedHomeInTheirProfiles() throws {
+        let home = "/Users/workflow home"
+        let readiness = ShellCommands.makeSandboxProfileValidationCommand(homeDirectory: home)
+        let launch = ShellCommands.makeLaunchZoomCommand(
+            zoomBinaryPath: "/Applications/zoom.us.app/Contents/MacOS/zoom.us",
+            zoomBinaryExists: true,
+            homeDirectory: home
+        )
+
+        let readinessProfile = try #require(decodedProfile(from: readiness))
+        let launchProfile = try #require(decodedProfile(from: launch))
+        #expect(readinessProfile == launchProfile)
+        #expect(launchProfile.contains(#"(subpath "/Users/workflow home/.ssh")"#))
+    }
+
+    private func decodedProfile(from command: String) -> String? {
+        guard let assignment = command.split(separator: "\n")
+            .map({ $0.trimmingCharacters(in: .whitespaces) })
+            .first(where: { $0.hasPrefix("encoded_profile='") && $0.hasSuffix("'") }) else {
+            return nil
+        }
+        let encoded = assignment.dropFirst("encoded_profile='".count).dropLast()
+        return Data(base64Encoded: String(encoded)).flatMap { String(data: $0, encoding: .utf8) }
+    }
+
     @Test func makeLaunchZoomCommandUsesPersistentSandboxOnly() {
         let cmd = ShellCommands.makeLaunchZoomCommand(zoomBinaryExists: true)
         #expect(cmd.contains("Launch mode: persistentSandbox"))
@@ -677,6 +730,44 @@ struct ShellCommandsTests {
         #expect(ethernet == .legacyMACSpoof)
     }
 
+    @Test func reconnectCommandsDoNotUseBlindPostReconnectDelays() {
+        let rotating = ShellCommands.makeRotatingMACResetCommand(device: "en0")
+        let legacy = ShellCommands.makeSpoofCommand(
+            device: "en0",
+            spoofedMAC: "02:ab:cd:ef:12:34",
+            networkService: "Wi-Fi"
+        )
+        #expect(!rotating.hasSuffix("/bin/sleep 2"))
+        #expect(!legacy.hasSuffix("/bin/sleep 2"))
+    }
+
+    @Test func networkReadinessIsBoundedAndChecksInterfaceAndRoute() {
+        let cmd = ShellCommands.makeNetworkReadinessCommand(
+            device: "en0",
+            maxAttempts: 7,
+            intervalSeconds: 2
+        )
+        #expect(cmd.contains("attempt"))
+        #expect(cmd.contains(#"[ "$attempt" -lt 7 ]"#))
+        #expect(cmd.contains(#"ifconfig "$device""#))
+        #expect(cmd.contains("status: active"))
+        #expect(cmd.contains("route -n get default"))
+        #expect(cmd.contains("/bin/sleep 2"))
+        #expect(cmd.contains("exit 1"))
+    }
+
+    @Test func networkReadinessQuotesTheInterface() {
+        let cmd = ShellCommands.makeNetworkReadinessCommand(device: "en0; touch /tmp/nope")
+        #expect(cmd.contains(#"device='en0; touch /tmp/nope'"#))
+    }
+
+    @Test func normalizedMACAddressRejectsUnverifiedOutput() {
+        #expect(ShellCommands.normalizedMACAddress(" 02:AB:CD:EF:12:34\n") == "02:ab:cd:ef:12:34")
+        #expect(ShellCommands.normalizedMACAddress("") == nil)
+        #expect(ShellCommands.normalizedMACAddress("not-a-mac") == nil)
+        #expect(ShellCommands.normalizedMACAddress("02:ab:cd:ef:12:34 extra") == nil)
+    }
+
     // MARK: - Custom Zoom Location
 
     @Test func zoomBinaryPathIsDerivedFromAppBundlePath() {
@@ -770,6 +861,8 @@ struct ShellCommandsTests {
         #expect(!ShellCommands.isSafeHomeDirectory("//"))
         #expect(!ShellCommands.isSafeHomeDirectory("Users/test"))
         #expect(!ShellCommands.isSafeHomeDirectory("~"))
+        #expect(!ShellCommands.isSafeHomeDirectory("/tmp/.."))
+        #expect(!ShellCommands.isSafeHomeDirectory("/Users/test/../other"))
     }
 
     // MARK: - Backup
@@ -781,6 +874,41 @@ struct ShellCommandsTests {
         #expect(cmd.contains("exit 1"))
         #expect(cmd.contains("backup_failed=1"))
         #expect(!cmd.contains(#"cp -a "$src" "$backup_dir/" 2>/dev/null || true"#))
+    }
+
+    @Test func backupCommandCreatesACompleteSnapshotInATemporaryHome() throws {
+        let fileManager = FileManager.default
+        let testRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("1132 backup tests \(UUID().uuidString)")
+        let home = testRoot.appendingPathComponent("home with spaces")
+        let zoomData = home.appendingPathComponent("Library/Application Support/zoom.us")
+        try fileManager.createDirectory(at: zoomData, withIntermediateDirectories: true)
+        try Data("session".utf8).write(to: zoomData.appendingPathComponent("state.txt"))
+        defer { try? fileManager.removeItem(at: testRoot) }
+
+        let process = Process()
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-c", ShellCommands.makeBackupZoomDataCommand(homeDirectory: home.path)]
+        process.standardOutput = stdout
+        process.standardError = stderr
+        try process.run()
+        let output = stdout.fileHandleForReading.readDataToEndOfFile()
+        let error = stderr.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        let errorText = String(decoding: error, as: UTF8.self)
+        #expect(process.terminationStatus == 0, "Backup command failed: \(errorText)")
+        let backupPath = String(decoding: output, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(fileManager.fileExists(atPath: backupPath + "/zoom.us/state.txt"))
+        #expect(fileManager.fileExists(atPath: backupPath + "/backup-manifest.txt"))
+
+        let backupRoot = home.appendingPathComponent("Library/Application Support/1132Fixer/Backups")
+        let entries = try fileManager.contentsOfDirectory(atPath: backupRoot.path)
+        #expect(entries.count == 1)
+        #expect(!entries.contains { $0.hasPrefix(".incomplete.") })
     }
 
     // MARK: - Machine Architecture

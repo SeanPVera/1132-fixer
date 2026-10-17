@@ -1,7 +1,12 @@
 import Foundation
 
 enum DiagnosticsCollector {
-    static func makeSnapshot() -> [String] {
+    private static let commandTimeout: TimeInterval = 3
+    private static let commandOutputLimit = 32 * 1_024
+
+    static func makeSnapshot(
+        executor: any ProcessExecuting = BoundedProcessExecutor()
+    ) async -> [String] {
         let fileManager = FileManager.default
         let home = NSHomeDirectory()
         let zoomAppPath = ZoomLocation.appPath
@@ -9,9 +14,27 @@ enum DiagnosticsCollector {
         let usingCustomZoomLocation = ZoomLocation.customAppPath != nil
         let zoomBundle = Bundle(path: zoomAppPath)
 
+        // These probes are independent and read-only. Running them concurrently keeps a
+        // slow system utility from serially delaying every diagnostics export.
+        async let osBuild = run("/usr/bin/sw_vers", ["-buildVersion"], executor: executor)
+        async let route = run("/sbin/route", ["-n", "get", "default"], executor: executor)
+        async let ports = run("/usr/sbin/networksetup", ["-listallhardwareports"], executor: executor)
+        async let zoomRunning = processIsRunning("zoom.us", executor: executor)
+        async let caphostRunning = processIsRunning("caphost", executor: executor)
+        async let cptHostRunning = processIsRunning("CptHost", executor: executor)
+
+        let probeResults = await (
+            osBuild,
+            route,
+            ports,
+            zoomRunning,
+            caphostRunning,
+            cptHostRunning
+        )
+
         var lines = [
             "--- Environment Snapshot ---",
-            "OS build: \(run("/usr/bin/sw_vers", ["-buildVersion"]) ?? "unknown")",
+            "OS build: \(probeResults.0 ?? "unknown")",
             "Host architecture: \(ShellCommands.machineArchitecture())",
             "Locale: \(Locale.current.identifier)",
             "Time zone: \(TimeZone.current.identifier)",
@@ -22,25 +45,24 @@ enum DiagnosticsCollector {
             "Zoom binary executable: \(yesNo(fileManager.isExecutableFile(atPath: zoomBinaryPath)))",
             "Zoom version: \(zoomBundle?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown")",
             "Zoom build: \(zoomBundle?.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown")",
-            "Zoom process running: \(yesNo(processIsRunning("zoom.us")))",
-            "Zoom capture helper running: \(processIsRunning("caphost") || processIsRunning("CptHost") ? "yes" : "no")",
+            "Zoom process running: \(yesNo(probeResults.3))",
+            "Zoom capture helper running: \(probeResults.4 || probeResults.5 ? "yes" : "no")",
             "MAC spoofing enabled by OS policy: \(yesNo(!ShellCommands.isMacSpoofingDisabledForCurrentOS()))",
         ]
 
-        lines.append(contentsOf: networkSnapshot())
+        lines.append(contentsOf: networkSnapshot(route: probeResults.1, ports: probeResults.2))
         lines.append(contentsOf: zoomStateSnapshot(homeDirectory: home))
         return lines
     }
 
-    private static func networkSnapshot() -> [String] {
-        guard let route = run("/sbin/route", ["-n", "get", "default"]) else {
+    private static func networkSnapshot(route: String?, ports: String?) -> [String] {
+        guard let route else {
             return ["Default route: unavailable"]
         }
 
         do {
             let device = try ShellCommands.parseDefaultRouteInterface(from: route)
-            let ports = run("/usr/sbin/networksetup", ["-listallhardwareports"]) ?? ""
-            let portName = ShellCommands.parseHardwarePorts(from: ports)[device] ?? "Unknown"
+            let portName = ShellCommands.parseHardwarePorts(from: ports ?? "")[device] ?? "Unknown"
             let kind = (try? ShellCommands.classifySupportedInterface(hardwarePortName: portName))?.rawValue ?? "Unsupported"
             return [
                 "Default route interface: \(device)",
@@ -66,32 +88,26 @@ enum DiagnosticsCollector {
         }
     }
 
-    private static func processIsRunning(_ name: String) -> Bool {
-        run("/usr/bin/pgrep", ["-x", name]) != nil
+    private static func processIsRunning(_ name: String, executor: any ProcessExecuting) async -> Bool {
+        await run("/usr/bin/pgrep", ["-x", name], executor: executor) != nil
     }
 
-    /// Runs a tool directly (no shell) and returns its trimmed stdout, or `nil` on failure.
-    ///
-    /// The pipe is read to EOF *before* waiting for exit. Waiting first deadlocks once the
-    /// tool writes more than the pipe buffer (about 64 KB): it blocks writing while this
-    /// side blocks waiting.
-    ///
-    /// This is synchronous because it drains a subprocess. `AppViewModel` always builds the
-    /// environment snapshot in a detached utility task so these calls never block the UI.
-    static func run(_ executable: String, _ arguments: [String]) -> String? {
-        let process = Process()
-        let pipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-
+    /// Runs a bounded, cancellation-aware tool directly (no shell) and returns trimmed
+    /// stdout, or `nil` on timeout, launch failure, or a non-zero exit status.
+    static func run(
+        _ executable: String,
+        _ arguments: [String],
+        executor: any ProcessExecuting = BoundedProcessExecutor()
+    ) async -> String? {
         do {
-            try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else { return nil }
-            return String(data: data, encoding: .utf8)?
+            let result = try await executor.run(
+                executable: executable,
+                arguments: arguments,
+                timeout: commandTimeout,
+                maxOutputBytes: commandOutputLimit
+            )
+            guard result.exitCode == 0 else { return nil }
+            return result.standardOutput
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
             return nil

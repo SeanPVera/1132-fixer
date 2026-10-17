@@ -4,8 +4,8 @@ import AppKit
 
 struct ContentView: View {
     @StateObject private var vm = AppViewModel()
-    private let repositoryURL = URL(string: "https://github.com/PrimeUpYourLife/1132-fixer")!
-    private let websiteURL = URL(string: "https://1132-fixer.xyz")!
+    private let repositoryURL = AppConfiguration.repositoryURL
+    private let websiteURL = AppConfiguration.websiteURL
     private let appVersion = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "dev"
 
     @State private var updateAlertIsPresented = false
