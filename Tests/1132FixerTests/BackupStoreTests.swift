@@ -12,7 +12,10 @@ struct BackupStoreTests {
         let newer = try fixture.makeDirectory(named: "snapshot-2026-01-02T00-00-00Z.ABC123", modified: Date(timeIntervalSince1970: 20))
         _ = try fixture.makeDirectory(named: "unrelated", modified: Date(timeIntervalSince1970: 30))
 
-        #expect(BackupStore.latestBackupURL(rootURL: fixture.root) == newer)
+        let latestCandidate = try #require(BackupStore.latestBackupURL(rootURL: fixture.root))
+        let latest = latestCandidate.resolvingSymlinksInPath().standardizedFileURL
+        let expected = newer.resolvingSymlinksInPath().standardizedFileURL
+        #expect(latest == expected)
         #expect(BackupStore.isManagedBackupURL(older, rootURL: fixture.root))
     }
 
