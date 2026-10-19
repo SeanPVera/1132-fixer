@@ -19,7 +19,6 @@ struct ZoomSandboxKeychainTests {
         // operations below name it explicitly, leaving the real login keychain alone.
         let keychainURL = keychainDirectory.appendingPathComponent("sandbox-test.keychain")
         let password = UUID().uuidString
-        let security = "/usr/bin/security"
         let account = "sandbox-test"
         let service = "1132FixerSandboxTest"
         var keychain: SecKeychain?
@@ -35,15 +34,10 @@ struct ZoomSandboxKeychainTests {
         }
         try #require(unlockStatus == errSecSuccess, "Could not unlock test keychain: \(unlockStatus)")
 
-        var trustedApplication: SecTrustedApplication?
-        let trustedStatus = SecTrustedApplicationCreateFromPath(security, &trustedApplication)
-        try #require(trustedStatus == errSecSuccess, "Could not trust security tool: \(trustedStatus)")
-        let trustedSecurity = try #require(trustedApplication)
-
         var access: SecAccess?
         let accessStatus = SecAccessCreate(
             "1132 Fixer sandbox fixture" as CFString,
-            [trustedSecurity] as CFArray,
+            [] as CFArray,
             &access
         )
         try #require(accessStatus == errSecSuccess, "Could not create test item access: \(accessStatus)")
@@ -85,13 +79,7 @@ struct ZoomSandboxKeychainTests {
         let profileURL = fixture.appendingPathComponent("zoom.sb")
         try ShellCommands.makeZoomSandboxProfile(homeDirectory: fixture.path)
             .write(to: profileURL, atomically: true, encoding: .utf8)
-
-        func writeArguments(_ value: String) -> [String] {
-            ["add-generic-password", "-U", "-a", account, "-s", service,
-             "-w", value, keychainURL.path]
-        }
-        let readArguments = ["find-generic-password", "-a", account, "-s", service,
-                             "-w", keychainURL.path]
+        let keychainProbe = try await buildKeychainProbe(in: fixture)
 
         func runSandboxed(_ executable: String, arguments: [String]) async throws -> CommandResult {
             try await runCommand(
@@ -100,15 +88,19 @@ struct ZoomSandboxKeychainTests {
             )
         }
 
-        let read = try await runSandboxed(security, arguments: readArguments)
+        let readArguments = ["read", keychainURL.path, account, service]
+        let read = try await runSandboxed(keychainProbe.path, arguments: readArguments)
         #expect(read.status == 0, "Sandbox blocked Keychain read: \(read.output)")
         #expect(read.output.trimmingCharacters(in: .whitespacesAndNewlines) == "initial-value")
 
         // An update needs database writes plus sibling lock/temporary files. A
         // metadata-only or read-only exception would still fail this operation.
-        let update = try await runSandboxed(security, arguments: writeArguments("updated-value"))
+        let update = try await runSandboxed(
+            keychainProbe.path,
+            arguments: ["write", keychainURL.path, account, service, "updated-value"]
+        )
         #expect(update.status == 0, "Sandbox blocked Keychain update: \(update.output)")
-        let updatedRead = try await runSandboxed(security, arguments: readArguments)
+        let updatedRead = try await runSandboxed(keychainProbe.path, arguments: readArguments)
         #expect(updatedRead.status == 0, "Updated item could not be read: \(updatedRead.output)")
         #expect(updatedRead.output.trimmingCharacters(in: .whitespacesAndNewlines) == "updated-value")
 
@@ -134,13 +126,85 @@ struct ZoomSandboxKeychainTests {
         let output: String
     }
 
-    private func runCommand(_ executable: String, arguments: [String]) async throws -> CommandResult {
+    private func buildKeychainProbe(in fixture: URL) async throws -> URL {
+        let sourceURL = fixture.appendingPathComponent("KeychainProbe.swift")
+        let executableURL = fixture.appendingPathComponent("keychain-probe")
+        try Self.keychainProbeSource.write(to: sourceURL, atomically: true, encoding: .utf8)
+
+        let build = try await runCommand(
+            "/usr/bin/xcrun",
+            arguments: [
+                "swiftc",
+                sourceURL.path,
+                "-framework", "Security",
+                "-o", executableURL.path,
+            ],
+            timeout: 60
+        )
+        try #require(build.status == 0, "Could not compile Keychain probe: \(build.output)")
+        return executableURL
+    }
+
+    private func runCommand(
+        _ executable: String,
+        arguments: [String],
+        timeout: TimeInterval = 15
+    ) async throws -> CommandResult {
         let result = try await BoundedProcessExecutor().run(
             executable: executable,
             arguments: arguments,
-            timeout: 15,
+            timeout: timeout,
             maxOutputBytes: 64 * 1_024
         )
         return CommandResult(status: result.exitCode, output: result.combinedOutput)
     }
+
+    private static let keychainProbeSource = #"""
+    import Darwin
+    import Foundation
+    import Security
+
+    func fail(_ message: String, status: OSStatus? = nil) -> Never {
+        let suffix = status.map { ": \($0)" } ?? ""
+        FileHandle.standardError.write(Data("\(message)\(suffix)\n".utf8))
+        exit(1)
+    }
+
+    let arguments = CommandLine.arguments
+    guard arguments.count >= 5 else { fail("usage: keychain-probe read|write keychain account service [value]") }
+
+    var keychain: SecKeychain?
+    let openStatus = SecKeychainOpen(arguments[2], &keychain)
+    guard openStatus == errSecSuccess, let keychain else {
+        fail("could not open keychain", status: openStatus)
+    }
+
+    var query: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrAccount as String: arguments[3],
+        kSecAttrService as String: arguments[4],
+        kSecMatchSearchList as String: [keychain],
+    ]
+
+    switch arguments[1] {
+    case "read":
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess, let data = item as? Data else {
+            fail("could not read item", status: status)
+        }
+        FileHandle.standardOutput.write(data)
+
+    case "write":
+        guard arguments.count == 6 else { fail("write requires a value") }
+        let attributes = [kSecValueData as String: Data(arguments[5].utf8)]
+        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        guard status == errSecSuccess else { fail("could not update item", status: status) }
+
+    default:
+        fail("unknown operation")
+    }
+    """#
 }
