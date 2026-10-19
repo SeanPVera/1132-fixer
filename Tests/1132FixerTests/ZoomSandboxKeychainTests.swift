@@ -35,9 +35,11 @@ struct ZoomSandboxKeychainTests {
         let account = "sandbox-test"
         let service = "1132FixerSandboxTest"
         func writeArguments(_ value: String) -> [String] {
-            ["add-generic-password", "-U", "-a", account, "-s", service,
+            ["add-generic-password", "-a", account, "-s", service,
              "-w", value, "-T", security, keychainURL.path]
         }
+        let deleteArguments = ["delete-generic-password", "-a", account, "-s", service,
+                               keychainURL.path]
         let readArguments = ["find-generic-password", "-a", account, "-s", service,
                              "-w", keychainURL.path]
 
@@ -54,8 +56,11 @@ struct ZoomSandboxKeychainTests {
         #expect(read.status == 0, "Sandbox blocked Keychain read: \(read.output)")
         #expect(read.output.trimmingCharacters(in: .whitespacesAndNewlines) == "initial-value")
 
-        // An update needs database writes plus sibling lock/temporary files. A
-        // metadata-only or read-only exception would still fail this operation.
+        // Replacing an item (delete + add) inside the sandbox requires database writes
+        // plus sibling lock/temporary files without triggering SecurityAgent's interactive
+        // ACL-change prompt (which `add-generic-password -U ... -T` triggers on macOS).
+        let deleteExisting = try runSandboxed(security, arguments: deleteArguments)
+        #expect(deleteExisting.status == 0, "Sandbox blocked Keychain delete: \(deleteExisting.output)")
         let update = try runSandboxed(security, arguments: writeArguments("updated-value"))
         #expect(update.status == 0, "Sandbox blocked Keychain update: \(update.output)")
         let updatedRead = try runSandboxed(security, arguments: readArguments)
@@ -92,6 +97,13 @@ struct ZoomSandboxKeychainTests {
         process.standardOutput = pipe
         process.standardError = pipe
         try process.run()
+        let deadline = Date().addingTimeInterval(5.0)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        if process.isRunning {
+            process.terminate()
+        }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         return CommandResult(status: process.terminationStatus, output: String(decoding: data, as: UTF8.self))
