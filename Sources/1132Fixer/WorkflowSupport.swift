@@ -20,6 +20,29 @@ struct WorkflowRunGate {
     }
 }
 
+/// Tracks the newest request in a replaceable asynchronous operation. Starting a
+/// request invalidates every older token, even when the underlying work ignores
+/// cancellation and completes later.
+struct LatestRequestGate {
+    private(set) var activeRequestID: UUID?
+
+    mutating func begin() -> UUID {
+        let requestID = UUID()
+        activeRequestID = requestID
+        return requestID
+    }
+
+    mutating func finish(_ requestID: UUID) -> Bool {
+        guard activeRequestID == requestID else { return false }
+        activeRequestID = nil
+        return true
+    }
+
+    mutating func invalidate() {
+        activeRequestID = nil
+    }
+}
+
 @MainActor
 enum WorkflowResultFormatter {
     static func summary(for results: [AppViewModel.StepResult]) -> String {

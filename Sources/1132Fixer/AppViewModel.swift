@@ -165,13 +165,12 @@ final class AppViewModel: ObservableObject {
     private var zoomLocationSelectionTask: Task<Void, Never>?
     private var runGate = WorkflowRunGate()
     private var activePreflightID: UUID?
-    private var activeZoomLocationSelectionID: UUID?
+    private var zoomLocationSelectionGate = LatestRequestGate()
     private var retainedLogBytes = 0
     private let processExecutor: any ProcessExecuting
     private let zoomVerifier: ZoomVerifier
     private let mediaAccessChecker: MediaAccessChecker?
     private let homeDirectoryProvider: () -> String
-    private let zoomLocationSetter: (String?) -> Void
     private let stopZoomCommand = ShellCommands.stopZoom
     private let stopZoomUpdatersCommand = ShellCommands.stopZoomUpdaters
 
@@ -179,14 +178,12 @@ final class AppViewModel: ObservableObject {
         processExecutor: any ProcessExecuting = BoundedProcessExecutor(),
         zoomVerifier: @escaping ZoomVerifier = { try await ZoomBundleVerifier.verify(appPath: $0) },
         mediaAccessChecker: MediaAccessChecker? = nil,
-        homeDirectoryProvider: @escaping () -> String = NSHomeDirectory,
-        zoomLocationSetter: @escaping (String?) -> Void = { ZoomLocation.customAppPath = $0 }
+        homeDirectoryProvider: @escaping () -> String = NSHomeDirectory
     ) {
         self.processExecutor = processExecutor
         self.zoomVerifier = zoomVerifier
         self.mediaAccessChecker = mediaAccessChecker
         self.homeDirectoryProvider = homeDirectoryProvider
-        self.zoomLocationSetter = zoomLocationSetter
     }
 
     /// The `zoom.us.app` bundle path currently in effect. `nil` means the default
@@ -1354,26 +1351,23 @@ If your network connection is disrupted after this step:
     /// Only the newest request may update the stored path or surface an error.
     func verifyAndSelectZoomLocation(_ validated: String) {
         cancelPendingZoomLocationSelection()
-        let selectionID = UUID()
-        activeZoomLocationSelectionID = selectionID
+        let selectionID = zoomLocationSelectionGate.begin()
 
         zoomLocationSelectionTask = Task { [weak self] in
             guard let self else { return }
             do {
                 _ = try await zoomVerifier(validated)
                 try Task.checkCancellation()
-                guard activeZoomLocationSelectionID == selectionID else { return }
+                guard finishZoomLocationSelection(selectionID) else { return }
 
-                finishZoomLocationSelection(selectionID)
-                zoomLocationSetter(validated)
+                ZoomLocation.customAppPath = validated
                 customZoomAppPath = validated
                 appendLog("Zoom location set to: \(validated)")
                 runPreflight()
             } catch is CancellationError {
-                finishZoomLocationSelection(selectionID)
+                _ = finishZoomLocationSelection(selectionID)
             } catch {
-                guard activeZoomLocationSelectionID == selectionID else { return }
-                finishZoomLocationSelection(selectionID)
+                guard finishZoomLocationSelection(selectionID) else { return }
                 appendLog("Selected app was rejected: \(error.localizedDescription)")
                 workflowState = .failed(error.localizedDescription)
             }
@@ -1381,21 +1375,21 @@ If your network connection is disrupted after this step:
     }
 
     private func cancelPendingZoomLocationSelection() {
-        activeZoomLocationSelectionID = nil
+        zoomLocationSelectionGate.invalidate()
         zoomLocationSelectionTask?.cancel()
         zoomLocationSelectionTask = nil
     }
 
-    private func finishZoomLocationSelection(_ selectionID: UUID) {
-        guard activeZoomLocationSelectionID == selectionID else { return }
-        activeZoomLocationSelectionID = nil
+    private func finishZoomLocationSelection(_ selectionID: UUID) -> Bool {
+        guard zoomLocationSelectionGate.finish(selectionID) else { return false }
         zoomLocationSelectionTask = nil
+        return true
     }
 
     /// Reverts to the default `/Applications/zoom.us.app` location.
     func resetZoomLocation() {
         cancelPendingZoomLocationSelection()
-        zoomLocationSetter(nil)
+        ZoomLocation.customAppPath = nil
         customZoomAppPath = nil
         appendLog("Zoom location reset to default: \(ZoomLocation.defaultAppPath)")
         runPreflight()
