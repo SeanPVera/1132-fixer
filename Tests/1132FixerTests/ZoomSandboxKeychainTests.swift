@@ -7,7 +7,15 @@ import Testing
 struct ZoomSandboxKeychainTests {
     @Test func sandboxedClientCanReadAndUpdateItsKeychain() throws {
         let fileManager = FileManager.default
-        let fixture = fileManager.temporaryDirectory.resolvingSymlinksInPath()
+        let rawTempPath = fileManager.temporaryDirectory.path
+        let canonicalTempPath: String
+        if let resolved = rawTempPath.withCString({ realpath($0, nil) }) {
+            defer { free(resolved) }
+            canonicalTempPath = String(cString: resolved)
+        } else {
+            canonicalTempPath = fileManager.temporaryDirectory.resolvingSymlinksInPath().path
+        }
+        let fixture = URL(fileURLWithPath: canonicalTempPath, isDirectory: true)
             .appendingPathComponent("1132fixer-keychain-tests-\(UUID().uuidString)", isDirectory: true)
         let keychainDirectory = fixture.appendingPathComponent("Library/Keychains", isDirectory: true)
         try fileManager.createDirectory(at: keychainDirectory, withIntermediateDirectories: true,
