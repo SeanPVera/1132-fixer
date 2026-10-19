@@ -23,33 +23,6 @@ struct WorkflowRunGateTests {
     }
 }
 
-@Suite("Latest request ownership")
-struct LatestRequestGateTests {
-    @Test func newerRequestInvalidatesOlderCompletion() {
-        var gate = LatestRequestGate()
-        let first = gate.begin()
-        let second = gate.begin()
-
-        let staleCompletion = gate.finish(first)
-        #expect(!staleCompletion)
-        #expect(gate.activeRequestID == second)
-        let currentCompletion = gate.finish(second)
-        #expect(currentCompletion)
-        #expect(gate.activeRequestID == nil)
-    }
-
-    @Test func explicitInvalidationRejectsPendingCompletion() {
-        var gate = LatestRequestGate()
-        let request = gate.begin()
-
-        gate.invalidate()
-
-        let invalidatedCompletion = gate.finish(request)
-        #expect(!invalidatedCompletion)
-        #expect(gate.activeRequestID == nil)
-    }
-}
-
 @Suite("Workflow results")
 @MainActor
 struct WorkflowResultFormatterTests {

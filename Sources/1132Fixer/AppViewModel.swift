@@ -165,7 +165,7 @@ final class AppViewModel: ObservableObject {
     private var zoomLocationSelectionTask: Task<Void, Never>?
     private var runGate = WorkflowRunGate()
     private var activePreflightID: UUID?
-    private var zoomLocationSelectionGate = LatestRequestGate()
+    private var activeZoomLocationSelectionID: UUID?
     private var retainedLogBytes = 0
     private let processExecutor: any ProcessExecuting
     private let zoomVerifier: ZoomVerifier
@@ -1351,7 +1351,8 @@ If your network connection is disrupted after this step:
     /// Only the newest request may update the stored path or surface an error.
     func verifyAndSelectZoomLocation(_ validated: String) {
         cancelPendingZoomLocationSelection()
-        let selectionID = zoomLocationSelectionGate.begin()
+        let selectionID = UUID()
+        activeZoomLocationSelectionID = selectionID
 
         zoomLocationSelectionTask = Task { [weak self] in
             guard let self else { return }
@@ -1375,13 +1376,14 @@ If your network connection is disrupted after this step:
     }
 
     private func cancelPendingZoomLocationSelection() {
-        zoomLocationSelectionGate.invalidate()
+        activeZoomLocationSelectionID = nil
         zoomLocationSelectionTask?.cancel()
         zoomLocationSelectionTask = nil
     }
 
     private func finishZoomLocationSelection(_ selectionID: UUID) -> Bool {
-        guard zoomLocationSelectionGate.finish(selectionID) else { return false }
+        guard activeZoomLocationSelectionID == selectionID else { return false }
+        activeZoomLocationSelectionID = nil
         zoomLocationSelectionTask = nil
         return true
     }

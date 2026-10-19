@@ -118,7 +118,6 @@ struct AppViewModelWorkflowTests {
         }
         Issue.record("Timed out waiting for the close command")
     }
-
 }
 
 private actor WorkflowProcessFake: ProcessExecuting {
