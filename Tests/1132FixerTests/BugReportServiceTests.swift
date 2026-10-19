@@ -93,6 +93,23 @@ struct BugReportServiceTests {
         #expect(BugReportService.truncatedServerDetail(from: Data()) == "")
     }
 
+    @Test func oversizedRequestTextIsBoundedWithoutBreakingUTF8() {
+        let value = String(repeating: "é", count: 50_000)
+        let bounded = BugReportService.boundedUTF8String(value, maxBytes: 1_001)
+
+        #expect(bounded.utf8.count <= 1_001)
+        #expect(bounded.hasSuffix("[truncated]"))
+        #expect(String(data: Data(bounded.utf8), encoding: .utf8) != nil)
+    }
+
+    @Test func requestTextLimitHandlesTinyAndNonTruncatedValues() {
+        #expect(BugReportService.boundedUTF8String("hello", maxBytes: 100) == "hello")
+        #expect(BugReportService.boundedUTF8String("hello", maxBytes: 0).isEmpty)
+        #expect(BugReportService.boundedUTF8String("hello", maxBytes: 3).utf8.count <= 3)
+        #expect(BugReportService.maxUserMessageBytes == 32 * 1_024)
+        #expect(BugReportService.maxServerResponseBytes == 64 * 1_024)
+    }
+
     // MARK: - Header escaping
 
     @Test("escapedHeaderValue handles standard string")

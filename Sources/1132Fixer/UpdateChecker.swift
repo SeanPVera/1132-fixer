@@ -7,9 +7,8 @@ struct ReleaseInfo: Equatable {
 }
 
 enum UpdateChecker {
-    // Keep this aligned with the repository link in ContentView.
-    static let owner = "PrimeUpYourLife"
-    static let repo = "1132-fixer"
+    static let owner = AppConfiguration.githubOwner
+    static let repo = AppConfiguration.githubRepository
     static let errorDomain = "1132Fixer.UpdateChecker"
     private static let userAgent = "1132Fixer"
 
@@ -30,9 +29,7 @@ enum UpdateChecker {
     }
 
     static func fetchLatestRelease(session: URLSession = .shared) async throws -> ReleaseInfo {
-        let url = URL(string: "https://api.github.com/repos/\(owner)/\(repo)/releases/latest")!
-
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: AppConfiguration.latestReleaseAPIURL)
         request.httpMethod = "GET"
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
@@ -73,21 +70,21 @@ enum UpdateChecker {
     }
 
     /// Release links are opened in the browser, so accept only this app's canonical
-    /// `https://github.com/PrimeUpYourLife/1132-fixer/...` path.
+    /// GitHub Releases path.
     /// The host must match exactly: a substring check would also accept hosts such as
     /// `evilgithub.com` or `github.com.evil.example`.
     static func isTrustedReleaseURL(_ url: URL) -> Bool {
+        let expectedPathPrefix = "/\(owner)/\(repo)/releases/".lowercased()
+        let normalizedPath = url.standardized.path.lowercased()
         guard url.scheme?.lowercased() == "https",
               url.host?.lowercased() == "github.com",
               url.user == nil,
-              url.port == nil || url.port == 443 else {
+              url.password == nil,
+              url.port == nil || url.port == 443,
+              normalizedPath.hasPrefix(expectedPathPrefix) else {
             return false
         }
-
-        let canonicalRepositoryPath = "/\(owner)/\(repo)".lowercased()
-        let candidatePath = url.path.lowercased()
-        return candidatePath == canonicalRepositoryPath
-            || candidatePath.hasPrefix(canonicalRepositoryPath + "/")
+        return true
     }
 
     static func normalizeVersion(_ raw: String) -> String {

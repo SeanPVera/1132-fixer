@@ -17,10 +17,26 @@ jobs:
     name: Sign, notarize, and publish universal DMG
     runs-on: macos-15
     timeout-minutes: 90
+    # Signing credentials must live in this environment. Restrict deployments to
+    # protected v* tags whose commits are reachable from main.
+    environment: release-signing
 
     steps:
       - name: Checkout release tag
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release trust boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show-ref --verify --quiet refs/remotes/origin/main
+          if ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            echo "Release tag must point to a commit reachable from origin/main." >&2
+            exit 1
+          fi
 
       - name: Verify tag matches app version
         id: metadata
@@ -80,6 +96,11 @@ jobs:
           ( cd dist && shasum -a 256 "$asset_name" > "$asset_name.sha256" )
           echo "path=$asset" >> "$GITHUB_OUTPUT"
           echo "checksum=$asset.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke check release DMG
+        env:
+          APP_BUILD: ${{ github.run_number }}
+        run: ./scripts/check-dmg.sh "${{ steps.asset.outputs.path }}" developer-id 1
 
       - name: Publish GitHub release
         env:

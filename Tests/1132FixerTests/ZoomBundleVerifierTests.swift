@@ -41,15 +41,15 @@ struct ZoomBundleVerifierTests {
         #expect(ZoomBundleVerifier.parseTeamIdentifier(from: "TeamIdentifier=") == nil)
     }
 
-    @Test func verifyRejectsNonZoomBundleName() {
-        #expect(throws: (any Error).self) {
-            try ZoomBundleVerifier.verify(appPath: "/Applications/Safari.app") { _, _ in
+    @Test func verifyRejectsNonZoomBundleName() async {
+        await #expect(throws: (any Error).self) {
+            try await ZoomBundleVerifier.verify(appPath: "/Applications/Safari.app") { _, _ in
                 Issue.record("codesign must not run for a wrongly named bundle")
                 return .init(status: 0, output: "")
             }
         }
-        #expect(throws: (any Error).self) {
-            try ZoomBundleVerifier.verify(appPath: "  ") { _, _ in .init(status: 0, output: "") }
+        await #expect(throws: (any Error).self) {
+            try await ZoomBundleVerifier.verify(appPath: "  ") { _, _ in .init(status: 0, output: "") }
         }
     }
 
@@ -65,13 +65,13 @@ struct ZoomBundleVerifierTests {
         return root
     }
 
-    @Test func verifyAcceptsBundleWhenCodesignAndTeamIDMatch() throws {
+    @Test func verifyAcceptsBundleWhenCodesignAndTeamIDMatch() async throws {
         let root = try makeFakeBundle()
         defer { try? FileManager.default.removeItem(at: root) }
         let app = root.appendingPathComponent("zoom.us.app").path
 
         var calls: [[String]] = []
-        let verified = try ZoomBundleVerifier.verify(appPath: app) { _, arguments in
+        let verified = try await ZoomBundleVerifier.verify(appPath: app) { _, arguments in
             calls.append(arguments)
             return .init(status: 0, output: "TeamIdentifier=BJ4HAAB9B3\n")
         }
@@ -80,31 +80,31 @@ struct ZoomBundleVerifierTests {
         #expect(verified.binaryPath == verified.appPath + "/Contents/MacOS/zoom.us")
     }
 
-    @Test func verifyRejectsBadSignature() throws {
+    @Test func verifyRejectsBadSignature() async throws {
         let root = try makeFakeBundle()
         defer { try? FileManager.default.removeItem(at: root) }
         let app = root.appendingPathComponent("zoom.us.app").path
 
-        #expect(throws: (any Error).self) {
-            try ZoomBundleVerifier.verify(appPath: app) { _, _ in
+        await #expect(throws: (any Error).self) {
+            try await ZoomBundleVerifier.verify(appPath: app) { _, _ in
                 .init(status: 3, output: "code failed to satisfy specified code requirement(s)")
             }
         }
     }
 
-    @Test func verifyRejectsWrongTeamID() throws {
+    @Test func verifyRejectsWrongTeamID() async throws {
         let root = try makeFakeBundle()
         defer { try? FileManager.default.removeItem(at: root) }
         let app = root.appendingPathComponent("zoom.us.app").path
 
-        #expect(throws: (any Error).self) {
-            try ZoomBundleVerifier.verify(appPath: app) { _, arguments in
+        await #expect(throws: (any Error).self) {
+            try await ZoomBundleVerifier.verify(appPath: app) { _, arguments in
                 .init(status: 0, output: arguments.first == "--verify" ? "" : "TeamIdentifier=AAAAAAAAAA")
             }
         }
     }
 
-    @Test func verifyResolvesSymlinksAndChecksResolvedName() throws {
+    @Test func verifyResolvesSymlinksAndChecksResolvedName() async throws {
         let root = try makeFakeBundle()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -114,8 +114,8 @@ struct ZoomBundleVerifierTests {
         let link = root.appendingPathComponent("zoom.us.app")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: evil)
 
-        #expect(throws: (any Error).self) {
-            try ZoomBundleVerifier.verify(appPath: link.path) { _, _ in
+        await #expect(throws: (any Error).self) {
+            try await ZoomBundleVerifier.verify(appPath: link.path) { _, _ in
                 .init(status: 0, output: "TeamIdentifier=BJ4HAAB9B3")
             }
         }

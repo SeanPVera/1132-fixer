@@ -16,6 +16,9 @@ enum BugReportService {
     static let maxAttachmentBytes = 1_048_576
     /// Longest slice of a server response that is ever shown in the UI.
     static let maxServerDetailCharacters = 200
+    /// Request fields and error bodies are bounded before they are retained in memory.
+    static let maxUserMessageBytes = 32 * 1_024
+    static let maxServerResponseBytes = 64 * 1_024
 
     /// The endpoint environment variable redirects where the bearer token is sent, so it is
     /// honored in debug builds only. Release builds use the bundled endpoint or the default.
@@ -128,16 +131,16 @@ enum BugReportService {
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.httpBody = makeMultipartBody(
             boundary: boundary,
-            title: title,
-            email: email,
-            message: message,
-            systemInfo: systemInfo,
-            diagnosticsFileName: diagnosticsFileName,
+            title: boundedUTF8String(title, maxBytes: 512),
+            email: email.map { boundedUTF8String($0, maxBytes: 512) },
+            message: boundedUTF8String(message, maxBytes: maxUserMessageBytes),
+            systemInfo: boundedUTF8String(systemInfo, maxBytes: 64 * 1_024),
+            diagnosticsFileName: boundedUTF8String(diagnosticsFileName, maxBytes: 255),
             diagnosticsData: truncatedAttachment(diagnosticsData)
         )
 
         // Do not follow redirects: they could carry the bearer token to another (or non-HTTPS) host.
-        let (data, response) = try await URLSession.shared.data(for: request, delegate: NoRedirectDelegate())
+        let (bytes, response) = try await URLSession.shared.bytes(for: request, delegate: NoRedirectDelegate())
         guard let http = response as? HTTPURLResponse else {
             throw NSError(
                 domain: errorDomain,
@@ -146,22 +149,29 @@ enum BugReportService {
             )
         }
 
-        guard (200...299).contains(http.statusCode) else {
-            let detail = truncatedServerDetail(from: data)
-            let contextMessage: String
-            if http.statusCode == 404, detail.contains("Application not found") {
-                contextMessage = "The bug report service is currently unavailable (HTTP 404). Please try again later."
-            } else if detail.isEmpty {
-                contextMessage = "Bug report submission failed (HTTP \(http.statusCode))."
-            } else {
-                contextMessage = "Bug report submission failed (HTTP \(http.statusCode)). Server said: \(detail)"
-            }
-            throw NSError(
-                domain: errorDomain,
-                code: http.statusCode,
-                userInfo: [NSLocalizedDescriptionKey: contextMessage]
-            )
+        guard !(200...299).contains(http.statusCode) else { return }
+
+        var data = Data()
+        data.reserveCapacity(min(maxServerResponseBytes, 8 * 1_024))
+        for try await byte in bytes {
+            guard data.count < maxServerResponseBytes else { break }
+            data.append(byte)
         }
+
+        let detail = truncatedServerDetail(from: data)
+        let contextMessage: String
+        if http.statusCode == 404, detail.contains("Application not found") {
+            contextMessage = "The bug report service is currently unavailable (HTTP 404). Please try again later."
+        } else if detail.isEmpty {
+            contextMessage = "Bug report submission failed (HTTP \(http.statusCode))."
+        } else {
+            contextMessage = "Bug report submission failed (HTTP \(http.statusCode)). Server said: \(detail)"
+        }
+        throw NSError(
+            domain: errorDomain,
+            code: http.statusCode,
+            userInfo: [NSLocalizedDescriptionKey: contextMessage]
+        )
     }
 
     // MARK: - Validation and sanitizing helpers
@@ -208,6 +218,22 @@ enum BugReportService {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard flattened.count > maxServerDetailCharacters else { return flattened }
         return String(flattened.prefix(maxServerDetailCharacters)) + "…"
+    }
+
+    /// Keeps a UTF-8 string within a byte budget without splitting a scalar. Request fields
+    /// are bounded before the multipart body is assembled, avoiding a second oversized copy.
+    static func boundedUTF8String(_ value: String, maxBytes: Int) -> String {
+        guard maxBytes > 0 else { return "" }
+        let data = Data(value.utf8)
+        guard data.count > maxBytes else { return value }
+
+        let marker = Data("\n[truncated]".utf8)
+        let contentLimit = max(maxBytes - marker.count, 0)
+        var prefix = data.prefix(contentLimit)
+        while String(data: prefix, encoding: .utf8) == nil, !prefix.isEmpty {
+            prefix = prefix.dropLast()
+        }
+        return String(decoding: prefix + marker.prefix(maxBytes - prefix.count), as: UTF8.self)
     }
 
     private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
