@@ -76,13 +76,27 @@ struct ZoomSandboxKeychainTests {
         let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
         try #require(addStatus == errSecSuccess, "Could not create test item: \(addStatus)")
 
-        let profileURL = fixture.appendingPathComponent("zoom.sb")
+        // Keychain Services consults per-user search-list metadata even when the
+        // query names a private keychain explicitly. Use the real home here, just
+        // as the production launch does; treating the temp fixture as $HOME would
+        // deny the runner's real home and deadlock that lookup.
+        let keychainProfileURL = fixture.appendingPathComponent("zoom-keychain.sb")
+        try ShellCommands.makeZoomSandboxProfile(homeDirectory: NSHomeDirectory())
+            .write(to: keychainProfileURL, atomically: true, encoding: .utf8)
+
+        // Keep the destructive/private-data assertions isolated in a synthetic
+        // home so the test never creates files in the developer's actual account.
+        let restrictionProfileURL = fixture.appendingPathComponent("zoom-restrictions.sb")
         try ShellCommands.makeZoomSandboxProfile(homeDirectory: fixture.path)
-            .write(to: profileURL, atomically: true, encoding: .utf8)
+            .write(to: restrictionProfileURL, atomically: true, encoding: .utf8)
         let keychainProbe = try await buildKeychainProbe(in: fixture)
         let probePhaseURL = keychainDirectory.appendingPathComponent("probe-phase")
 
-        func runSandboxed(_ executable: String, arguments: [String]) async throws -> CommandResult {
+        func runSandboxed(
+            profileURL: URL,
+            executable: String,
+            arguments: [String]
+        ) async throws -> CommandResult {
             do {
                 return try await runCommand(
                     "/usr/bin/sandbox-exec",
@@ -97,18 +111,27 @@ struct ZoomSandboxKeychainTests {
         }
 
         let readArguments = ["read", keychainURL.path, password, account, service]
-        let read = try await runSandboxed(keychainProbe.path, arguments: readArguments)
+        let read = try await runSandboxed(
+            profileURL: keychainProfileURL,
+            executable: keychainProbe.path,
+            arguments: readArguments
+        )
         #expect(read.status == 0, "Sandbox blocked Keychain read: \(read.output)")
         #expect(read.output.trimmingCharacters(in: .whitespacesAndNewlines) == "initial-value")
 
         // An update needs database writes plus sibling lock/temporary files. A
         // metadata-only or read-only exception would still fail this operation.
         let update = try await runSandboxed(
-            keychainProbe.path,
+            profileURL: keychainProfileURL,
+            executable: keychainProbe.path,
             arguments: ["write", keychainURL.path, password, account, service, "updated-value"]
         )
         #expect(update.status == 0, "Sandbox blocked Keychain update: \(update.output)")
-        let updatedRead = try await runSandboxed(keychainProbe.path, arguments: readArguments)
+        let updatedRead = try await runSandboxed(
+            profileURL: keychainProfileURL,
+            executable: keychainProbe.path,
+            arguments: readArguments
+        )
         #expect(updatedRead.status == 0, "Updated item could not be read: \(updatedRead.output)")
         #expect(updatedRead.output.trimmingCharacters(in: .whitespacesAndNewlines) == "updated-value")
 
@@ -118,13 +141,21 @@ struct ZoomSandboxKeychainTests {
         try fileManager.createDirectory(at: sshDirectory, withIntermediateDirectories: true)
         let sshKey = sshDirectory.appendingPathComponent("test-key")
         try Data("private-test-data".utf8).write(to: sshKey)
-        let sshRead = try await runSandboxed("/bin/cat", arguments: [sshKey.path])
+        let sshRead = try await runSandboxed(
+            profileURL: restrictionProfileURL,
+            executable: "/bin/cat",
+            arguments: [sshKey.path]
+        )
         #expect(sshRead.status != 0, "Sandbox allowed reading private SSH data")
 
         let agentsDirectory = fixture.appendingPathComponent("Library/LaunchAgents", isDirectory: true)
         try fileManager.createDirectory(at: agentsDirectory, withIntermediateDirectories: true)
         let agent = agentsDirectory.appendingPathComponent("test-agent.plist")
-        let agentWrite = try await runSandboxed("/usr/bin/touch", arguments: [agent.path])
+        let agentWrite = try await runSandboxed(
+            profileURL: restrictionProfileURL,
+            executable: "/usr/bin/touch",
+            arguments: [agent.path]
+        )
         #expect(agentWrite.status != 0, "Sandbox allowed writing a launch agent")
         #expect(!fileManager.fileExists(atPath: agent.path))
     }
