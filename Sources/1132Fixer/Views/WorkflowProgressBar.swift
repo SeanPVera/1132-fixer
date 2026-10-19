@@ -26,9 +26,9 @@ struct WorkflowProgressBar: View {
     @ViewBuilder
     private func stepIcon(_ state: AppViewModel.WorkflowProgress.StepState) -> some View {
         switch state {
-        case .pending:
+        case .unstarted:
             Image(systemName: "circle")
-                .foregroundStyle(Theme.Colors.textSecondary)
+                .foregroundStyle(Theme.Colors.textMuted)
         case .running:
             ProgressView()
                 .controlSize(.small)
@@ -44,17 +44,21 @@ struct WorkflowProgressBar: View {
         case .skipped:
             Image(systemName: "minus.circle.fill")
                 .foregroundStyle(Theme.Colors.warning)
+        case .interrupted:
+            Image(systemName: "stop.circle.fill")
+                .foregroundStyle(Theme.Colors.warning)
         }
     }
 
     private func stateLabel(_ state: AppViewModel.WorkflowProgress.StepState) -> String {
         switch state {
-        case .pending: return "Pending"
+        case .unstarted: return "Not started"
         case .running: return "Running"
         case .succeeded: return "Succeeded"
         case .warning: return "Warning"
         case .failed: return "Needs attention"
         case .skipped: return "Skipped"
+        case .interrupted: return "Interrupted"
         }
     }
 }
