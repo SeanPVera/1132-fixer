@@ -88,7 +88,7 @@ struct ZoomSandboxKeychainTests {
             )
         }
 
-        let readArguments = ["read", keychainURL.path, account, service]
+        let readArguments = ["read", keychainURL.path, password, account, service]
         let read = try await runSandboxed(keychainProbe.path, arguments: readArguments)
         #expect(read.status == 0, "Sandbox blocked Keychain read: \(read.output)")
         #expect(read.output.trimmingCharacters(in: .whitespacesAndNewlines) == "initial-value")
@@ -97,7 +97,7 @@ struct ZoomSandboxKeychainTests {
         // metadata-only or read-only exception would still fail this operation.
         let update = try await runSandboxed(
             keychainProbe.path,
-            arguments: ["write", keychainURL.path, account, service, "updated-value"]
+            arguments: ["write", keychainURL.path, password, account, service, "updated-value"]
         )
         #expect(update.status == 0, "Sandbox blocked Keychain update: \(update.output)")
         let updatedRead = try await runSandboxed(keychainProbe.path, arguments: readArguments)
@@ -171,7 +171,9 @@ struct ZoomSandboxKeychainTests {
     }
 
     let arguments = CommandLine.arguments
-    guard arguments.count >= 5 else { fail("usage: keychain-probe read|write keychain account service [value]") }
+    guard arguments.count >= 6 else {
+        fail("usage: keychain-probe read|write keychain password account service [value]")
+    }
 
     var keychain: SecKeychain?
     let openStatus = SecKeychainOpen(arguments[2], &keychain)
@@ -179,10 +181,18 @@ struct ZoomSandboxKeychainTests {
         fail("could not open keychain", status: openStatus)
     }
 
+    let password = arguments[3]
+    let unlockStatus = password.withCString {
+        SecKeychainUnlock(keychain, UInt32(password.utf8.count), $0, true)
+    }
+    guard unlockStatus == errSecSuccess else {
+        fail("could not unlock keychain", status: unlockStatus)
+    }
+
     var query: [String: Any] = [
         kSecClass as String: kSecClassGenericPassword,
-        kSecAttrAccount as String: arguments[3],
-        kSecAttrService as String: arguments[4],
+        kSecAttrAccount as String: arguments[4],
+        kSecAttrService as String: arguments[5],
         kSecMatchSearchList as String: [keychain],
     ]
 
@@ -198,8 +208,8 @@ struct ZoomSandboxKeychainTests {
         FileHandle.standardOutput.write(data)
 
     case "write":
-        guard arguments.count == 6 else { fail("write requires a value") }
-        let attributes = [kSecValueData as String: Data(arguments[5].utf8)]
+        guard arguments.count == 7 else { fail("write requires a value") }
+        let attributes = [kSecValueData as String: Data(arguments[6].utf8)]
         let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         guard status == errSecSuccess else { fail("could not update item", status: status) }
 
