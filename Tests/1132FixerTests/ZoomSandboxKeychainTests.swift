@@ -111,6 +111,16 @@ struct ZoomSandboxKeychainTests {
         }
 
         let readArguments = ["read", keychainURL.path, password, account, service]
+        do {
+            let controlRead = try await runCommand(keychainProbe.path, arguments: readArguments)
+            try #require(controlRead.status == 0, "Unsandboxed Keychain control failed: \(controlRead.output)")
+        } catch {
+            let phase = (try? String(contentsOf: probePhaseURL, encoding: .utf8)) ?? "not started"
+            throw CommandFailure(
+                message: "Unsandboxed Keychain control failed during '\(phase)': \(error.localizedDescription)"
+            )
+        }
+
         let read = try await runSandboxed(
             profileURL: keychainProfileURL,
             executable: keychainProbe.path,
