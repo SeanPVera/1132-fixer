@@ -706,7 +706,6 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         ".kube",
         ".docker",
         ".config",
-        "Library/Keychains",
         "Library/Containers",
         "Library/Mail",
         "Library/Messages",
@@ -738,7 +737,6 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         ".ssh",
         ".gnupg",
         ".aws",
-        "Library/Keychains",
         "Library/LaunchAgents",
         "Library/Application Support/1132Fixer"
     ]
@@ -768,7 +766,12 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
     ///    channel that lets Zoom re-derive the same machine fingerprint is closed:
     ///    IOKit properties, the `sysctl` identifiers, the command-line tools that
     ///    report them, and the on-disk files that record network identity.
-    /// 2. **Private user data.** See `deniedHomeReadSubpaths`.
+    /// 2. **Private user data.** See `deniedHomeReadSubpaths`. Keychain files are
+    ///    deliberately excluded: the Security framework reads the user's database
+    ///    and writes sibling lock/temporary files in the client process. Blocking
+    ///    those operations breaks Zoom's keychain access at the final launch step,
+    ///    even with SecurityServer/securityd Mach lookups allowed. Keychain item
+    ///    access remains subject to macOS unlock requirements and access controls.
     ///
     /// SBPL resolves the *last* matching rule, so the denies below override the blanket
     /// allows above them, and the home allow-back overrides the `/Users` deny. Rule
@@ -943,9 +946,9 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         (subpath "/private/var/db/dslocal")
     )
 
-    ; System-wide credentials and persistence.
+    ; System keychains must remain readable for normal Keychain/trust operations.
+    ; Keep system credential writes and persistence blocked.
     (deny file-read*
-        (subpath "/Library/Keychains")
         (subpath "/private/etc/ssh")
     )
     (deny file-write*
