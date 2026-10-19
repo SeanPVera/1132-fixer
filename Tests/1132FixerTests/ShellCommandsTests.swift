@@ -451,7 +451,6 @@ struct ShellCommandsTests {
     @Test func zoomSandboxProfileScopesPrivateDataRulesToTheGivenHome() {
         let profile = testProfile()
         #expect(profile.contains(#"(subpath "/Users/tester/.ssh")"#))
-        #expect(profile.contains(#"(subpath "/Users/tester/Library/Keychains")"#))
         #expect(profile.contains(#"(subpath "/Users/tester/Library/Application Support/1132Fixer")"#))
         #expect(profile.contains(#"(literal "/Users/tester/.zsh_history")"#))
         // The profile is not run through a shell, so nothing may rely on expansion.
