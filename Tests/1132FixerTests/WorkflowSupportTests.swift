@@ -30,9 +30,11 @@ struct LatestRequestGateTests {
         let first = gate.begin()
         let second = gate.begin()
 
-        #expect(!gate.finish(first))
+        let staleCompletion = gate.finish(first)
+        #expect(!staleCompletion)
         #expect(gate.activeRequestID == second)
-        #expect(gate.finish(second))
+        let currentCompletion = gate.finish(second)
+        #expect(currentCompletion)
         #expect(gate.activeRequestID == nil)
     }
 
@@ -42,7 +44,8 @@ struct LatestRequestGateTests {
 
         gate.invalidate()
 
-        #expect(!gate.finish(request))
+        let invalidatedCompletion = gate.finish(request)
+        #expect(!invalidatedCompletion)
         #expect(gate.activeRequestID == nil)
     }
 }
