@@ -80,12 +80,20 @@ struct ZoomSandboxKeychainTests {
         try ShellCommands.makeZoomSandboxProfile(homeDirectory: fixture.path)
             .write(to: profileURL, atomically: true, encoding: .utf8)
         let keychainProbe = try await buildKeychainProbe(in: fixture)
+        let probePhaseURL = keychainDirectory.appendingPathComponent("probe-phase")
 
         func runSandboxed(_ executable: String, arguments: [String]) async throws -> CommandResult {
-            try await runCommand(
-                "/usr/bin/sandbox-exec",
-                arguments: ["-f", profileURL.path, executable] + arguments
-            )
+            do {
+                return try await runCommand(
+                    "/usr/bin/sandbox-exec",
+                    arguments: ["-f", profileURL.path, executable] + arguments
+                )
+            } catch {
+                let phase = (try? String(contentsOf: probePhaseURL, encoding: .utf8)) ?? "not started"
+                throw CommandFailure(
+                    message: "Sandboxed command failed during '\(phase)': \(error.localizedDescription)"
+                )
+            }
         }
 
         let readArguments = ["read", keychainURL.path, password, account, service]
@@ -124,6 +132,11 @@ struct ZoomSandboxKeychainTests {
     private struct CommandResult {
         let status: Int32
         let output: String
+    }
+
+    private struct CommandFailure: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
     }
 
     private func buildKeychainProbe(in fixture: URL) async throws -> URL {
@@ -175,11 +188,20 @@ struct ZoomSandboxKeychainTests {
         fail("usage: keychain-probe read|write keychain password account service [value]")
     }
 
+    let phaseURL = URL(fileURLWithPath: arguments[2])
+        .deletingLastPathComponent()
+        .appendingPathComponent("probe-phase")
+    func mark(_ phase: String) {
+        try? phase.write(to: phaseURL, atomically: true, encoding: .utf8)
+    }
+    mark("started")
+
     var keychain: SecKeychain?
     let openStatus = SecKeychainOpen(arguments[2], &keychain)
     guard openStatus == errSecSuccess, let keychain else {
         fail("could not open keychain", status: openStatus)
     }
+    mark("opened keychain")
 
     let password = arguments[3]
     let unlockStatus = password.withCString {
@@ -188,6 +210,7 @@ struct ZoomSandboxKeychainTests {
     guard unlockStatus == errSecSuccess else {
         fail("could not unlock keychain", status: unlockStatus)
     }
+    mark("unlocked keychain")
 
     var query: [String: Any] = [
         kSecClass as String: kSecClassGenericPassword,
@@ -198,6 +221,7 @@ struct ZoomSandboxKeychainTests {
 
     switch arguments[1] {
     case "read":
+        mark("reading item")
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
@@ -205,13 +229,16 @@ struct ZoomSandboxKeychainTests {
         guard status == errSecSuccess, let data = item as? Data else {
             fail("could not read item", status: status)
         }
+        mark("read item")
         FileHandle.standardOutput.write(data)
 
     case "write":
+        mark("writing item")
         guard arguments.count == 7 else { fail("write requires a value") }
         let attributes = [kSecValueData as String: Data(arguments[6].utf8)]
         let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         guard status == errSecSuccess else { fail("could not update item", status: status) }
+        mark("wrote item")
 
     default:
         fail("unknown operation")
