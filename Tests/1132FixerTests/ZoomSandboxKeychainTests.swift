@@ -49,6 +49,28 @@ struct ZoomSandboxKeychainTests {
         try #require(accessStatus == errSecSuccess, "Could not create test item access: \(accessStatus)")
         let fixtureAccess = try #require(access)
 
+        // This disposable fixture exercises sandbox access, not Keychain ACL prompts.
+        // Mirror `security -A` so the headless runner never opens SecurityAgent.
+        var aclList: CFArray?
+        let aclListStatus = SecAccessCopyACLList(fixtureAccess, &aclList)
+        try #require(aclListStatus == errSecSuccess, "Could not inspect test item access: \(aclListStatus)")
+        let fixtureACLs = try #require(aclList as? [SecACL])
+        for acl in fixtureACLs {
+            var applications: CFArray?
+            var description: CFString?
+            var prompt = SecKeychainPromptSelector()
+            let copyStatus = SecACLCopyContents(acl, &applications, &description, &prompt)
+            try #require(copyStatus == errSecSuccess, "Could not inspect test item ACL: \(copyStatus)")
+
+            let setStatus = SecACLSetContents(
+                acl,
+                nil,
+                description ?? "1132 Fixer sandbox fixture" as CFString,
+                prompt
+            )
+            try #require(setStatus == errSecSuccess, "Could not make test item noninteractive: \(setStatus)")
+        }
+
         let addQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: account,
