@@ -25,7 +25,7 @@ enum ZoomBundleVerifier {
     }
 
     /// Runs an executable with an argument array and returns its exit status and combined output.
-    typealias CommandRunner = (_ executable: String, _ arguments: [String]) -> CommandResult
+    typealias CommandRunner = (_ executable: String, _ arguments: [String]) async throws -> CommandResult
 
     struct VerifiedBundle: Equatable {
         /// Symlink-resolved path of the `zoom.us.app` bundle.
@@ -75,7 +75,10 @@ enum ZoomBundleVerifier {
 
     /// Verifies the bundle at `appPath` and returns the resolved bundle and executable paths
     /// that must be used for launching. Throws a user-readable error otherwise.
-    static func verify(appPath: String, runner: CommandRunner = ZoomBundleVerifier.runProcess) throws -> VerifiedBundle {
+    static func verify(
+        appPath: String,
+        runner: CommandRunner = ZoomBundleVerifier.runProcess
+    ) async throws -> VerifiedBundle {
         let trimmed = appPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw failure("No Zoom location is set.")
@@ -100,13 +103,13 @@ enum ZoomBundleVerifier {
             throw failure("The Zoom executable was not found inside '\(resolvedApp)'.")
         }
 
-        let verifyResult = runner(codesignPath, verifyArguments(bundlePath: resolvedApp))
+        let verifyResult = try await runner(codesignPath, verifyArguments(bundlePath: resolvedApp))
         guard verifyResult.status == 0 else {
             let detail = verifyResult.output.trimmingCharacters(in: .whitespacesAndNewlines)
             throw failure("Refusing to launch '\(resolvedApp)': its code signature is not a valid Zoom Video Communications signature (Team ID \(expectedTeamID)).\(detail.isEmpty ? "" : " codesign: \(detail.prefix(300))")")
         }
 
-        let displayResult = runner(codesignPath, displayArguments(bundlePath: resolvedApp))
+        let displayResult = try await runner(codesignPath, displayArguments(bundlePath: resolvedApp))
         guard displayResult.status == 0,
               parseTeamIdentifier(from: displayResult.output) == expectedTeamID else {
             throw failure("Refusing to launch '\(resolvedApp)': the signing Team ID is not \(expectedTeamID) (Zoom Video Communications).")
@@ -119,23 +122,15 @@ enum ZoomBundleVerifier {
         NSError(domain: errorDomain, code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
 
-    /// Default runner: executes the tool directly (no shell) and reads its output to EOF
-    /// before waiting, so a chatty tool cannot fill the pipe and deadlock.
-    static func runProcess(_ executable: String, _ arguments: [String]) -> CommandResult {
-        let process = Process()
-        let pipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        do {
-            try process.run()
-        } catch {
-            return CommandResult(status: -1, output: error.localizedDescription)
-        }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return CommandResult(status: process.terminationStatus, output: String(decoding: data, as: UTF8.self))
+    /// Default runner: uses the shared bounded executor so a damaged codesign service or
+    /// unexpectedly chatty tool cannot freeze the workflow or grow memory without limit.
+    static func runProcess(_ executable: String, _ arguments: [String]) async throws -> CommandResult {
+        let result = try await BoundedProcessExecutor().run(
+            executable: executable,
+            arguments: arguments,
+            timeout: 15,
+            maxOutputBytes: 64 * 1_024
+        )
+        return CommandResult(status: result.exitCode, output: result.combinedOutput)
     }
 }

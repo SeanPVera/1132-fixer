@@ -317,8 +317,15 @@ struct RepairPlan: Identifiable, Equatable {
             AffectedLocation(
                 id: "user-zoom-data",
                 label: "User Zoom State",
-                path: "~/Library/Application Support/zoom.us, ~/Library/Caches/us.zoom.xos, ~/Library/Preferences/us.zoom.xos.plist",
+                path: "~/Library/Application Support/zoom.us, ~/Library/Caches/us.zoom.xos, ~/Library/Preferences/us.zoom.xos.plist, ~/Library/Saved Application State/us.zoom.xos.savedState",
                 action: "Backed up first, then cleared in Step 5 (unprivileged)",
+                requiresAdmin: false
+            ),
+            AffectedLocation(
+                id: "user-zoom-logs",
+                label: "Zoom Local Logs",
+                path: "~/Library/Logs/zoom.us.log*",
+                action: "Permanently removed in Step 5 (not included in backup)",
                 requiresAdmin: false
             ),
             AffectedLocation(

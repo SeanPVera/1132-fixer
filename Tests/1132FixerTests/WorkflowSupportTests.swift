@@ -167,6 +167,19 @@ struct WorkflowResultFormatterTests {
         #expect(steps[4].requiresAdmin == false)
         #expect(steps[5].requiresAdmin == true)
     }
+
+    @Test func repairPlanListsSavedApplicationStateAndLogsInAffectedLocations() {
+        let plan = RepairPlan.build(
+            readiness: .initial(selectedAppPath: "/Applications/zoom.us.app", isCustomLocation: false),
+            selectedAppPath: "/Applications/zoom.us.app",
+            isCustomLocation: false
+        )
+        let dataLoc = plan.affectedLocations.first(where: { $0.id == "user-zoom-data" })
+        let logsLoc = plan.affectedLocations.first(where: { $0.id == "user-zoom-logs" })
+
+        #expect(dataLoc?.path.contains("~/Library/Saved Application State/us.zoom.xos.savedState") == true)
+        #expect(logsLoc?.path == "~/Library/Logs/zoom.us.log*")
+    }
 }
 
 @Suite("Execution ordering, privileged cancellation, and backup provenance", .serialized)
@@ -361,6 +374,48 @@ struct WorkflowExecutionSemanticsTests {
         for unrunID in ["resetData", "dns", "updaters", "mediaAccess", "launch"] {
             #expect(steps.first(where: { $0.id == unrunID })?.state == AppViewModel.WorkflowProgress.StepState.unstarted)
         }
+    }
+
+    @Test func dryRunReplacesStaleRunRecordWithPreviewLedger() async throws {
+        let runner: AppViewModel.ProcessExecutor = { stepName, _, _, _ in
+            switch stepName {
+            case "Check Zoom process":
+                return "stopped"
+            case "Detect interface":
+                return "interface: en0"
+            case "Hardware ports":
+                return "Hardware Port: Wi-Fi\nDevice: en0"
+            default:
+                return "ok"
+            }
+        }
+        let verifier: AppViewModel.BundleVerifier = { _ in
+            ZoomBundleVerifier.VerifiedBundle(
+                appPath: "/Applications/zoom.us.app",
+                binaryPath: "/Applications/zoom.us.app/Contents/MacOS/zoom.us"
+            )
+        }
+
+        let viewModel = AppViewModel(initialDiskBackupPath: nil)
+        viewModel.processExecutorOverride = runner
+        viewModel.bundleVerifierOverride = verifier
+        viewModel.preflight = Self.makeReadyPreflight()
+        viewModel.applyUIFixture(named: "failed_after_backup")
+        #expect(viewModel.currentRunRecord?.title == "Repair Zoom 1132")
+        #expect(viewModel.currentRunRecord?.outcome == RunRecord.Outcome.failed)
+
+        viewModel.dryRun()
+        while viewModel.isRunning {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        let record = try #require(viewModel.currentRunRecord)
+        #expect(record.title == "Preview Steps (Dry Run)")
+        #expect(record.createdBackupPath == nil)
+        #expect(record.steps.first(where: { $0.id == "validate" })?.outcome == AppViewModel.StepResult.Outcome.success)
+        #expect(record.steps.first(where: { $0.id == "closeZoom" })?.outcome == AppViewModel.StepResult.Outcome.skipped)
+        #expect(record.steps.first(where: { $0.id == "backup" })?.outcome == AppViewModel.StepResult.Outcome.skipped)
+        #expect(record.steps.first(where: { $0.id == "launch" })?.outcome == AppViewModel.StepResult.Outcome.skipped)
     }
 }
 

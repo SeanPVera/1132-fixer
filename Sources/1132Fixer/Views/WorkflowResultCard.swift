@@ -307,14 +307,15 @@ struct RepairRecordLedgerView: View {
         case .failed(let message):
             return ("Repair stopped safely — \(message)", "xmark.circle.fill", Theme.Colors.error)
         case .completed:
-            let hasNotes = ledgerSteps.contains { $0.state == .warning || $0.state == .skipped }
             if isPreviewRun {
+                let hasAdvisories = ledgerSteps.contains { $0.state == .warning || $0.state == .failed }
                 return (
-                    hasNotes ? "Preview completed with advisories" : "Preview completed — no files or settings modified",
-                    hasNotes ? "exclamationmark.triangle.fill" : "checkmark.circle.fill",
-                    hasNotes ? Theme.Colors.warning : Theme.Colors.success
+                    hasAdvisories ? "Preview completed with advisories" : "Preview completed — no files or settings modified",
+                    hasAdvisories ? "exclamationmark.triangle.fill" : "checkmark.circle.fill",
+                    hasAdvisories ? Theme.Colors.warning : Theme.Colors.success
                 )
             }
+            let hasNotes = ledgerSteps.contains { $0.state == .warning || $0.state == .skipped }
             return (
                 hasNotes ? "Repair completed with notes" : "Repair completed — Zoom launched in sandbox mode",
                 hasNotes ? "exclamationmark.triangle.fill" : "checkmark.circle.fill",

@@ -199,9 +199,18 @@ enum ShellCommands {
     /// absolute, and not the filesystem root. (The generated script re-checks this, and that
     /// the directory exists, before deleting anything.)
     static func isSafeHomeDirectory(_ path: String) -> Bool {
+        normalizedSafeHomeDirectory(path) != nil
+    }
+
+    /// Returns a lexical, absolute home path only when dot components cannot normalize it
+    /// to another location. The physical path is checked separately immediately before use.
+    static func normalizedSafeHomeDirectory(_ path: String) -> String? {
         var trimmed = path
         while trimmed.count > 1 && trimmed.hasSuffix("/") { trimmed.removeLast() }
-        return trimmed.hasPrefix("/") && trimmed != "/"
+        guard trimmed.hasPrefix("/"), trimmed != "/" else { return nil }
+        let standardized = (trimmed as NSString).standardizingPath
+        guard standardized == trimmed, standardized != "/" else { return nil }
+        return standardized
     }
 
     /// Clears Zoom's local state. Runs as the current user (no administrator privileges):
@@ -221,6 +230,11 @@ enum ShellCommands {
         esac
         if [ "$home" = "/" ] || [ "${home%/}" = "" ] || [ ! -d "$home" ]; then
           echo "Reset Zoom data: home directory '$home' is not a usable directory; refusing to delete anything." >&2
+          exit 1
+        fi
+        home_physical="$(cd -P "$home" 2>/dev/null && /bin/pwd -P)" || exit 1
+        if [ "$home_physical" = "/" ]; then
+          echo "Reset Zoom data: home directory resolves to the filesystem root; refusing to delete anything." >&2
           exit 1
         fi
 
@@ -255,6 +269,7 @@ enum ShellCommands {
     /// recent `retainedBackupCount` snapshots. Without pruning, every run left another
     /// full copy of Zoom's Application Support and Caches on disk forever.
     static func makeBackupZoomDataCommand(
+        homeDirectory: String = NSHomeDirectory(),
         retainedBackupCount: Int = 5,
         retainedBackupMegabytes: Int = 2_048
     ) -> String {
@@ -262,38 +277,63 @@ enum ShellCommands {
             .replacingOccurrences(of: ":", with: "-")
         let firstStaleEntry = max(retainedBackupCount, 1) + 1
         let maximumKilobytes = max(retainedBackupMegabytes, 1) * 1_024
+        let home = shellSingleQuote(homeDirectory)
         return """
         # Backups hold Zoom session data: keep them private to the current user.
         umask 077
-        backup_root="$HOME/Library/Application Support/1132Fixer/Backups"
-        if ! mkdir -p "$backup_root" || ! chmod 700 "$backup_root"; then
+        home=\(home)
+        while [ "${home%/}" != "$home" ] && [ -n "${home%/}" ]; do home="${home%/}"; done
+        case "$home" in
+          /*) ;;
+          *)
+            echo "Backup Zoom data: home directory '$home' is not an absolute path; refusing to continue." >&2
+            exit 1
+            ;;
+        esac
+        if [ "$home" = "/" ] || [ "${home%/}" = "" ] || [ ! -d "$home" ]; then
+          echo "Backup Zoom data: home directory '$home' is not a usable directory; refusing to continue." >&2
+          exit 1
+        fi
+        home_physical="$(cd -P "$home" 2>/dev/null && /bin/pwd -P)" || exit 1
+        if [ "$home_physical" = "/" ]; then
+          echo "Backup Zoom data: home directory resolves to the filesystem root; refusing to continue." >&2
+          exit 1
+        fi
+
+        backup_root="$home/Library/Application Support/1132Fixer/Backups"
+        if ! /bin/mkdir -p "$backup_root" || ! /bin/chmod 700 "$backup_root"; then
           printf 'Could not create the private backup folder at %s\\n' "$backup_root" >&2
           exit 1
         fi
+        backup_root_physical="$(cd -P "$backup_root" 2>/dev/null && /bin/pwd -P)" || exit 1
+        case "$backup_root_physical" in
+          "$home_physical"/*) backup_root="$backup_root_physical" ;;
+          *)
+            printf 'Backup root resolves outside the home directory: %s\\n' "$backup_root_physical" >&2
+            exit 1
+            ;;
+        esac
 
-        backup_dir="$(/usr/bin/mktemp -d "$backup_root/snapshot-\(timestamp).XXXXXX")" || exit 1
-        if ! chmod 700 "$backup_dir"; then
-          /bin/rm -rf "$backup_dir"
-          exit 1
-        fi
-
+        staging_dir="$(/usr/bin/mktemp -d "$backup_root/.incomplete.XXXXXX")" || exit 1
         backup_complete=0
-        cleanup_partial_backup() {
-          if [ "$backup_complete" -ne 1 ] && [ -n "$backup_dir" ]; then
-            /bin/rm -rf "$backup_dir"
+        cleanup_backup() {
+          if [ "$backup_complete" -ne 1 ] && [ -n "${staging_dir:-}" ]; then
+            /bin/rm -rf "$staging_dir"
           fi
         }
-        trap cleanup_partial_backup EXIT
-        trap 'exit 1' HUP INT TERM
+        trap cleanup_backup EXIT
+        trap 'exit 130' HUP INT TERM
+        /bin/chmod 700 "$staging_dir" || exit 1
 
+        backup_started="$(/bin/date +%s)"
         backup_failed=0
         for src in \
-          "$HOME/Library/Application Support/zoom.us" \
-          "$HOME/Library/Caches/us.zoom.xos" \
-          "$HOME/Library/Preferences/us.zoom.xos.plist" \
-          "$HOME/Library/Saved Application State/us.zoom.xos.savedState"; do
+          "$home/Library/Application Support/zoom.us" \
+          "$home/Library/Caches/us.zoom.xos" \
+          "$home/Library/Preferences/us.zoom.xos.plist" \
+          "$home/Library/Saved Application State/us.zoom.xos.savedState"; do
           [ -e "$src" ] || continue
-          if ! cp -a "$src" "$backup_dir/" 2>/dev/null; then
+          if ! /bin/cp -a "$src" "$staging_dir/" 2>/dev/null; then
             printf 'Could not back up %s\\n' "$src" >&2
             backup_failed=1
           fi
@@ -303,8 +343,19 @@ enum ShellCommands {
           exit 1
         fi
 
-        : > "$backup_dir/.1132fixer-backup"
+        backup_finished="$(/bin/date +%s)"
+        printf 'format=1\\nstarted_epoch=%s\\nfinished_epoch=%s\\nduration_seconds=%s\\n' \
+          "$backup_started" "$backup_finished" "$((backup_finished - backup_started))" \
+          > "$staging_dir/backup-manifest.txt" || exit 1
+        : > "$staging_dir/.1132fixer-backup"
+
+        # Publish only a fully copied snapshot. The rename is atomic because staging and
+        # final directories live under the same backup root.
+        unique_suffix="${staging_dir##*.incomplete.}"
+        backup_dir="$backup_root/snapshot-\(timestamp)-$unique_suffix"
+        /bin/mv "$staging_dir" "$backup_dir" || exit 1
         backup_complete=1
+        staging_dir=""
         trap - EXIT HUP INT TERM
 
         # Keep the newest snapshot even if it alone is large. Older snapshots are
@@ -620,7 +671,6 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         let off = "/usr/sbin/networksetup -setairportpower \(shellSingleQuote(device)) off"
         let sleep1 = "/bin/sleep 1"
         let on = "/usr/sbin/networksetup -setairportpower \(shellSingleQuote(device)) on"
-        let sleep2 = "/bin/sleep 2"
         // Keep the recovery trap in a subshell so it does not replace the watchdog
         // EXIT trap installed by `makeTimeBoundedCommand` around privileged scripts.
         return """
@@ -634,7 +684,6 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
             exit 1
           fi
           trap - EXIT HUP INT TERM
-          \(sleep2)
         )
         """
     }
@@ -648,7 +697,6 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         let disableServiceCommand = "/usr/sbin/networksetup -setnetworkserviceenabled \(shellSingleQuote(networkService)) off"
         let enableServiceCommand = "/usr/sbin/networksetup -setnetworkserviceenabled \(shellSingleQuote(networkService)) on"
         let sleepShort = "/bin/sleep 1"
-        let sleepReconnect = "/bin/sleep 2"
 
         let macAttempt = "(\(interfaceDownCommand) && \(sleepShort) && \(setMACCommand)) 2>/dev/null || true"
         return """
@@ -672,13 +720,44 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
             exit 1
           fi
           trap - EXIT HUP INT TERM
-          \(sleepReconnect)
         )
         """
     }
 
     static func makeVerifyMACCommand(device: String) -> String {
         "/sbin/ifconfig \(shellSingleQuote(device)) | /usr/bin/awk '/^[[:space:]]*ether /{print $2; exit}'"
+    }
+
+    /// Waits until the changed interface is active and owns the default route. This replaces
+    /// optimistic post-reconnect delays with an outcome-based, bounded readiness check.
+    static func makeNetworkReadinessCommand(
+        device: String,
+        maxAttempts: Int = 15,
+        intervalSeconds: Int = 1
+    ) -> String {
+        let attempts = max(maxAttempts, 1)
+        let interval = max(intervalSeconds, 1)
+        let quotedDevice = shellSingleQuote(device)
+        return """
+        device=\(quotedDevice)
+        attempt=0
+        while [ "$attempt" -lt \(attempts) ]; do
+          if /sbin/ifconfig "$device" 2>/dev/null | /usr/bin/grep -q 'status: active' && \
+             /sbin/route -n get default 2>/dev/null | /usr/bin/awk -v expected="$device" '$1 == "interface:" && $2 == expected { found=1 } END { exit(found ? 0 : 1) }'; then
+            echo "Network ready on $device."
+            exit 0
+          fi
+          /bin/sleep \(interval)
+          attempt=$((attempt + 1))
+        done
+        echo "Network did not become ready on $device after \(attempts) checks." >&2
+        exit 1
+        """
+    }
+
+    static func normalizedMACAddress(_ output: String) -> String? {
+        let value = output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return isValidMACAddress(value) ? value : nil
     }
 
     // MARK: - Launch Zoom
@@ -962,21 +1041,31 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         makeLaunchZoomCommand(zoomBinaryPath: zoomBinaryPath)
     }
 
-    static func makeLaunchZoomCommand(zoomBinaryPath: String) -> String {
+    static func makeLaunchZoomCommand(
+        zoomBinaryPath: String,
+        homeDirectory: String = NSHomeDirectory()
+    ) -> String {
         makeLaunchZoomCommand(
             zoomBinaryPath: zoomBinaryPath,
-            zoomBinaryExists: FileManager.default.fileExists(atPath: zoomBinaryPath)
+            zoomBinaryExists: FileManager.default.fileExists(atPath: zoomBinaryPath),
+            homeDirectory: homeDirectory
         )
     }
 
     static func makeLaunchZoomCommand(zoomBinaryExists: Bool) -> String {
-        makeLaunchZoomCommand(zoomBinaryPath: zoomBinaryPath, zoomBinaryExists: zoomBinaryExists)
+        makeLaunchZoomCommand(
+            zoomBinaryPath: zoomBinaryPath,
+            zoomBinaryExists: zoomBinaryExists,
+            homeDirectory: NSHomeDirectory()
+        )
     }
 
     /// Builds a non-mutating command that compiles the exact profile used for Zoom.
     /// The repair workflow runs this before closing Zoom, backing up, or changing state.
-    static func makeSandboxProfileValidationCommand() -> String {
-        let encodedProfile = Data(zoomSandboxProfile.utf8).base64EncodedString()
+    static func makeSandboxProfileValidationCommand(
+        homeDirectory: String = NSHomeDirectory()
+    ) -> String {
+        let encodedProfile = Data(makeZoomSandboxProfile(homeDirectory: homeDirectory).utf8).base64EncodedString()
         return """
         set -u
         if [ ! -x /usr/bin/sandbox-exec ]; then
@@ -1004,7 +1093,11 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
     /// quotes produced by `shellSingleQuote` would close that wrapper's quoting, so the
     /// interpolated Zoom path would reach the outer shell unquoted. Interpolate paths
     /// only through `shellSingleQuote`, and reference them as `"$zoom_binary"`.
-    static func makeLaunchZoomCommand(zoomBinaryPath: String, zoomBinaryExists: Bool) -> String {
+    static func makeLaunchZoomCommand(
+        zoomBinaryPath: String,
+        zoomBinaryExists: Bool,
+        homeDirectory: String = NSHomeDirectory()
+    ) -> String {
         let quotedBinaryPath = shellSingleQuote(zoomBinaryPath)
 
         guard zoomBinaryExists else {
@@ -1016,7 +1109,7 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
             """
         }
 
-        let encodedProfile = Data(zoomSandboxProfile.utf8).base64EncodedString()
+        let encodedProfile = Data(makeZoomSandboxProfile(homeDirectory: homeDirectory).utf8).base64EncodedString()
         return """
         set -u
 

@@ -330,7 +330,6 @@ cp "$SOURCE_INFO_PLIST" "$APP_BUNDLE_DIR/Contents/Info.plist"
 # Build a Finder app icon if source PNG exists.
 SOURCE_APP_ICON="$ROOT_DIR/Sources/1132Fixer/Resources/AppIcon.png"
 if [[ -f "$SOURCE_APP_ICON" ]]; then
-  cp "$SOURCE_APP_ICON" "$APP_BUNDLE_DIR/Contents/Resources/AppIcon.png"
   ICONSET_DIR="$TEMP_BUILD_ROOT/AppIcon.iconset"
   mkdir -p "$ICONSET_DIR"
   sips -z 16 16 "$SOURCE_APP_ICON" --out "$ICONSET_DIR/icon_16x16.png" >/dev/null

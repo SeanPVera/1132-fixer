@@ -6,6 +6,9 @@ import AVFoundation
 
 @MainActor
 final class AppViewModel: ObservableObject {
+    typealias ZoomVerifier = (_ appPath: String) async throws -> ZoomBundleVerifier.VerifiedBundle
+    typealias MediaAccessChecker = () async throws -> String
+
     struct BugReportDraft {
         let title: String
         let systemInfo: String
@@ -46,42 +49,6 @@ final class AppViewModel: ObservableObject {
         static let osascriptPath = ShellCommands.osascriptPath
     }
 
-    private final class LockedDataBuffer: @unchecked Sendable {
-        private let lock = NSLock()
-        private var data = Data()
-
-        func append(_ chunk: Data) {
-            lock.lock()
-            data.append(chunk)
-            lock.unlock()
-        }
-
-        func snapshot() -> Data {
-            lock.lock()
-            let copy = data
-            lock.unlock()
-            return copy
-        }
-    }
-
-    private final class LockedFlag: @unchecked Sendable {
-        private let lock = NSLock()
-        private var value = false
-
-        func set() {
-            lock.lock()
-            value = true
-            lock.unlock()
-        }
-
-        var isSet: Bool {
-            lock.lock()
-            let snapshot = value
-            lock.unlock()
-            return snapshot
-        }
-    }
-
     private static let logTimestampFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         return formatter
@@ -93,7 +60,9 @@ final class AppViewModel: ObservableObject {
         return formatter
     }()
     static let diagnosticsFileName = "1132Fixer-diagnostics.txt"
-    static let maxInMemoryLogEntries = 5_000
+    static let maxInMemoryLogEntries = 2_000
+    static let maxInMemoryLogBytes = 512 * 1_024
+    static let maxSingleLogEntryBytes = 32 * 1_024
 
     enum WorkflowState: Equatable {
         case idle
@@ -271,8 +240,15 @@ final class AppViewModel: ObservableObject {
 
     private var runningTask: Task<Void, Never>?
     private var preflightTask: Task<Void, Never>?
+    private var zoomLocationSelectionTask: Task<Void, Never>?
     private var runGate = WorkflowRunGate()
     private var activePreflightID: UUID?
+    private var activeZoomLocationSelectionID: UUID?
+    private var retainedLogBytes = 0
+    private let processExecutor: any ProcessExecuting
+    private let zoomVerifier: ZoomVerifier
+    private let mediaAccessChecker: MediaAccessChecker?
+    private let homeDirectoryProvider: () -> String
     private let stopZoomCommand = ShellCommands.stopZoom
     private let stopZoomUpdatersCommand = ShellCommands.stopZoomUpdaters
 
@@ -294,7 +270,18 @@ final class AppViewModel: ObservableObject {
         return !preflight.checks.contains(where: \.isBlocking) && !isRunning && !runGate.isActive
     }
 
-    init(initialDiskBackupPath: String? = BackupStore.latestBackupURL()?.path) {
+    init(
+        initialDiskBackupPath: String? = BackupStore.latestBackupURL()?.path,
+        processExecutor: any ProcessExecuting = BoundedProcessExecutor(),
+        zoomVerifier: @escaping ZoomVerifier = { try await ZoomBundleVerifier.verify(appPath: $0) },
+        mediaAccessChecker: MediaAccessChecker? = nil,
+        homeDirectoryProvider: @escaping () -> String = NSHomeDirectory
+    ) {
+        self.processExecutor = processExecutor
+        self.zoomVerifier = zoomVerifier
+        self.mediaAccessChecker = mediaAccessChecker
+        self.homeDirectoryProvider = homeDirectoryProvider
+
         let initialCustomPath = ZoomLocation.customAppPath
         let initialEffectivePath = initialCustomPath ?? ZoomLocation.appPath
         self.customZoomAppPath = initialCustomPath
@@ -422,6 +409,12 @@ final class AppViewModel: ObservableObject {
             return
         }
 
+        let requestedHomeDirectory = homeDirectoryProvider()
+        let normalizedHomeDirectory = ShellCommands.normalizedSafeHomeDirectory(requestedHomeDirectory)
+        let homeDirectory = normalizedHomeDirectory.map {
+            URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardized.path
+        } ?? requestedHomeDirectory
+
         let canonicalSpecs = RepairStepSpec.canonicalSteps()
         let stepPairs = canonicalSpecs.map { ($0.id, $0.name) }
 
@@ -509,13 +502,20 @@ final class AppViewModel: ObservableObject {
                 // 1. Fail fast before anything is closed or changed.
                 self.workflowState = .preflight
                 beginStep("validate")
-                self.appendLog("Step: Verify Zoom signature and required sandbox profile")
+                self.appendLog("Step: Verify Zoom signature, home directory, and required sandbox profile")
                 do {
+                    var isDirectory: ObjCBool = false
+                    guard normalizedHomeDirectory != nil,
+                          ShellCommands.isSafeHomeDirectory(homeDirectory),
+                          FileManager.default.fileExists(atPath: homeDirectory, isDirectory: &isDirectory),
+                          isDirectory.boolValue else {
+                        throw self.appError("Safety checks: refusing to continue because the home directory '\(requestedHomeDirectory)' is not a safe, existing directory.")
+                    }
                     _ = try await self.verifiedZoomBinaryPath()
                     let output = try await self.runProcess(
                         stepName: "Validate Zoom sandbox profile",
                         executable: Constants.bashPath,
-                        arguments: ["-c", ShellCommands.makeSandboxProfileValidationCommand()],
+                        arguments: ["-c", ShellCommands.makeSandboxProfileValidationCommand(homeDirectory: homeDirectory)],
                         timeout: 15
                     )
                     self.markStepDone("validate", succeeded: true)
@@ -566,7 +566,7 @@ final class AppViewModel: ObservableObject {
                     let output = try await self.runProcess(
                         stepName: "Backup Zoom state",
                         executable: Constants.bashPath,
-                        arguments: ["-c", ShellCommands.makeBackupZoomDataCommand()],
+                        arguments: ["-c", ShellCommands.makeBackupZoomDataCommand(homeDirectory: homeDirectory)],
                         timeout: 60
                     )
                     let backupPath = output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -623,14 +623,13 @@ final class AppViewModel: ObservableObject {
                 beginStep("resetData")
                 self.appendLog("Step: Reset Zoom data")
                 do {
-                    let home = NSHomeDirectory()
-                    guard ShellCommands.isSafeHomeDirectory(home) else {
-                        throw self.appError("Reset Zoom data: refusing to delete files because the home directory '\(home)' is not a safe absolute path.")
+                    guard ShellCommands.isSafeHomeDirectory(homeDirectory) else {
+                        throw self.appError("Reset Zoom data: refusing to delete files because the home directory '\(homeDirectory)' is not a safe absolute path.")
                     }
                     let output = try await self.runProcess(
                         stepName: "Reset Zoom data",
                         executable: Constants.bashPath,
-                        arguments: ["-c", ShellCommands.makeResetZoomDataWithStatusCommand(homeDirectory: home)]
+                        arguments: ["-c", ShellCommands.makeResetZoomDataWithStatusCommand(homeDirectory: homeDirectory)]
                     )
                     let lines = output.components(separatedBy: .newlines)
                     let resetSucceeded = lines.contains("__1132_RESET_STATUS__=0")
@@ -743,7 +742,10 @@ final class AppViewModel: ObservableObject {
                     let output = try await self.runProcess(
                         stepName: "Launch Zoom",
                         executable: Constants.bashPath,
-                        arguments: ["-c", ShellCommands.makeLaunchZoomCommand(zoomBinaryPath: verifiedBinaryPath)],
+                        arguments: ["-c", ShellCommands.makeLaunchZoomCommand(
+                            zoomBinaryPath: verifiedBinaryPath,
+                            homeDirectory: homeDirectory
+                        )],
                         timeout: 120
                     )
                     self.markStepDone("launch", succeeded: true)
@@ -885,15 +887,113 @@ final class AppViewModel: ObservableObject {
             return
         }
         lastRunResults = nil
-        workflowProgress = nil
+        expandedStepIDs.removeAll()
+        let canonicalSpecs = RepairStepSpec.canonicalSteps()
+        initProgress(steps: canonicalSpecs.map { ($0.id, $0.name) })
+        let runRecordID = UUID()
+        let selectedPath = zoomAppPath
+        currentRunRecord = RunRecord(
+            id: runRecordID,
+            title: "Preview Steps (Dry Run)",
+            startedAt: Date(),
+            finishedAt: nil,
+            selectedAppPath: selectedPath,
+            outcome: .running,
+            steps: canonicalSpecs.map { StepResult(id: $0.id, name: $0.name, outcome: .unstarted, detail: "Pending") },
+            createdBackupPath: nil,
+            failureMessage: nil,
+            failedStepID: nil
+        )
         runTask("Dry Run") {
             var results: [String] = []
+            var completedResults: [StepResult] = []
+            var activeStepSpec: RepairStepSpec?
+
+            @MainActor
+            func syncRunRecord(outcome: RunRecord.Outcome, failureMessage: String? = nil, failedStepID: String? = nil) {
+                var merged: [StepResult] = []
+                for spec in canonicalSpecs {
+                    if let finished = completedResults.first(where: { $0.id == spec.id }) {
+                        merged.append(finished)
+                    } else if activeStepSpec?.id == spec.id && (outcome == .running || outcome == .stopping) {
+                        merged.append(StepResult(id: spec.id, name: spec.name, outcome: .running, detail: spec.plannedSummary))
+                    } else {
+                        merged.append(StepResult(id: spec.id, name: spec.name, outcome: .unstarted, detail: "Not run"))
+                    }
+                }
+                self.lastRunResults = merged
+                self.currentRunRecord = RunRecord(
+                    id: runRecordID,
+                    title: "Preview Steps (Dry Run)",
+                    startedAt: self.currentRunRecord?.startedAt ?? Date(),
+                    finishedAt: (outcome == .running || outcome == .stopping) ? nil : Date(),
+                    selectedAppPath: selectedPath,
+                    outcome: outcome,
+                    steps: merged,
+                    createdBackupPath: nil,
+                    failureMessage: failureMessage,
+                    failedStepID: failedStepID
+                )
+            }
+
+            @MainActor
+            func beginStep(_ id: String) {
+                activeStepSpec = canonicalSpecs.first(where: { $0.id == id })
+                self.markStepRunning(id)
+                syncRunRecord(outcome: self.isCanceling ? .stopping : .running)
+            }
+
+            @MainActor
+            func finishStep(_ id: String, outcome: StepResult.Outcome, detail: String) {
+                let name = canonicalSpecs.first(where: { $0.id == id })?.name ?? id
+                switch outcome {
+                case .success:
+                    self.markStepDone(id, succeeded: true)
+                case .failed:
+                    self.markStepDone(id, succeeded: false)
+                case .warning:
+                    self.markStepWarning(id)
+                case .skipped:
+                    self.markStepSkipped(id)
+                case .interrupted:
+                    self.markStepInterrupted(id)
+                case .unstarted, .running:
+                    break
+                }
+                let result = StepResult(id: id, name: name, outcome: outcome, detail: detail)
+                completedResults.removeAll(where: { $0.id == id })
+                completedResults.append(result)
+                if activeStepSpec?.id == id {
+                    activeStepSpec = nil
+                }
+                if outcome == .failed || outcome == .warning {
+                    self.expandedStepIDs.insert(id)
+                }
+                syncRunRecord(outcome: self.isCanceling ? .stopping : .running)
+            }
 
             let osVersion = ProcessInfo.processInfo.operatingSystemVersion
             results.append("macOS: \(osVersion.majorVersion).\(osVersion.minorVersion).\(osVersion.patchVersion)")
 
             let arch = ShellCommands.machineArchitecture()
             results.append("Architecture: \(arch == "arm64" ? "Apple Silicon" : (arch == "x86_64" ? "Intel" : arch))")
+
+            self.workflowState = .preflight
+            beginStep("validate")
+            var validateFailure: String?
+            let requestedHome = self.homeDirectoryProvider()
+            let normalizedHome = ShellCommands.normalizedSafeHomeDirectory(requestedHome).map {
+                URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardized.path
+            }
+            var isHomeDir: ObjCBool = false
+            let homeIsSafe = normalizedHome.map {
+                ShellCommands.isSafeHomeDirectory($0)
+                    && FileManager.default.fileExists(atPath: $0, isDirectory: &isHomeDir)
+                    && isHomeDir.boolValue
+            } ?? false
+            if !homeIsSafe {
+                validateFailure = "Safety checks: home directory '\(requestedHome)' is not a safe, existing directory."
+            }
 
             do {
                 let verified = try await self.verifiedZoomBinaryPath()
@@ -902,34 +1002,73 @@ final class AppViewModel: ObservableObject {
             } catch {
                 try Task.checkCancellation()
                 results.append("Zoom signature: FAILED — \(error.localizedDescription)")
+                if validateFailure == nil {
+                    validateFailure = error.localizedDescription
+                }
             }
 
             do {
+                let sandboxHome = normalizedHome ?? requestedHome
                 _ = try await self.runProcess(
                     stepName: "Validate Zoom sandbox profile",
                     executable: Constants.bashPath,
-                    arguments: ["-c", ShellCommands.makeSandboxProfileValidationCommand()],
+                    arguments: ["-c", ShellCommands.makeSandboxProfileValidationCommand(
+                        homeDirectory: sandboxHome
+                    )],
                     timeout: 15
                 )
                 results.append("Sandbox profile: Valid")
             } catch {
                 try Task.checkCancellation()
                 results.append("Sandbox profile: FAILED — \(error.localizedDescription)")
+                if validateFailure == nil {
+                    validateFailure = error.localizedDescription
+                }
             }
 
-            if let availableBytes = self.effectiveAvailableBackupBytes() {
-                results.append("Backup space available: \(ByteCountFormatter.string(fromByteCount: availableBytes, countStyle: .file))")
+            if let validateFailure {
+                finishStep("validate", outcome: .failed, detail: validateFailure)
             } else {
-                results.append("Backup space available: Could not determine")
+                finishStep(
+                    "validate",
+                    outcome: .success,
+                    detail: "Verified Zoom bundle and sandbox launch profile (read-only preview)."
+                )
             }
 
+            self.workflowState = .closingZoom
+            beginStep("closeZoom")
             let zoomRunning = (try? await self.runProcess(
                 stepName: "Check Zoom process",
                 executable: Constants.bashPath,
                 arguments: ["-c", "/usr/bin/pgrep -x \"zoom.us\" >/dev/null 2>&1 && echo running || echo stopped"]
             ))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
             results.append("Zoom process: \(zoomRunning)")
+            finishStep(
+                "closeZoom",
+                outcome: .skipped,
+                detail: "Read-only preview: Zoom process is \(zoomRunning); live repair would close Zoom before backup."
+            )
 
+            self.workflowState = .backingUpState
+            beginStep("backup")
+            let spaceDetail: String
+            if let availableBytes = self.effectiveAvailableBackupBytes() {
+                let formatted = ByteCountFormatter.string(fromByteCount: availableBytes, countStyle: .file)
+                results.append("Backup space available: \(formatted)")
+                spaceDetail = "Backup space available: \(formatted)"
+            } else {
+                results.append("Backup space available: Could not determine")
+                spaceDetail = "Backup space available: Could not determine"
+            }
+            finishStep(
+                "backup",
+                outcome: .skipped,
+                detail: "Read-only preview: \(spaceDetail); live repair would create a private backup before any reset."
+            )
+
+            self.workflowState = .checkingNetwork
+            beginStep("network")
             do {
                 let routeOutput = try await self.runProcess(
                     stepName: "Detect interface",
@@ -947,26 +1086,84 @@ final class AppViewModel: ObservableObject {
                 let portName = portMap[device] ?? "Unknown"
                 results.append("Active interface: \(portName) (\(device))")
 
+                var networkOutcome: StepResult.Outcome = .skipped
+                var strategyDetail = "Active interface: \(portName) (\(device))"
                 if let kind = try? ShellCommands.classifySupportedInterface(hardwarePortName: portName) {
                     results.append("Interface type: \(kind.rawValue)")
                     switch ShellCommands.networkIdentityStrategy(isWiFi: kind == .wifi) {
                     case .rotatingPrivateWiFiAddress:
-                        results.append("Network identity: Rotating Private Wi-Fi Address (Apple Silicon + macOS 14+)")
+                        let desc = "Rotating Private Wi-Fi Address (Apple Silicon + macOS 14+)"
+                        results.append("Network identity: \(desc)")
+                        strategyDetail += " — Read-only preview: would use \(desc)."
                     case .unsupported:
-                        results.append("Network identity: UNAVAILABLE — MAC spoofing is disabled on macOS 14+")
+                        let desc = "UNAVAILABLE — MAC spoofing is disabled on macOS 14+"
+                        results.append("Network identity: \(desc)")
+                        strategyDetail += " — \(desc)."
+                        networkOutcome = .warning
                     case .legacyMACSpoof:
-                        results.append("Network identity: MAC spoofing available")
+                        let desc = "MAC spoofing available"
+                        results.append("Network identity: \(desc)")
+                        strategyDetail += " — Read-only preview: \(desc)."
                     }
                 }
+                finishStep("network", outcome: networkOutcome, detail: strategyDetail)
             } catch {
                 try Task.checkCancellation()
                 results.append("Network: \(error.localizedDescription)")
+                finishStep(
+                    "network",
+                    outcome: .warning,
+                    detail: "Read-only preview: \(error.localizedDescription)"
+                )
             }
 
+            self.workflowState = .clearingState
+            beginStep("resetData")
+            finishStep(
+                "resetData",
+                outcome: .skipped,
+                detail: "Read-only preview: would clear local Zoom state, saved window state, and logs."
+            )
+
+            self.workflowState = .flushingDNS
+            beginStep("dns")
+            finishStep(
+                "dns",
+                outcome: .skipped,
+                detail: "Read-only preview: would flush system DNS cache (administrator prompt in live repair)."
+            )
+
+            self.workflowState = .stoppingUpdaters
+            beginStep("updaters")
+            finishStep(
+                "updaters",
+                outcome: .skipped,
+                detail: "Read-only preview: would unload Zoom LaunchAgents for the current session."
+            )
+
+            self.workflowState = .checkingMediaAccess
+            beginStep("mediaAccess")
             let camera = Self.mediaAccessPreflightValue(for: .video)
             let microphone = Self.mediaAccessPreflightValue(for: .audio)
             results.append("Camera access: \(camera.value)")
             results.append("Microphone access: \(microphone.value)")
+            let mediaHasWarning = camera.isWarning || microphone.isWarning
+            finishStep(
+                "mediaAccess",
+                outcome: mediaHasWarning ? .warning : .success,
+                detail: "Camera access: \(camera.value); Microphone access: \(microphone.value)"
+            )
+
+            self.workflowState = .launchingZoom
+            beginStep("launch")
+            finishStep(
+                "launch",
+                outcome: .skipped,
+                detail: "Read-only preview: would launch verified Zoom binary inside sandbox-exec."
+            )
+
+            let hasAdvisories = completedResults.contains { $0.outcome == .warning || $0.outcome == .failed }
+            syncRunRecord(outcome: hasAdvisories ? .completedWithWarnings : .succeeded)
 
             results.append("")
             results.append("Dry run complete. No changes were made to your system.")
@@ -977,6 +1174,7 @@ final class AppViewModel: ObservableObject {
     func clearLogs() {
         logs.removeAll()
         logEntries.removeAll()
+        retainedLogBytes = 0
         logRevision &+= 1
     }
 
@@ -995,6 +1193,10 @@ final class AppViewModel: ObservableObject {
         let selectedZoomPath = zoomAppPath
         let selectedZoomIsCustom = customZoomAppPath != nil
         let verifier = bundleVerifierOverride
+        let requestedHomeDirectory = homeDirectoryProvider()
+        let homeDirectory = ShellCommands.normalizedSafeHomeDirectory(requestedHomeDirectory).map {
+            URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardized.path
+        }
 
         preflightTask = Task { [weak self] in
             guard let self else { return }
@@ -1016,14 +1218,29 @@ final class AppViewModel: ObservableObject {
             let archLabel = arch == "arm64" ? "Apple Silicon" : (arch == "x86_64" ? "Intel" : arch)
             checks.append(.init(id: "arch", label: "Architecture", value: archLabel, isWarning: false))
 
+            var isHomeDirectory: ObjCBool = false
+            let homeIsSafe = homeDirectory.map {
+                ShellCommands.isSafeHomeDirectory($0)
+                    && FileManager.default.fileExists(atPath: $0, isDirectory: &isHomeDirectory)
+                    && isHomeDirectory.boolValue
+            } ?? false
+            checks.append(.init(
+                id: "home",
+                label: "Home Directory",
+                value: homeIsSafe ? "Validated" : "Unsafe or unavailable: \(requestedHomeDirectory)",
+                isWarning: !homeIsSafe,
+                isBlocking: !homeIsSafe
+            ))
+
             // Verify the selected Zoom bundle without touching it.
             do {
-                _ = try await Task.detached(priority: .userInitiated) {
-                    if let verifier {
-                        return try verifier(selectedZoomPath)
-                    }
-                    return try ZoomBundleVerifier.verify(appPath: selectedZoomPath)
-                }.value
+                if let verifier {
+                    _ = try await Task.detached(priority: .userInitiated) {
+                        try verifier(selectedZoomPath)
+                    }.value
+                } else {
+                    _ = try await self.zoomVerifier(selectedZoomPath)
+                }
                 checks.append(.init(
                     id: "zoom",
                     label: "Zoom App",
@@ -1043,10 +1260,13 @@ final class AppViewModel: ObservableObject {
 
             // Compile the same sandbox profile used at launch.
             do {
+                guard let homeDirectory, homeIsSafe else {
+                    throw self.appError("A safe home directory is required to build the Zoom sandbox profile.")
+                }
                 _ = try await self.runProcess(
                     stepName: "Preflight: validate sandbox",
                     executable: Constants.bashPath,
-                    arguments: ["-c", ShellCommands.makeSandboxProfileValidationCommand()],
+                    arguments: ["-c", ShellCommands.makeSandboxProfileValidationCommand(homeDirectory: homeDirectory)],
                     timeout: 15
                 )
                 checks.append(.init(id: "sandbox", label: "Sandbox", value: "Profile validated", isWarning: false))
@@ -1268,9 +1488,7 @@ Last action status: \(lastStatus)
         let stepResults = lastRunResults
         let preflightChecks = preflight.checks
         let capturedLogs = maxLogLines.map { Array(logs.suffix($0)) } ?? logs
-        let environmentSnapshot = await Task.detached(priority: .utility) {
-            DiagnosticsCollector.makeSnapshot()
-        }.value
+        let environmentSnapshot = await DiagnosticsCollector.makeSnapshot(executor: processExecutor)
 
         var lines: [String] = []
         lines.append("1132 Fixer Diagnostics Report")
@@ -1329,11 +1547,14 @@ Last action status: \(lastStatus)
         }
         isRunning = true
         isCanceling = false
+        let clock = ContinuousClock()
+        let startedAt = clock.now
         appendLog("=== \(title) ===")
 
         runningTask = Task {
             defer {
                 if runGate.finish(runID) {
+                    appendLog("Timing: \(title) finished in \(Self.formatElapsed(startedAt.duration(to: clock.now))).")
                     isRunning = false
                     isCanceling = false
                     isExecutingPrivilegedStep = false
@@ -1373,20 +1594,44 @@ Last action status: \(lastStatus)
 
     private func appendLog(_ text: String) {
         let timestamp = Self.logTimestampFormatter.string(from: Date())
+        let boundedText = Self.tailLimitedUTF8(text, maxBytes: Self.maxSingleLogEntryBytes)
         logRevision &+= 1
         let entry = LogEntry(
             sequence: logRevision,
             timestamp: timestamp,
-            message: text
+            message: boundedText
         )
-        if logs.count >= Self.maxInMemoryLogEntries {
-            logs.removeFirst(logs.count - Self.maxInMemoryLogEntries + 1)
-        }
-        if logEntries.count >= Self.maxInMemoryLogEntries {
-            logEntries.removeFirst(logEntries.count - Self.maxInMemoryLogEntries + 1)
-        }
-        logs.append(entry.formattedLine)
+        let formatted = entry.formattedLine
+        logs.append(formatted)
         logEntries.append(entry)
+        retainedLogBytes += formatted.utf8.count
+
+        while logs.count > Self.maxInMemoryLogEntries || retainedLogBytes > Self.maxInMemoryLogBytes {
+            guard !logs.isEmpty else { break }
+            retainedLogBytes -= logs.removeFirst().utf8.count
+            if !logEntries.isEmpty {
+                logEntries.removeFirst()
+            }
+        }
+    }
+
+    private static func tailLimitedUTF8(_ value: String, maxBytes: Int) -> String {
+        let data = Data(value.utf8)
+        guard data.count > maxBytes else { return value }
+
+        let note = Data("[earlier text truncated]\n".utf8)
+        var tail = data.suffix(max(maxBytes - note.count, 0))
+        while let first = tail.first, first & 0xC0 == 0x80 {
+            tail = tail.dropFirst()
+        }
+        return String(decoding: note + tail, as: UTF8.self)
+    }
+
+    private static func formatElapsed(_ duration: Duration) -> String {
+        let components = duration.components
+        let seconds = Double(components.seconds)
+            + Double(components.attoseconds) / 1_000_000_000_000_000_000
+        return String(format: "%.2fs", seconds)
     }
 
     private func inferLastActionStatus() -> String {
@@ -1465,22 +1710,23 @@ Network recovery: Your network interface may be in an inconsistent state. To res
         }
 
         let verifyScript = ShellCommands.makeVerifyMACCommand(device: interface.device)
-        let actualMAC = (try? await runProcess(
+        let actualMACOutput = (try? await runProcess(
             stepName: "Verify MAC address",
             executable: Constants.bashPath,
             arguments: ["-c", verifyScript]
-        ))?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        )) ?? ""
         try Task.checkCancellation()
-        let macVerified = !actualMAC.isEmpty && actualMAC == spoofedMAC.lowercased()
+        let actualMAC = ShellCommands.normalizedMACAddress(actualMACOutput)
+        let macVerified = actualMAC == spoofedMAC.lowercased()
 
         var warnings: [String] = []
         let summary: String
         if macVerified {
             summary = "MAC spoofed on \(interface.kind.rawValue) (\(interface.device), service: \(interface.networkService)) -> \(spoofedMAC); network service restarted"
         } else {
-            let detail = actualMAC.isEmpty
-                ? "Could not read the current MAC address after spoofing."
-                : "Current MAC (\(actualMAC)) does not match target (\(spoofedMAC))."
+            let detail = actualMAC.map {
+                "Current MAC (\($0)) does not match target (\(spoofedMAC))."
+            } ?? "Could not read the current MAC address after spoofing."
             appendLog("Network recovery: MAC change was not applied. Commands attempted:")
             appendLog("  \(spoofScript)")
             let warning = """
@@ -1525,11 +1771,12 @@ If your network connection is disrupted after this step:
 
     private func resetPrivateWiFiAddressAndReconnect(networkService: String, device: String) async throws -> MACSpoofResult {
         let verifyScript = ShellCommands.makeVerifyMACCommand(device: device)
-        let previousMAC = (try? await runProcess(
+        let previousMACOutput = (try? await runProcess(
             stepName: "Read current MAC address",
             executable: Constants.bashPath,
             arguments: ["-c", verifyScript]
-        ))?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        )) ?? ""
+        let previousMAC = ShellCommands.normalizedMACAddress(previousMACOutput)
         try Task.checkCancellation()
 
         let getModeCmd = ShellCommands.makeGetPrivateAddressModeCommand(networkService: networkService)
@@ -1590,11 +1837,13 @@ If your network connection is disrupted after this step:
             appendLog(warning)
         }
 
-        let newMAC = (try? await runProcess(
+        // 4. Read the new MAC for logging
+        let newMACOutput = (try? await runProcess(
             stepName: "Read new MAC address",
             executable: Constants.bashPath,
             arguments: ["-c", verifyScript]
-        ))?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        )) ?? ""
+        let newMAC = ShellCommands.normalizedMACAddress(newMACOutput)
         try Task.checkCancellation()
 
         let verifiedModeOutput = (try? await runProcess(
@@ -1608,10 +1857,10 @@ If your network connection is disrupted after this step:
         if verifiedMode != "rotating" {
             warnings.append("Warning: Private Wi-Fi Address mode is '\(verifiedMode)' after the change; rotating mode was not verified.")
         }
-        if newMAC.isEmpty {
+        if newMAC == nil {
             warnings.append("Warning: The current MAC address could not be read after cycling Wi-Fi.")
-        } else if !previousMAC.isEmpty && newMAC == previousMAC {
-            warnings.append("Warning: Wi-Fi reconnected, but the MAC address did not change (\(newMAC)).")
+        } else if let previousMAC, newMAC == previousMAC {
+            warnings.append("Warning: Wi-Fi reconnected, but the MAC address did not change (\(previousMAC)).")
         }
         let recoveryWarning = try await verifyNetworkRecovered(expectedDevice: device)
         if let recoveryWarning {
@@ -1629,7 +1878,7 @@ If your network connection is disrupted after this step:
             modeNote = "Private Wi-Fi Address remained \(currentMode). "
         }
 
-        let displayedMAC = newMAC.isEmpty ? "(could not read)" : newMAC
+        let displayedMAC = newMAC ?? "(could not read)"
         var summaryParts = ["\(modeNote)Wi-Fi cycled for a rotating MAC. Current MAC: \(displayedMAC)"]
         summaryParts.append(contentsOf: warnings)
 
@@ -1642,16 +1891,12 @@ If your network connection is disrupted after this step:
 
     private func verifyNetworkRecovered(expectedDevice: String) async throws -> String? {
         do {
-            let routeOutput = try await runProcess(
+            _ = try await runProcess(
                 stepName: "Verify network recovery",
                 executable: Constants.bashPath,
-                arguments: ["-c", "/sbin/route -n get default 2>/dev/null"],
-                timeout: 15
+                arguments: ["-c", ShellCommands.makeNetworkReadinessCommand(device: expectedDevice)],
+                timeout: 20
             )
-            let recoveredDevice = try ShellCommands.parseDefaultRouteInterface(from: routeOutput)
-            guard recoveredDevice == expectedDevice else {
-                return "Warning: The default route moved from \(expectedDevice) to \(recoveredDevice) after the network change."
-            }
             return nil
         } catch {
             try Task.checkCancellation()
@@ -1704,13 +1949,13 @@ If your network connection is disrupted after this step:
 
     private func verifiedZoomBinaryPath() async throws -> String {
         let appPath = zoomAppPath
-        let verifier = bundleVerifierOverride
-        let verified = try await Task.detached(priority: .userInitiated) {
-            if let verifier {
-                return try verifier(appPath)
-            }
-            return try ZoomBundleVerifier.verify(appPath: appPath)
-        }.value
+        if let verifier = bundleVerifierOverride {
+            let verified = try await Task.detached(priority: .userInitiated) {
+                try verifier(appPath)
+            }.value
+            return verified.binaryPath
+        }
+        let verified = try await zoomVerifier(appPath)
         return verified.binaryPath
     }
 
@@ -1730,6 +1975,7 @@ If your network connection is disrupted after this step:
     }
 
     func selectZoomLocation(at selectedPath: String) {
+        cancelPendingZoomLocationSelection()
         guard let validated = ZoomLocation.validatedAppPath(selectedPath) else {
             let reason = "The selected app does not contain the Zoom executable. Choose 'zoom.us.app'."
             appendLog("Selected app is not a valid Zoom installation: \(selectedPath)")
@@ -1738,28 +1984,71 @@ If your network connection is disrupted after this step:
             return
         }
 
-        do {
-            if let verifier = bundleVerifierOverride {
+        if let verifier = bundleVerifierOverride {
+            do {
                 _ = try verifier(validated)
-            } else {
-                _ = try ZoomBundleVerifier.verify(appPath: validated)
+                installationNotice = nil
+                ZoomLocation.customAppPath = validated
+                customZoomAppPath = validated
+                appendLog("Zoom location set to: \(validated)")
+                runPreflight()
+            } catch {
+                appendLog("Selected app was rejected: \(error.localizedDescription)")
+                installationNotice = error.localizedDescription
+                workflowState = .failed(error.localizedDescription)
             }
-        } catch {
-            appendLog("Selected app was rejected: \(error.localizedDescription)")
-            installationNotice = error.localizedDescription
-            workflowState = .failed(error.localizedDescription)
             return
         }
 
-        installationNotice = nil
-        ZoomLocation.customAppPath = validated
-        customZoomAppPath = validated
-        appendLog("Zoom location set to: \(validated)")
-        runPreflight()
+        verifyAndSelectZoomLocation(validated)
+    }
+
+    /// Verifies and applies a structurally valid Zoom bundle selected by the user.
+    /// Only the newest request may update the stored path or surface an error.
+    func verifyAndSelectZoomLocation(_ validated: String) {
+        cancelPendingZoomLocationSelection()
+        let selectionID = UUID()
+        activeZoomLocationSelectionID = selectionID
+
+        zoomLocationSelectionTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await zoomVerifier(validated)
+                try Task.checkCancellation()
+                guard finishZoomLocationSelection(selectionID) else { return }
+
+                installationNotice = nil
+                ZoomLocation.customAppPath = validated
+                customZoomAppPath = validated
+                appendLog("Zoom location set to: \(validated)")
+                runPreflight()
+            } catch is CancellationError {
+                _ = finishZoomLocationSelection(selectionID)
+            } catch {
+                guard finishZoomLocationSelection(selectionID) else { return }
+                appendLog("Selected app was rejected: \(error.localizedDescription)")
+                installationNotice = error.localizedDescription
+                workflowState = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    private func cancelPendingZoomLocationSelection() {
+        activeZoomLocationSelectionID = nil
+        zoomLocationSelectionTask?.cancel()
+        zoomLocationSelectionTask = nil
+    }
+
+    private func finishZoomLocationSelection(_ selectionID: UUID) -> Bool {
+        guard activeZoomLocationSelectionID == selectionID else { return false }
+        activeZoomLocationSelectionID = nil
+        zoomLocationSelectionTask = nil
+        return true
     }
 
     /// Reverts to the default `/Applications/zoom.us.app` location.
     func resetZoomLocation() {
+        cancelPendingZoomLocationSelection()
         installationNotice = nil
         ZoomLocation.customAppPath = nil
         customZoomAppPath = nil
@@ -1803,10 +2092,17 @@ If your network connection is disrupted after this step:
     }
 
     private func ensureMediaAccessForSandboxedZoom() async throws -> String {
+        if let mediaAccessChecker {
+            return try await mediaAccessChecker()
+        }
         if processExecutorOverride != nil {
             return "Camera access already granted; Microphone access already granted"
         }
 
+        // macOS only presents a privacy prompt while the requesting app is
+        // frontmost. The admin (SecurityAgent) prompts in the earlier steps leave
+        // another process in front, so without this the prompt is deferred and
+        // the step waits on a dialog the user never gets to answer.
         if !skipBringAppToFront {
             await bringAppToFront()
         }
@@ -1911,44 +2207,11 @@ If your network connection is disrupted after this step:
         AppError.general(message)
     }
 
-    private final class ContinuationResumeGate: @unchecked Sendable {
-        private let lock = NSLock()
-        private var hasResumed = false
-
-        func beginResume() -> Bool {
-            lock.lock()
-            defer { lock.unlock() }
-
-            guard !hasResumed else { return false }
-            hasResumed = true
-            return true
-        }
-    }
-
-    nonisolated private static func terminateProcessTree(_ process: Process) {
-        guard process.isRunning else { return }
-        let pid = process.processIdentifier
-
-        let childKiller = Process()
-        childKiller.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        childKiller.arguments = ["-TERM", "-P", "\(pid)"]
-        childKiller.standardOutput = FileHandle.nullDevice
-        childKiller.standardError = FileHandle.nullDevice
-        if (try? childKiller.run()) != nil {
-            childKiller.waitUntilExit()
-        }
-
-        if process.isRunning {
-            process.terminate()
-        }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
-            if process.isRunning {
-                kill(pid, SIGKILL)
-            }
-        }
-    }
-
-    /// Runs a process and returns its combined output.
+    /// Runs a process through the shared bounded executor and returns its combined output.
+    ///
+    /// Privileged AppleScript commands are awaited in a detached task so canceling the UI
+    /// workflow cannot release the single-flight lock while a self-bounded root shell may
+    /// still be finishing.
     private func runProcess(
         stepName: String,
         executable: String,
@@ -1961,135 +2224,62 @@ If your network connection is disrupted after this step:
         if isPrivileged {
             isExecutingPrivilegedStep = true
         }
+        let clock = ContinuousClock()
+        let startedAt = clock.now
         defer {
             if isPrivileged {
                 isExecutingPrivilegedStep = false
             }
+            appendLog("Timing: \(stepName) took \(Self.formatElapsed(startedAt.duration(to: clock.now))).")
         }
 
         if let override = processExecutorOverride {
             return try await override(stepName, executable, arguments, timeout)
         }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
-        let cancellationFlag = LockedFlag()
-        let timeoutFlag = LockedFlag()
-
-        return try await withTaskCancellationHandler(operation: {
-            try await withCheckedThrowingContinuation { continuation in
-                let stdoutBuffer = LockedDataBuffer()
-                let stderrBuffer = LockedDataBuffer()
-                let resumeGate = ContinuationResumeGate()
-                let readGroup = DispatchGroup()
-
-                @Sendable func safeResume(_ result: Result<String, Error>) {
-                    guard resumeGate.beginResume() else { return }
-                    switch result {
-                    case .success(let value): continuation.resume(returning: value)
-                    case .failure(let error): continuation.resume(throwing: error)
-                    }
-                }
-
-                let timer = DispatchSource.makeTimerSource(queue: .global())
-                timer.schedule(deadline: .now() + timeout)
-                timer.setEventHandler {
-                    timeoutFlag.set()
-                    AppViewModel.terminateProcessTree(process)
-                    DispatchQueue.main.async {
-                        self.appendLog("Timeout: '\(stepName)' did not complete within \(Int(timeout))s — terminating.")
-                    }
-                }
-                timer.resume()
-
-                process.terminationHandler = { terminatedProcess in
-                    let terminationStatus = terminatedProcess.terminationStatus
-
-                    readGroup.notify(queue: .global()) {
-                        timer.cancel()
-
-                        let stdout = String(data: stdoutBuffer.snapshot(), encoding: .utf8) ?? ""
-                        let stderr = String(data: stderrBuffer.snapshot(), encoding: .utf8) ?? ""
-                        let combined = [stdout, stderr]
-                            .filter { !$0.isEmpty }
-                            .joined(separator: "\n")
-
-                        if cancellationFlag.isSet {
-                            safeResume(.failure(CancellationError()))
-                            return
-                        }
-
-                        if timeoutFlag.isSet {
-                            safeResume(.failure(AppError.processTimeout("\(stepName): Timed out after \(Int(timeout)) seconds.")))
-                            return
-                        }
-
-                        if terminationStatus == 0 {
-                            safeResume(.success(combined))
-                            return
-                        }
-
-                        let trimmedOutput = combined.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let message: String
-                        if !trimmedOutput.isEmpty {
-                            message = "\(stepName): \(trimmedOutput)"
-                        } else if executable == Constants.osascriptPath {
-                            message = "\(stepName): Admin authorization was canceled or failed. This step requires your macOS password to run with elevated privileges. Click Start Zoom again and enter your password when prompted."
-                        } else {
-                            message = "\(stepName): Command failed with exit code \(terminationStatus)."
-                        }
-
-                        safeResume(.failure(AppError.processFailed(
-                            exitCode: Int(terminationStatus),
-                            message: message
-                        )))
-                    }
-                }
-
-                readGroup.enter()
-                readGroup.enter()
-
-                if cancellationFlag.isSet {
-                    readGroup.leave()
-                    readGroup.leave()
-                    timer.cancel()
-                    safeResume(.failure(CancellationError()))
-                    return
-                }
-
-                do {
-                    try process.run()
-                } catch {
-                    readGroup.leave()
-                    readGroup.leave()
-                    timer.cancel()
-                    safeResume(.failure(error))
-                    return
-                }
-
-                for (pipe, buffer) in [(outPipe, stdoutBuffer), (errPipe, stderrBuffer)] {
-                    DispatchQueue.global().async {
-                        if let data = try? pipe.fileHandleForReading.readToEnd() {
-                            buffer.append(data)
-                        }
-                        readGroup.leave()
-                    }
-                }
+        do {
+            let result: ProcessExecutionResult
+            if isPrivileged {
+                let executor = processExecutor
+                result = try await Task.detached(priority: .userInitiated) {
+                    try await executor.run(
+                        executable: executable,
+                        arguments: arguments,
+                        timeout: timeout,
+                        maxOutputBytes: BoundedProcessExecutor.defaultMaxOutputBytes
+                    )
+                }.value
+            } else {
+                result = try await processExecutor.run(
+                    executable: executable,
+                    arguments: arguments,
+                    timeout: timeout,
+                    maxOutputBytes: BoundedProcessExecutor.defaultMaxOutputBytes
+                )
             }
-        }, onCancel: {
-            cancellationFlag.set()
-            // Privileged AppleScript shells cannot be killed safely from this process.
-            // Let their bounded watchdog finish, keeping the run locked until they exit.
-            if executable != Constants.osascriptPath {
-                AppViewModel.terminateProcessTree(process)
+            try Task.checkCancellation()
+
+            let output = result.combinedOutput
+            guard result.exitCode == 0 else {
+                let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                let message: String
+                if !trimmedOutput.isEmpty {
+                    message = "\(stepName): \(trimmedOutput)"
+                } else if executable == Constants.osascriptPath {
+                    message = "\(stepName): Admin authorization was canceled or failed. This step requires your macOS password to run with elevated privileges. Click Start Zoom again and enter your password when prompted."
+                } else {
+                    message = "\(stepName): Command failed with exit code \(result.exitCode)."
+                }
+                throw AppError.processFailed(exitCode: Int(result.exitCode), message: message)
             }
-        })
+            return output
+        } catch let error as ProcessExecutionError {
+            if case .timedOut = error {
+                appendLog("Timeout: '\(stepName)' did not complete within \(Int(timeout))s — terminated.")
+                throw AppError.processTimeout("\(stepName): Timed out after \(Int(timeout)) seconds.")
+            }
+            throw error
+        }
     }
 
     // MARK: - Deterministic UI Fixture Support (Validation & Screenshots)

@@ -48,7 +48,7 @@ struct UpdateCheckerTests {
         let jsonString = """
         {
             "tag_name": "v1.2.3",
-            "html_url": "https://github.com/PrimeUpYourLife/1132-fixer/releases/tag/v1.2.3",
+            "html_url": "https://github.com/1132-Fixer/macos/releases/tag/v1.2.3",
             "body": "Test release notes",
             "draft": false,
             "prerelease": false
@@ -57,10 +57,7 @@ struct UpdateCheckerTests {
         let data = jsonString.data(using: .utf8)!
 
         MockURLProtocol.requestHandler = { request in
-            #expect(
-                request.url?.absoluteString ==
-                "https://api.github.com/repos/PrimeUpYourLife/1132-fixer/releases/latest"
-            )
+            #expect(request.url == AppConfiguration.latestReleaseAPIURL)
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
             return (response, data)
         }
@@ -68,7 +65,7 @@ struct UpdateCheckerTests {
         let releaseInfo = try await UpdateChecker.fetchLatestRelease(session: session)
 
         #expect(releaseInfo.version == "1.2.3")
-        #expect(releaseInfo.htmlURL.absoluteString == "https://github.com/PrimeUpYourLife/1132-fixer/releases/tag/v1.2.3")
+        #expect(releaseInfo.htmlURL.absoluteString == "https://github.com/1132-Fixer/macos/releases/tag/v1.2.3")
         #expect(releaseInfo.releaseNotes == "Test release notes")
     }
 
@@ -97,7 +94,7 @@ struct UpdateCheckerTests {
         let jsonString = """
         {
             "tag_name": "v1.2.3",
-            "html_url": "https://github.com/PrimeUpYourLife/1132-fixer/releases/tag/v1.2.3",
+            "html_url": "https://github.com/1132-Fixer/macos/releases/tag/v1.2.3",
             "body": "Draft release notes",
             "draft": true,
             "prerelease": false
@@ -126,7 +123,7 @@ struct UpdateCheckerTests {
         let jsonString = """
         {
             "tag_name": "v1.2.3-beta",
-            "html_url": "https://github.com/PrimeUpYourLife/1132-fixer/releases/tag/v1.2.3-beta",
+            "html_url": "https://github.com/1132-Fixer/macos/releases/tag/v1.2.3-beta",
             "body": "Pre-release notes",
             "draft": false,
             "prerelease": true
@@ -213,8 +210,8 @@ struct UpdateCheckerTests {
         let jsonString = """
         {
             "tag_name": "v1.2.3",
-            "html_url": "https://github.com/PrimeUpYourLife/1132-fixer/releases/tag/v1.2.3"
-        """
+            "html_url": "https://github.com/1132-Fixer/macos/releases/tag/v1.2.3"
+        """ // Missing closing brace and other fields
         let data = jsonString.data(using: .utf8)!
 
         MockURLProtocol.requestHandler = { request in
@@ -237,9 +234,16 @@ struct UpdateCheckerTests {
 struct UpdateCheckerURLTests {
 
     @Test func acceptsGitHubReleaseURLs() {
-        #expect(UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/PrimeUpYourLife/1132-fixer/releases/tag/v1.8.0")!))
-        #expect(UpdateChecker.isTrustedReleaseURL(URL(string: "https://GitHub.com/PrimeUpYourLife/1132-fixer")!))
-        #expect(UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com:443/PrimeUpYourLife/1132-fixer/releases/latest")!))
+        #expect(UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/1132-Fixer/macos/releases/tag/v1.8.1")!))
+        #expect(UpdateChecker.isTrustedReleaseURL(URL(string: "https://GitHub.com/1132-Fixer/macos/releases/latest")!))
+        #expect(UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com:443/1132-Fixer/macos/releases/tag/v1")!))
+    }
+
+    @Test func rejectsReleaseURLsForOtherRepositories() {
+        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/attacker/project/releases/tag/v1")!))
+        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/1132-Fixer/macos-malware/releases/tag/v1")!))
+        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/1132-Fixer/macos")!))
+        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/1132-Fixer/macos/releases/../../attacker/project")!))
     }
 
     @Test func rejectsLookalikeHosts() {
@@ -258,9 +262,4 @@ struct UpdateCheckerURLTests {
         #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com:8443/x")!))
     }
 
-    @Test func rejectsAnotherGitHubRepository() {
-        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/1132-Fixer/macos/releases/latest")!))
-        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/PrimeUpYourLife/another-app/releases/latest")!))
-        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/PrimeUpYourLife/1132-fixer-evil/releases/latest")!))
-    }
 }

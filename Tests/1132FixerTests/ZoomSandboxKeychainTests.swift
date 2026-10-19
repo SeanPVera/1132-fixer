@@ -1,93 +1,105 @@
 import Foundation
-import Security
 import Testing
 @testable import _132Fixer
 
 @Suite("Zoom Sandbox Keychain")
 struct ZoomSandboxKeychainTests {
-    @Test func sandboxedClientCanReadAndUpdateItsKeychain() throws {
+    @Test func sandboxedClientCanReadAndUpdateItsKeychain() async throws {
         let fileManager = FileManager.default
-        let rawTempPath = fileManager.temporaryDirectory.path
-        let canonicalTempPath: String
-        if let resolved = rawTempPath.withCString({ realpath($0, nil) }) {
-            defer { free(resolved) }
-            canonicalTempPath = String(cString: resolved)
-        } else {
-            canonicalTempPath = fileManager.temporaryDirectory.resolvingSymlinksInPath().path
-        }
-        let fixture = URL(fileURLWithPath: canonicalTempPath, isDirectory: true)
+        let fixtureURL = fileManager.temporaryDirectory
             .appendingPathComponent("1132fixer-keychain-tests-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: fixtureURL, withIntermediateDirectories: true,
+                                        attributes: [.posixPermissions: 0o700])
+        let fixture = fixtureURL.resolvingSymlinksInPath()
         let keychainDirectory = fixture.appendingPathComponent("Library/Keychains", isDirectory: true)
         try fileManager.createDirectory(at: keychainDirectory, withIntermediateDirectories: true,
                                         attributes: [.posixPermissions: 0o700])
         defer { try? fileManager.removeItem(at: fixture) }
 
-        // Create a private keychain through the API: unlike `security create-keychain`,
-        // this does not add a non-login keychain to the user's search list. All item
-        // operations below name it explicitly, leaving the real login keychain alone.
+        // The sandboxed probe creates a private keychain through the API. Unlike
+        // `security create-keychain`, this does not add the disposable keychain to
+        // the user's search list or involve the real login keychain.
         let keychainURL = keychainDirectory.appendingPathComponent("sandbox-test.keychain")
         let password = UUID().uuidString
-        var keychain: SecKeychain?
-        let status = password.withCString {
-            SecKeychainCreate(keychainURL.path, UInt32(password.utf8.count), $0, false, nil, &keychain)
-        }
-        try #require(status == errSecSuccess, "Could not create test keychain: \(status)")
-        let createdKeychain = try #require(keychain)
-        defer { #expect(SecKeychainDelete(createdKeychain) == errSecSuccess) }
-
-        let profileURL = fixture.appendingPathComponent("zoom.sb")
-        try ShellCommands.makeZoomSandboxProfile(homeDirectory: fixture.path)
-            .write(to: profileURL, atomically: true, encoding: .utf8)
-
-        let security = "/usr/bin/security"
         let account = "sandbox-test"
         let service = "1132FixerSandboxTest"
-        func writeArguments(_ value: String) -> [String] {
-            ["add-generic-password", "-a", account, "-s", service,
-             "-w", value, "-T", security, keychainURL.path]
+
+        // Keychain Services consults per-user search-list metadata even when the
+        // query names a private keychain explicitly. Use the real home here, just
+        // as the production launch does; treating the temp fixture as $HOME would
+        // deny the runner's real home and deadlock that lookup.
+        let keychainProfileURL = fixture.appendingPathComponent("zoom-keychain.sb")
+        try ShellCommands.makeZoomSandboxProfile(homeDirectory: NSHomeDirectory())
+            .write(to: keychainProfileURL, atomically: true, encoding: .utf8)
+
+        // Keep the destructive/private-data assertions in a unique cache subtree
+        // under the real home. This exercises the profile's `/Users` deny/allow
+        // ordering without touching any real private data or persistence files.
+        let restrictionHome = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+            .appendingPathComponent("Library/Caches/1132FixerSandboxTests-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: restrictionHome, withIntermediateDirectories: true,
+                                        attributes: [.posixPermissions: 0o700])
+        defer { try? fileManager.removeItem(at: restrictionHome) }
+        let restrictionProfileURL = fixture.appendingPathComponent("zoom-restrictions.sb")
+        try ShellCommands.makeZoomSandboxProfile(homeDirectory: restrictionHome.path)
+            .write(to: restrictionProfileURL, atomically: true, encoding: .utf8)
+        let keychainProbe = try await buildKeychainProbe(in: fixture)
+        let probePhaseURL = keychainDirectory.appendingPathComponent("probe-phase")
+
+        func runSandboxed(
+            profileURL: URL,
+            executable: String,
+            arguments: [String]
+        ) async throws -> CommandResult {
+            do {
+                return try await runCommand(
+                    "/usr/bin/sandbox-exec",
+                    arguments: ["-f", profileURL.path, executable] + arguments
+                )
+            } catch {
+                let phase = (try? String(contentsOf: probePhaseURL, encoding: .utf8)) ?? "not started"
+                throw CommandFailure(
+                    message: "Sandboxed command failed during '\(phase)': \(error.localizedDescription)"
+                )
+            }
         }
-        let deleteArguments = ["delete-generic-password", "-a", account, "-s", service,
-                               keychainURL.path]
-        let readArguments = ["find-generic-password", "-a", account, "-s", service,
-                             "-w", keychainURL.path]
 
-        // Trust only the system security tool for this test item so reads cannot
-        // raise a Keychain approval dialog in the test runner.
-        let setup = try runCommand(security, arguments: writeArguments("initial-value"))
-        try #require(setup.status == 0, "Test item setup failed: \(setup.output)")
-
-        func runSandboxed(_ executable: String, arguments: [String]) throws -> CommandResult {
-            try runCommand("/usr/bin/sandbox-exec", arguments: ["-f", profileURL.path, executable] + arguments)
-        }
-
-        let read = try runSandboxed(security, arguments: readArguments)
-        #expect(read.status == 0, "Sandbox blocked Keychain read: \(read.output)")
-        #expect(read.output.trimmingCharacters(in: .whitespacesAndNewlines) == "initial-value")
-
-        // Replacing an item (delete + add) inside the sandbox requires database writes
-        // plus sibling lock/temporary files without triggering SecurityAgent's interactive
-        // ACL-change prompt (which `add-generic-password -U ... -T` triggers on macOS).
-        let deleteExisting = try runSandboxed(security, arguments: deleteArguments)
-        #expect(deleteExisting.status == 0, "Sandbox blocked Keychain delete: \(deleteExisting.output)")
-        let update = try runSandboxed(security, arguments: writeArguments("updated-value"))
-        #expect(update.status == 0, "Sandbox blocked Keychain update: \(update.output)")
-        let updatedRead = try runSandboxed(security, arguments: readArguments)
-        #expect(updatedRead.status == 0, "Updated item could not be read: \(updatedRead.output)")
-        #expect(updatedRead.output.trimmingCharacters(in: .whitespacesAndNewlines) == "updated-value")
+        let exercise = try await runSandboxed(
+            profileURL: keychainProfileURL,
+            executable: keychainProbe.path,
+            arguments: [
+                keychainURL.path,
+                password,
+                account,
+                service,
+                "initial-value",
+                "updated-value",
+            ]
+        )
+        #expect(exercise.status == 0, "Sandbox blocked Keychain exercise: \(exercise.output)")
+        #expect(exercise.output.trimmingCharacters(in: .whitespacesAndNewlines) == "initial-value\nupdated-value")
 
         // The keychain compatibility fix must preserve the other private-data
         // and persistence restrictions in the same generated profile.
-        let sshDirectory = fixture.appendingPathComponent(".ssh", isDirectory: true)
+        let sshDirectory = restrictionHome.appendingPathComponent(".ssh", isDirectory: true)
         try fileManager.createDirectory(at: sshDirectory, withIntermediateDirectories: true)
         let sshKey = sshDirectory.appendingPathComponent("test-key")
         try Data("private-test-data".utf8).write(to: sshKey)
-        let sshRead = try runSandboxed("/bin/cat", arguments: [sshKey.path])
+        let sshRead = try await runSandboxed(
+            profileURL: restrictionProfileURL,
+            executable: "/bin/cat",
+            arguments: [sshKey.path]
+        )
         #expect(sshRead.status != 0, "Sandbox allowed reading private SSH data")
 
-        let agentsDirectory = fixture.appendingPathComponent("Library/LaunchAgents", isDirectory: true)
+        let agentsDirectory = restrictionHome.appendingPathComponent("Library/LaunchAgents", isDirectory: true)
         try fileManager.createDirectory(at: agentsDirectory, withIntermediateDirectories: true)
         let agent = agentsDirectory.appendingPathComponent("test-agent.plist")
-        let agentWrite = try runSandboxed("/usr/bin/touch", arguments: [agent.path])
+        let agentWrite = try await runSandboxed(
+            profileURL: restrictionProfileURL,
+            executable: "/usr/bin/touch",
+            arguments: [agent.path]
+        )
         #expect(agentWrite.status != 0, "Sandbox allowed writing a launch agent")
         #expect(!fileManager.fileExists(atPath: agent.path))
     }
@@ -97,23 +109,141 @@ struct ZoomSandboxKeychainTests {
         let output: String
     }
 
-    private func runCommand(_ executable: String, arguments: [String]) throws -> CommandResult {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        try process.run()
-        let deadline = Date().addingTimeInterval(5.0)
-        while process.isRunning && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.01)
-        }
-        if process.isRunning {
-            process.terminate()
-        }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return CommandResult(status: process.terminationStatus, output: String(decoding: data, as: UTF8.self))
+    private struct CommandFailure: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
     }
+
+    private func buildKeychainProbe(in fixture: URL) async throws -> URL {
+        let sourceURL = fixture.appendingPathComponent("KeychainProbe.swift")
+        let executableURL = fixture.appendingPathComponent("keychain-probe")
+        try Self.keychainProbeSource.write(to: sourceURL, atomically: true, encoding: .utf8)
+
+        let build = try await runCommand(
+            "/usr/bin/xcrun",
+            arguments: [
+                "swiftc",
+                sourceURL.path,
+                "-framework", "Security",
+                "-o", executableURL.path,
+            ],
+            timeout: 60
+        )
+        try #require(build.status == 0, "Could not compile Keychain probe: \(build.output)")
+        return executableURL
+    }
+
+    private func runCommand(
+        _ executable: String,
+        arguments: [String],
+        timeout: TimeInterval = 15
+    ) async throws -> CommandResult {
+        let result = try await BoundedProcessExecutor().run(
+            executable: executable,
+            arguments: arguments,
+            timeout: timeout,
+            maxOutputBytes: 64 * 1_024
+        )
+        return CommandResult(status: result.exitCode, output: result.combinedOutput)
+    }
+
+    private static let keychainProbeSource = #"""
+    import Darwin
+    import Foundation
+    import Security
+
+    func fail(_ message: String, status: OSStatus? = nil) -> Never {
+        let suffix = status.map { ": \($0)" } ?? ""
+        FileHandle.standardError.write(Data("\(message)\(suffix)\n".utf8))
+        exit(1)
+    }
+
+    let arguments = CommandLine.arguments
+    guard arguments.count == 7 else {
+        fail("usage: keychain-probe keychain password account service initial-value updated-value")
+    }
+
+    let phaseURL = URL(fileURLWithPath: arguments[1])
+        .deletingLastPathComponent()
+        .appendingPathComponent("probe-phase")
+    func mark(_ phase: String) {
+        try? phase.write(to: phaseURL, atomically: true, encoding: .utf8)
+    }
+    mark("started")
+
+    var keychain: SecKeychain?
+    let password = arguments[2]
+    let createStatus = password.withCString {
+        SecKeychainCreate(arguments[1], UInt32(password.utf8.count), $0, false, nil, &keychain)
+    }
+    guard createStatus == errSecSuccess, let keychain else {
+        fail("could not create keychain", status: createStatus)
+    }
+    mark("created keychain")
+
+    let unlockStatus = password.withCString {
+        SecKeychainUnlock(keychain, UInt32(password.utf8.count), $0, true)
+    }
+    guard unlockStatus == errSecSuccess else {
+        fail("could not unlock keychain", status: unlockStatus)
+    }
+    mark("unlocked keychain")
+
+    let account = arguments[3]
+    let service = arguments[4]
+    let initialValue = arguments[5]
+    let updatedValue = arguments[6]
+    let addQuery: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrAccount as String: account,
+        kSecAttrService as String: service,
+        kSecValueData as String: Data(initialValue.utf8),
+        kSecUseKeychain as String: keychain,
+    ]
+    let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+    guard addStatus == errSecSuccess else {
+        fail("could not create item", status: addStatus)
+    }
+    mark("created item")
+
+    let matchQuery: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrAccount as String: account,
+        kSecAttrService as String: service,
+        kSecMatchSearchList as String: [keychain],
+    ]
+
+    func readValue() -> String {
+        mark("reading item")
+        var query = matchQuery
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess, let data = item as? Data else {
+            fail("could not read item", status: status)
+        }
+        mark("read item")
+        guard let value = String(data: data, encoding: .utf8) else {
+            fail("item was not UTF-8")
+        }
+        return value
+    }
+
+    let firstRead = readValue()
+    guard firstRead == initialValue else { fail("initial value did not round-trip") }
+
+    mark("writing item")
+    let attributes = [kSecValueData as String: Data(updatedValue.utf8)]
+    let updateStatus = SecItemUpdate(matchQuery as CFDictionary, attributes as CFDictionary)
+    guard updateStatus == errSecSuccess else {
+        fail("could not update item", status: updateStatus)
+    }
+    mark("wrote item")
+
+    let secondRead = readValue()
+    guard secondRead == updatedValue else { fail("updated value did not round-trip") }
+    print(firstRead)
+    print(secondRead)
+    """#
 }
