@@ -1,5 +1,4 @@
 import Foundation
-import Security
 import Testing
 @testable import _132Fixer
 
@@ -14,67 +13,13 @@ struct ZoomSandboxKeychainTests {
                                         attributes: [.posixPermissions: 0o700])
         defer { try? fileManager.removeItem(at: fixture) }
 
-        // Create a private keychain through the API: unlike `security create-keychain`,
-        // this does not add a non-login keychain to the user's search list. All item
-        // operations below name it explicitly, leaving the real login keychain alone.
+        // The sandboxed probe creates a private keychain through the API. Unlike
+        // `security create-keychain`, this does not add the disposable keychain to
+        // the user's search list or involve the real login keychain.
         let keychainURL = keychainDirectory.appendingPathComponent("sandbox-test.keychain")
         let password = UUID().uuidString
         let account = "sandbox-test"
         let service = "1132FixerSandboxTest"
-        var keychain: SecKeychain?
-        let status = password.withCString {
-            SecKeychainCreate(keychainURL.path, UInt32(password.utf8.count), $0, false, nil, &keychain)
-        }
-        try #require(status == errSecSuccess, "Could not create test keychain: \(status)")
-        let createdKeychain = try #require(keychain)
-        defer { #expect(SecKeychainDelete(createdKeychain) == errSecSuccess) }
-
-        let unlockStatus = password.withCString {
-            SecKeychainUnlock(createdKeychain, UInt32(password.utf8.count), $0, true)
-        }
-        try #require(unlockStatus == errSecSuccess, "Could not unlock test keychain: \(unlockStatus)")
-
-        var access: SecAccess?
-        let accessStatus = SecAccessCreate(
-            "1132 Fixer sandbox fixture" as CFString,
-            [] as CFArray,
-            &access
-        )
-        try #require(accessStatus == errSecSuccess, "Could not create test item access: \(accessStatus)")
-        let fixtureAccess = try #require(access)
-
-        // This disposable fixture exercises sandbox access, not Keychain ACL prompts.
-        // Mirror `security -A` so the headless runner never opens SecurityAgent.
-        var aclList: CFArray?
-        let aclListStatus = SecAccessCopyACLList(fixtureAccess, &aclList)
-        try #require(aclListStatus == errSecSuccess, "Could not inspect test item access: \(aclListStatus)")
-        let fixtureACLs = try #require(aclList as? [SecACL])
-        for acl in fixtureACLs {
-            var applications: CFArray?
-            var description: CFString?
-            var prompt = SecKeychainPromptSelector()
-            let copyStatus = SecACLCopyContents(acl, &applications, &description, &prompt)
-            try #require(copyStatus == errSecSuccess, "Could not inspect test item ACL: \(copyStatus)")
-
-            let setStatus = SecACLSetContents(
-                acl,
-                nil,
-                description ?? "1132 Fixer sandbox fixture" as CFString,
-                prompt
-            )
-            try #require(setStatus == errSecSuccess, "Could not make test item noninteractive: \(setStatus)")
-        }
-
-        let addQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrAccount as String: account,
-            kSecAttrService as String: service,
-            kSecAttrAccess as String: fixtureAccess,
-            kSecValueData as String: Data("initial-value".utf8),
-            kSecUseKeychain as String: createdKeychain,
-        ]
-        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
-        try #require(addStatus == errSecSuccess, "Could not create test item: \(addStatus)")
 
         // Keychain Services consults per-user search-list metadata even when the
         // query names a private keychain explicitly. Use the real home here, just
@@ -110,40 +55,20 @@ struct ZoomSandboxKeychainTests {
             }
         }
 
-        let readArguments = ["read", keychainURL.path, password, account, service]
-        do {
-            let controlRead = try await runCommand(keychainProbe.path, arguments: readArguments)
-            try #require(controlRead.status == 0, "Unsandboxed Keychain control failed: \(controlRead.output)")
-        } catch {
-            let phase = (try? String(contentsOf: probePhaseURL, encoding: .utf8)) ?? "not started"
-            throw CommandFailure(
-                message: "Unsandboxed Keychain control failed during '\(phase)': \(error.localizedDescription)"
-            )
-        }
-
-        let read = try await runSandboxed(
+        let exercise = try await runSandboxed(
             profileURL: keychainProfileURL,
             executable: keychainProbe.path,
-            arguments: readArguments
+            arguments: [
+                keychainURL.path,
+                password,
+                account,
+                service,
+                "initial-value",
+                "updated-value",
+            ]
         )
-        #expect(read.status == 0, "Sandbox blocked Keychain read: \(read.output)")
-        #expect(read.output.trimmingCharacters(in: .whitespacesAndNewlines) == "initial-value")
-
-        // An update needs database writes plus sibling lock/temporary files. A
-        // metadata-only or read-only exception would still fail this operation.
-        let update = try await runSandboxed(
-            profileURL: keychainProfileURL,
-            executable: keychainProbe.path,
-            arguments: ["write", keychainURL.path, password, account, service, "updated-value"]
-        )
-        #expect(update.status == 0, "Sandbox blocked Keychain update: \(update.output)")
-        let updatedRead = try await runSandboxed(
-            profileURL: keychainProfileURL,
-            executable: keychainProbe.path,
-            arguments: readArguments
-        )
-        #expect(updatedRead.status == 0, "Updated item could not be read: \(updatedRead.output)")
-        #expect(updatedRead.output.trimmingCharacters(in: .whitespacesAndNewlines) == "updated-value")
+        #expect(exercise.status == 0, "Sandbox blocked Keychain exercise: \(exercise.output)")
+        #expect(exercise.output.trimmingCharacters(in: .whitespacesAndNewlines) == "initial-value\nupdated-value")
 
         // The keychain compatibility fix must preserve the other private-data
         // and persistence restrictions in the same generated profile.
@@ -225,11 +150,11 @@ struct ZoomSandboxKeychainTests {
     }
 
     let arguments = CommandLine.arguments
-    guard arguments.count >= 6 else {
-        fail("usage: keychain-probe read|write keychain password account service [value]")
+    guard arguments.count == 7 else {
+        fail("usage: keychain-probe keychain password account service initial-value updated-value")
     }
 
-    let phaseURL = URL(fileURLWithPath: arguments[2])
+    let phaseURL = URL(fileURLWithPath: arguments[1])
         .deletingLastPathComponent()
         .appendingPathComponent("probe-phase")
     func mark(_ phase: String) {
@@ -238,13 +163,15 @@ struct ZoomSandboxKeychainTests {
     mark("started")
 
     var keychain: SecKeychain?
-    let openStatus = SecKeychainOpen(arguments[2], &keychain)
-    guard openStatus == errSecSuccess, let keychain else {
-        fail("could not open keychain", status: openStatus)
+    let password = arguments[2]
+    let createStatus = password.withCString {
+        SecKeychainCreate(arguments[1], UInt32(password.utf8.count), $0, false, nil, &keychain)
     }
-    mark("opened keychain")
+    guard createStatus == errSecSuccess, let keychain else {
+        fail("could not create keychain", status: createStatus)
+    }
+    mark("created keychain")
 
-    let password = arguments[3]
     let unlockStatus = password.withCString {
         SecKeychainUnlock(keychain, UInt32(password.utf8.count), $0, true)
     }
@@ -253,16 +180,33 @@ struct ZoomSandboxKeychainTests {
     }
     mark("unlocked keychain")
 
-    var query: [String: Any] = [
+    let account = arguments[3]
+    let service = arguments[4]
+    let initialValue = arguments[5]
+    let updatedValue = arguments[6]
+    let addQuery: [String: Any] = [
         kSecClass as String: kSecClassGenericPassword,
-        kSecAttrAccount as String: arguments[4],
-        kSecAttrService as String: arguments[5],
+        kSecAttrAccount as String: account,
+        kSecAttrService as String: service,
+        kSecValueData as String: Data(initialValue.utf8),
+        kSecUseKeychain as String: keychain,
+    ]
+    let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+    guard addStatus == errSecSuccess else {
+        fail("could not create item", status: addStatus)
+    }
+    mark("created item")
+
+    let matchQuery: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrAccount as String: account,
+        kSecAttrService as String: service,
         kSecMatchSearchList as String: [keychain],
     ]
 
-    switch arguments[1] {
-    case "read":
+    func readValue() -> String {
         mark("reading item")
+        var query = matchQuery
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
@@ -271,18 +215,26 @@ struct ZoomSandboxKeychainTests {
             fail("could not read item", status: status)
         }
         mark("read item")
-        FileHandle.standardOutput.write(data)
-
-    case "write":
-        mark("writing item")
-        guard arguments.count == 7 else { fail("write requires a value") }
-        let attributes = [kSecValueData as String: Data(arguments[6].utf8)]
-        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        guard status == errSecSuccess else { fail("could not update item", status: status) }
-        mark("wrote item")
-
-    default:
-        fail("unknown operation")
+        guard let value = String(data: data, encoding: .utf8) else {
+            fail("item was not UTF-8")
+        }
+        return value
     }
+
+    let firstRead = readValue()
+    guard firstRead == initialValue else { fail("initial value did not round-trip") }
+
+    mark("writing item")
+    let attributes = [kSecValueData as String: Data(updatedValue.utf8)]
+    let updateStatus = SecItemUpdate(matchQuery as CFDictionary, attributes as CFDictionary)
+    guard updateStatus == errSecSuccess else {
+        fail("could not update item", status: updateStatus)
+    }
+    mark("wrote item")
+
+    let secondRead = readValue()
+    guard secondRead == updatedValue else { fail("updated value did not round-trip") }
+    print(firstRead)
+    print(secondRead)
     """#
 }
