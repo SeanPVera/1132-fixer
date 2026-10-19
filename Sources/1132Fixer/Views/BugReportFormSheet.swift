@@ -1,116 +1,277 @@
 import SwiftUI
 
 struct BugReportFormSheet: View {
-    static let maximumMessageLength = 4_000
+    static let maximumMessageLength = ReportDraft.maxDescriptionCharacters
 
+    let draft: ReportDraft
     @Binding var email: String
     @Binding var message: String
     @Binding var submissionError: String?
+    @Binding var isAttachmentPreviewExpanded: Bool
     let isSubmitting: Bool
+    let onSaveAttachment: () -> Void
     let onCancel: () -> Void
     let onSubmit: () -> Void
 
-    /// A report always carries an attached diagnostics file. Spell out what is in it
-    /// so sending is an informed choice rather than a surprise.
     static let attachedDiagnostics = [
         "App version, macOS version/build, architecture, locale, and time zone",
         "Whether Zoom is installed, where it is, and whether its processes are running",
         "Network interface type, preflight checks, and the latest workflow results",
-        "Up to 5,000 recent activity-log entries",
+        "Up to 5,000 recent activity-log entries (redacted for home-directory privacy)",
     ]
+
+    init(
+        draft: ReportDraft,
+        email: Binding<String>,
+        message: Binding<String>,
+        submissionError: Binding<String?>,
+        isAttachmentPreviewExpanded: Binding<Bool> = .constant(true),
+        isSubmitting: Bool,
+        onSaveAttachment: @escaping () -> Void = {},
+        onCancel: @escaping () -> Void,
+        onSubmit: @escaping () -> Void
+    ) {
+        self.draft = draft
+        self._email = email
+        self._message = message
+        self._submissionError = submissionError
+        self._isAttachmentPreviewExpanded = isAttachmentPreviewExpanded
+        self.isSubmitting = isSubmitting
+        self.onSaveAttachment = onSaveAttachment
+        self.onCancel = onCancel
+        self.onSubmit = onSubmit
+    }
+
+    init(
+        email: Binding<String>,
+        message: Binding<String>,
+        submissionError: Binding<String?>,
+        isSubmitting: Bool,
+        onCancel: @escaping () -> Void,
+        onSubmit: @escaping () -> Void
+    ) {
+        let placeholder = ReportDraft(
+            id: UUID(),
+            createdAt: Date(),
+            title: "Bug Report",
+            appVersion: "1.8.2",
+            selectedAppPath: ZoomLocation.defaultAppPath,
+            systemInfo: "",
+            readinessSummary: "Ready",
+            runSummary: "No repair run in this session",
+            diagnosticsFileName: AppViewModel.diagnosticsFileName,
+            fullDiagnosticsContent: "",
+            attachmentContent: "",
+            attachmentData: Data(),
+            originalByteCount: 0,
+            wasTruncated: false
+        )
+        self.init(
+            draft: placeholder,
+            email: email,
+            message: message,
+            submissionError: submissionError,
+            isAttachmentPreviewExpanded: .constant(true),
+            isSubmitting: isSubmitting,
+            onSaveAttachment: {},
+            onCancel: onCancel,
+            onSubmit: onSubmit
+        )
+    }
 
     private var trimmedMessage: String {
         message.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private var excessCharacterCount: Int {
+        max(0, message.count - Self.maximumMessageLength)
+    }
+
+    private var isMessageOverLimit: Bool {
+        excessCharacterCount > 0
+    }
+
+    private var canSubmit: Bool {
+        !isSubmitting && !trimmedMessage.isEmpty && !isMessageOverLimit
+    }
+
+    private var formattedAttachmentSize: String {
+        ByteCountFormatter.string(fromByteCount: Int64(draft.attachmentData.count), countStyle: .file)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.large) {
-            VStack(alignment: .leading, spacing: Theme.Spacing.small) {
-                Text("Report a bug")
-                    .font(Theme.Typography.heading)
-                    .foregroundStyle(Theme.Colors.textPrimary)
-
-                Text("Describe what happened. Your contact information is optional.")
-                    .font(Theme.Typography.body)
-                    .foregroundStyle(Theme.Colors.textSecondary)
-            }
-
-            DisclosureGroup("What gets sent with your report") {
-                VStack(alignment: .leading, spacing: Theme.Spacing.small) {
-                    ForEach(Self.attachedDiagnostics, id: \.self) { item in
-                        Label(item, systemImage: "checkmark.circle")
-                    }
-                    Text("Home-folder paths are replaced with ~. Use Export Diagnostics in the app header to inspect the exact attachment before sending. Reports are sent over HTTPS to the 1132 Fixer bug-report service.")
-                        .padding(.top, Theme.Spacing.xSmall)
-                }
-                .font(Theme.Typography.caption)
-                .foregroundStyle(Theme.Colors.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, Theme.Spacing.small)
-            }
-            .font(Theme.Typography.label)
-            .foregroundStyle(Theme.Colors.textPrimary)
-
-            VStack(alignment: .leading, spacing: Theme.Spacing.small) {
-                Text("E-mail or Telegram (optional)")
-                    .font(Theme.Typography.label)
-                    .foregroundStyle(Theme.Colors.textPrimary)
-                TextField("user@example.com", text: $email)
-                    .textFieldStyle(.plain)
-                    .font(Theme.Typography.body)
-                    .padding(Theme.Spacing.medium)
-                    .background(Theme.Colors.surfaceModal)
-                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.small, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: Theme.Radius.small, style: .continuous)
-                            .stroke(Theme.Colors.border, lineWidth: 1)
-                    }
-                    .disabled(isSubmitting)
-            }
-
-            VStack(alignment: .leading, spacing: Theme.Spacing.small) {
-                HStack {
-                    Text("Message")
-                        .font(Theme.Typography.label)
+        VStack(alignment: .leading, spacing: 0) {
+            // Sheet Header
+            VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Report an Issue")
+                        .font(Theme.Typography.sectionHeading)
                         .foregroundStyle(Theme.Colors.textPrimary)
-                    Text("Required")
-                        .font(Theme.Typography.caption)
-                        .foregroundStyle(Theme.Colors.error)
                     Spacer()
-                    Text("\(message.count)/\(Self.maximumMessageLength)")
-                        .font(Theme.Typography.caption)
+                    Text("Snapshot captured at sheet open")
+                        .font(Theme.Typography.metadata)
                         .foregroundStyle(Theme.Colors.textSecondary)
                 }
 
-                TextEditor(text: $message)
+                Text("Describe what happened. Home-folder paths are redacted with ~. Inspect or save the exact diagnostic attachment below before sending.")
                     .font(Theme.Typography.body)
-                    .scrollContentBackground(.hidden)
-                    .frame(minHeight: Theme.Spacing.section * 3)
-                    .padding(Theme.Spacing.small)
-                    .background(Theme.Colors.surfaceModal)
-                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.small, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: Theme.Radius.small, style: .continuous)
-                            .stroke(Theme.Colors.border, lineWidth: 1)
-                    }
-                    .disabled(isSubmitting)
-                    .onChange(of: message) { newValue in
-                        if newValue.count > Self.maximumMessageLength {
-                            message = String(newValue.prefix(Self.maximumMessageLength))
-                        }
-                        submissionError = nil
-                    }
-            }
-
-            if let submissionError {
-                Label(submissionError, systemImage: "exclamationmark.triangle.fill")
-                    .font(Theme.Typography.body)
-                    .foregroundStyle(Theme.Colors.error)
+                    .foregroundStyle(Theme.Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityLabel("Bug report error: \(submissionError)")
+            }
+            .padding(Theme.Spacing.s24)
+            .background(Theme.Colors.surface)
+
+            Divider().overlay(Theme.Colors.border)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: Theme.Spacing.s16) {
+                    // Frozen Diagnostic Attachment Review
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack(spacing: Theme.Spacing.s12) {
+                            VStack(alignment: .leading, spacing: Theme.Spacing.s4) {
+                                HStack(spacing: Theme.Spacing.s8) {
+                                    Label(draft.diagnosticsFileName, systemImage: "doc.text")
+                                        .font(Theme.Typography.label)
+                                        .foregroundStyle(Theme.Colors.textPrimary)
+                                    Text(formattedAttachmentSize)
+                                        .font(Theme.Typography.mono)
+                                        .foregroundStyle(Theme.Colors.textSecondary)
+                                    if draft.wasTruncated {
+                                        Text("Truncated to 1 MB limit")
+                                            .font(Theme.Typography.metadata)
+                                            .foregroundStyle(Theme.Colors.warning)
+                                            .padding(.horizontal, Theme.Spacing.s8)
+                                            .padding(.vertical, 2)
+                                            .background(Theme.Colors.warning.opacity(0.15))
+                                            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                                    }
+                                }
+                                Text("Target: \(draft.selectedAppPath) • \(draft.runSummary)")
+                                    .font(Theme.Typography.metadata)
+                                    .foregroundStyle(Theme.Colors.textSecondary)
+                                    .lineLimit(1)
+                            }
+
+                            Spacer()
+
+                            Button("Save Log…", action: onSaveAttachment)
+                                .buttonStyle(ThemedButtonStyle(variant: .secondary))
+                                .disabled(isSubmitting)
+
+                            Button {
+                                isAttachmentPreviewExpanded.toggle()
+                            } label: {
+                                Label(
+                                    isAttachmentPreviewExpanded ? "Hide Preview" : "Preview Payload",
+                                    systemImage: isAttachmentPreviewExpanded ? "chevron.up" : "chevron.down"
+                                )
+                            }
+                            .buttonStyle(QuietLinkButtonStyle())
+                        }
+                        .padding(Theme.Spacing.s12)
+
+                        if isAttachmentPreviewExpanded {
+                            Divider().overlay(Theme.Colors.border)
+
+                            ScrollView {
+                                Text(draft.attachmentContent)
+                                    .font(Theme.Typography.mono)
+                                    .foregroundStyle(Theme.Colors.textSecondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                                    .padding(Theme.Spacing.s12)
+                            }
+                            .frame(height: 150)
+                            .background(Theme.Colors.background)
+                        }
+                    }
+                    .ledgerContainer(background: Theme.Colors.surface, borderColor: Theme.Colors.border)
+
+                    // Optional Contact Field
+                    VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
+                        Text("E-mail or Telegram (optional)")
+                            .font(Theme.Typography.label)
+                            .foregroundStyle(Theme.Colors.textPrimary)
+                        TextField("user@example.com", text: $email)
+                            .textFieldStyle(.plain)
+                            .font(Theme.Typography.body)
+                            .foregroundStyle(Theme.Colors.textPrimary)
+                            .padding(Theme.Spacing.s12)
+                            .background(Theme.Colors.surface)
+                            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                                    .stroke(Theme.Colors.borderControl, lineWidth: 1)
+                            }
+                            .disabled(isSubmitting)
+                    }
+
+                    // Required Message Editor (never truncates user input beyond 4,000 characters)
+                    VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("What happened?")
+                                .font(Theme.Typography.label)
+                                .foregroundStyle(Theme.Colors.textPrimary)
+                            Text("Required")
+                                .font(Theme.Typography.metadata)
+                                .foregroundStyle(Theme.Colors.warning)
+                            Spacer()
+                            if isMessageOverLimit {
+                                Text("Exceeds limit by \(excessCharacterCount) (\(message.count)/\(Self.maximumMessageLength))")
+                                    .font(Theme.Typography.metadata)
+                                    .foregroundStyle(Theme.Colors.error)
+                            } else {
+                                Text("\(message.count)/\(Self.maximumMessageLength)")
+                                    .font(Theme.Typography.metadata)
+                                    .foregroundStyle(Theme.Colors.textSecondary)
+                            }
+                        }
+
+                        TextEditor(text: $message)
+                            .font(Theme.Typography.body)
+                            .foregroundStyle(Theme.Colors.textPrimary)
+                            .scrollContentBackground(.hidden)
+                            .frame(minHeight: 120)
+                            .padding(Theme.Spacing.s8)
+                            .background(Theme.Colors.surface)
+                            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                                    .stroke(
+                                        isMessageOverLimit ? Theme.Colors.error : Theme.Colors.borderControl,
+                                        lineWidth: 1
+                                    )
+                            }
+                            .disabled(isSubmitting)
+                            .onChange(of: message) { _ in
+                                submissionError = nil
+                            }
+
+                        if isMessageOverLimit {
+                            Label(
+                                "Your text is preserved. Shorten the description by \(excessCharacterCount) \(excessCharacterCount == 1 ? "character" : "characters") to enable Send Report.",
+                                systemImage: "exclamationmark.circle.fill"
+                            )
+                            .font(Theme.Typography.metadata)
+                            .foregroundStyle(Theme.Colors.error)
+                        }
+                    }
+
+                    if let submissionError {
+                        Label(submissionError, systemImage: "exclamationmark.triangle.fill")
+                            .font(Theme.Typography.body)
+                            .foregroundStyle(Theme.Colors.error)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityLabel("Bug report error: \(submissionError)")
+                    }
+                }
+                .padding(Theme.Spacing.s24)
             }
 
-            HStack {
+            Divider().overlay(Theme.Colors.border)
+
+            // Action Footer
+            HStack(spacing: Theme.Spacing.s12) {
                 Button("Cancel", role: .cancel, action: onCancel)
                     .buttonStyle(ThemedButtonStyle(variant: .secondary))
                     .disabled(isSubmitting)
@@ -119,7 +280,7 @@ struct BugReportFormSheet: View {
 
                 Button(action: onSubmit) {
                     if isSubmitting {
-                        HStack(spacing: Theme.Spacing.small) {
+                        HStack(spacing: Theme.Spacing.s8) {
                             ProgressView().controlSize(.small)
                             Text("Sending…")
                         }
@@ -129,11 +290,13 @@ struct BugReportFormSheet: View {
                 }
                 .buttonStyle(ThemedButtonStyle(variant: .primary))
                 .keyboardShortcut(.defaultAction)
-                .disabled(isSubmitting || trimmedMessage.isEmpty)
+                .disabled(!canSubmit)
             }
+            .padding(.horizontal, Theme.Spacing.s24)
+            .padding(.vertical, Theme.Spacing.s16)
+            .background(Theme.Colors.surface)
         }
-        .padding(Theme.Spacing.xLarge)
-        .frame(width: 520)
+        .frame(width: 640, height: 620)
         .background(Theme.Colors.surfaceModal)
         .preferredColorScheme(.dark)
         .interactiveDismissDisabled(isSubmitting)

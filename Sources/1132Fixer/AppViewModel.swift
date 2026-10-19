@@ -16,6 +16,15 @@ final class AppViewModel: ObservableObject {
         let diagnosticsData: Data
     }
 
+    typealias ProcessExecutor = @Sendable (
+        _ stepName: String,
+        _ executable: String,
+        _ arguments: [String],
+        _ timeout: TimeInterval
+    ) async throws -> String
+
+    typealias BundleVerifier = @Sendable (_ appPath: String) throws -> ZoomBundleVerifier.VerifiedBundle
+
     private struct NetworkInterfaceInfo {
         enum Kind: String {
             case wifi = "Wi-Fi"
@@ -34,7 +43,7 @@ final class AppViewModel: ObservableObject {
         let wasSkipped: Bool
     }
 
-    private enum Constants {
+    enum Constants {
         static let errorDomain = "1132Fixer"
         static let bashPath = ShellCommands.bashPath
         static let osascriptPath = ShellCommands.osascriptPath
@@ -50,10 +59,10 @@ final class AppViewModel: ObservableObject {
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss Z"
         return formatter
     }()
-    private static let diagnosticsFileName = "1132Fixer-diagnostics.txt"
-    private static let maxInMemoryLogEntries = 2_000
-    private static let maxInMemoryLogBytes = 512 * 1_024
-    private static let maxSingleLogEntryBytes = 32 * 1_024
+    static let diagnosticsFileName = "1132Fixer-diagnostics.txt"
+    static let maxInMemoryLogEntries = 2_000
+    static let maxInMemoryLogBytes = 512 * 1_024
+    static let maxSingleLogEntryBytes = 32 * 1_024
 
     enum WorkflowState: Equatable {
         case idle
@@ -79,6 +88,11 @@ final class AppViewModel: ObservableObject {
             case warning
             case skipped
             case failed
+            case interrupted
+            case unstarted
+            case running
+
+            static let succeeded: Outcome = .success
 
             var label: String {
                 switch self {
@@ -86,16 +100,26 @@ final class AppViewModel: ObservableObject {
                 case .warning: return "WARN"
                 case .skipped: return "SKIP"
                 case .failed: return "FAIL"
+                case .interrupted: return "STOP"
+                case .unstarted: return "PEND"
+                case .running: return "RUN"
                 }
             }
 
-            var accessibilityLabel: String {
+            var displayLabel: String {
                 switch self {
                 case .success: return "Succeeded"
                 case .warning: return "Warning"
                 case .skipped: return "Skipped"
                 case .failed: return "Failed"
+                case .interrupted: return "Stopped"
+                case .unstarted: return "Not run"
+                case .running: return "Running"
                 }
+            }
+
+            var accessibilityLabel: String {
+                displayLabel
             }
         }
 
@@ -139,7 +163,6 @@ final class AppViewModel: ObservableObject {
         var checks: [Check] = []
     }
 
-    @Published var logs: [String] = []
     struct WorkflowProgress: Equatable {
         struct Step: Identifiable, Equatable {
             let id: String
@@ -147,19 +170,74 @@ final class AppViewModel: ObservableObject {
             var state: StepState
         }
         enum StepState: Equatable {
-            case pending, running, succeeded, warning, failed, skipped
+            case unstarted
+            case running
+            case succeeded
+            case warning
+            case failed
+            case skipped
+            case interrupted
+
+            static let pending: StepState = .unstarted
         }
         var steps: [Step] = []
         var currentStepIndex: Int = 0
     }
 
+    @Published var logs: [String] = []
+    @Published private(set) var logEntries: [LogEntry] = []
+    @Published private(set) var logRevision: UInt64 = 0
+
     @Published var isRunning = false
     @Published var isCanceling = false
+    @Published private(set) var isExecutingPrivilegedStep = false
     @Published var workflowState: WorkflowState = .idle
-    @Published var preflight = PreflightInfo()
+    @Published var preflight = PreflightInfo() {
+        didSet {
+            readinessSnapshot = ReadinessSnapshot.from(
+                preflight: preflight,
+                selectedAppPath: zoomAppPath,
+                isCustomLocation: customZoomAppPath != nil,
+                checkedAt: Date()
+            )
+        }
+    }
+    @Published private(set) var readinessSnapshot: ReadinessSnapshot
     @Published var lastRunResults: [StepResult]?
     @Published var workflowProgress: WorkflowProgress?
-    @Published private(set) var latestBackupPath: String? = BackupStore.latestBackupURL()?.path
+    @Published private(set) var currentRunRecord: RunRecord?
+
+    /// Non-nil ONLY when the latest run created a verified backup in Step 3.
+    @Published private(set) var currentRunBackupPath: String?
+    /// Non-nil when an older managed backup exists on disk from a prior run.
+    @Published private(set) var previousBackupPath: String?
+    /// Combined backup path for callers that reveal whichever managed backup is available.
+    @Published private(set) var latestBackupPath: String?
+
+    // Sheet and workspace presentation state owned by the model so views stay macro-free and testable.
+    @Published var activeRepairPlan: RepairPlan?
+    @Published var isShowingSystemChecksSheet = false
+    @Published var isShowingActivityLogSheet = false
+    @Published var isFollowingLatestLog = true
+    @Published var activeReportDraft: ReportDraft?
+    @Published var isPreparingReportDraft = false
+    @Published var isAttachmentPreviewExpanded = true
+    @Published var expandedStepIDs: Set<String> = []
+    @Published var installationNotice: String?
+
+    @Published var updateAlertIsPresented = false
+    @Published var latestRelease: ReleaseInfo?
+    @Published var isReportingBug = false
+    @Published var bugReportEmail = ""
+    @Published var bugReportMessage = ""
+    @Published var bugReportError: String?
+
+    // Optional test overrides for deterministic unit testing.
+    var processExecutorOverride: ProcessExecutor?
+    var bundleVerifierOverride: BundleVerifier?
+    var availableBackupCapacityBytesOverride: (() -> Int64?)?
+    var skipBringAppToFront = false
+
     private var runningTask: Task<Void, Never>?
     private var preflightTask: Task<Void, Never>?
     private var zoomLocationSelectionTask: Task<Void, Never>?
@@ -174,7 +252,26 @@ final class AppViewModel: ObservableObject {
     private let stopZoomCommand = ShellCommands.stopZoom
     private let stopZoomUpdatersCommand = ShellCommands.stopZoomUpdaters
 
+    /// The `zoom.us.app` bundle path currently in effect. `nil` means the default
+    /// `/Applications` location; a non-nil value is a user-selected location.
+    @Published var customZoomAppPath: String? = ZoomLocation.customAppPath
+
+    /// The effective `zoom.us.app` bundle path (default or user-selected).
+    var zoomAppPath: String {
+        customZoomAppPath ?? ZoomLocation.appPath
+    }
+
+    var isOperationGateActive: Bool {
+        runGate.isActive
+    }
+
+    var canStartZoom: Bool {
+        guard case .ready = preflight.status else { return false }
+        return !preflight.checks.contains(where: \.isBlocking) && !isRunning && !runGate.isActive
+    }
+
     init(
+        initialDiskBackupPath: String? = BackupStore.latestBackupURL()?.path,
         processExecutor: any ProcessExecuting = BoundedProcessExecutor(),
         zoomVerifier: @escaping ZoomVerifier = { try await ZoomBundleVerifier.verify(appPath: $0) },
         mediaAccessChecker: MediaAccessChecker? = nil,
@@ -184,19 +281,127 @@ final class AppViewModel: ObservableObject {
         self.zoomVerifier = zoomVerifier
         self.mediaAccessChecker = mediaAccessChecker
         self.homeDirectoryProvider = homeDirectoryProvider
+
+        let initialCustomPath = ZoomLocation.customAppPath
+        let initialEffectivePath = initialCustomPath ?? ZoomLocation.appPath
+        self.customZoomAppPath = initialCustomPath
+        self.readinessSnapshot = .initial(
+            selectedAppPath: initialEffectivePath,
+            isCustomLocation: initialCustomPath != nil
+        )
+        self.currentRunBackupPath = nil
+        self.previousBackupPath = initialDiskBackupPath
+        self.latestBackupPath = initialDiskBackupPath
     }
 
-    /// The `zoom.us.app` bundle path currently in effect. `nil` means the default
-    /// `/Applications` location; a non-nil value is a user-selected location.
-    @Published var customZoomAppPath: String? = ZoomLocation.customAppPath
+    // MARK: - Plan & Sheet Presentation
 
-    /// The effective `zoom.us.app` bundle path (default or user-selected).
-    var zoomAppPath: String { ZoomLocation.appPath }
-
-    var canStartZoom: Bool {
-        guard case .ready = preflight.status else { return false }
-        return !preflight.checks.contains(where: \.isBlocking) && !isRunning
+    func prepareAndPresentRepairPlan() {
+        guard canStartZoom else {
+            appendLog("Repair review is unavailable until required system checks pass.")
+            return
+        }
+        activeRepairPlan = RepairPlan.build(
+            readiness: readinessSnapshot,
+            selectedAppPath: zoomAppPath,
+            isCustomLocation: customZoomAppPath != nil
+        )
     }
+
+    func dismissRepairPlan() {
+        activeRepairPlan = nil
+    }
+
+    func confirmRepairPlanAndStart() {
+        activeRepairPlan = nil
+        startZoom()
+    }
+
+    func toggleStepExpansion(_ stepID: String) {
+        if expandedStepIDs.contains(stepID) {
+            expandedStepIDs.remove(stepID)
+        } else {
+            expandedStepIDs.insert(stepID)
+        }
+    }
+
+    func openBugReportSheet(appVersion: String) {
+        guard activeReportDraft == nil, !isPreparingReportDraft else { return }
+        bugReportError = nil
+        isPreparingReportDraft = true
+        Task {
+            let draft = await makeReportDraft(appVersion: appVersion)
+            self.activeReportDraft = draft
+            self.isPreparingReportDraft = false
+        }
+    }
+
+    func closeBugReportSheet() {
+        guard !isReportingBug else { return }
+        activeReportDraft = nil
+        bugReportError = nil
+    }
+
+    func submitBugReport() async {
+        guard !isReportingBug, let draft = activeReportDraft else { return }
+
+        let trimmedMessage = bugReportMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedMessage.isEmpty else {
+            bugReportError = "Add a short description before sending the report."
+            return
+        }
+        if bugReportMessage.count > ReportDraft.maxDescriptionCharacters {
+            let excess = bugReportMessage.count - ReportDraft.maxDescriptionCharacters
+            bugReportError = "Shorten your description by \(excess) \(excess == 1 ? "character" : "characters") before sending."
+            return
+        }
+
+        isReportingBug = true
+        bugReportError = nil
+        defer { isReportingBug = false }
+
+        appendLog("=== Report a Bug ===")
+        let trimmedEmail = bugReportEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        do {
+            try await BugReportService.sendBugReport(
+                title: draft.title,
+                email: trimmedEmail.isEmpty ? nil : trimmedEmail,
+                message: trimmedMessage,
+                systemInfo: draft.systemInfo,
+                diagnosticsFileName: draft.diagnosticsFileName,
+                diagnosticsData: draft.attachmentData
+            )
+            appendLog("Bug report submitted successfully.")
+            activeReportDraft = nil
+            bugReportEmail = ""
+            bugReportMessage = ""
+        } catch {
+            let message = error.localizedDescription
+            bugReportError = message
+            appendLog("Bug report failed: \(message)")
+        }
+    }
+
+    func checkForUpdates(appVersion: String) async {
+        guard appVersion != "dev",
+              latestRelease == nil,
+              ProcessInfo.processInfo.environment["FIXER_UI_FIXTURE"] == nil else {
+            return
+        }
+
+        do {
+            let release = try await UpdateChecker.fetchLatestRelease()
+            if UpdateChecker.isUpdateAvailable(currentVersion: appVersion, latestVersion: release.version) {
+                latestRelease = release
+                updateAlertIsPresented = true
+            }
+        } catch {
+            // Update checks are advisory and must never block app usage.
+        }
+    }
+
+    // MARK: - Primary Repair Workflow
 
     func startZoom() {
         guard canStartZoom else {
@@ -210,265 +415,403 @@ final class AppViewModel: ObservableObject {
             URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardized.path
         } ?? requestedHomeDirectory
 
-        lastRunResults = nil
-        initProgress(steps: [
-            ("validate", "Safety Check"),
-            ("closeZoom", "Close Zoom"),
-            ("backup", "Backup State"),
-            ("network", ShellCommands.isMacSpoofingDisabledForCurrentOS() ? "Network Check" : "MAC Spoof & Network"),
-            ("resetData", "Clear Local State"),
-            ("dns", "DNS Flush"),
-            ("updaters", "Stop Updaters"),
-            ("mediaAccess", "Camera & Mic"),
-            ("launch", "Launch Zoom"),
-        ])
-        runTask("Start Zoom") {
-            var results: [StepResult] = []
-            defer { self.lastRunResults = results }
+        let canonicalSpecs = RepairStepSpec.canonicalSteps()
+        let stepPairs = canonicalSpecs.map { ($0.id, $0.name) }
 
-            // 0. Fail fast before anything is closed or changed. This verifies both the
-            // selected Zoom bundle and the exact sandbox profile used at launch time.
-            self.workflowState = .preflight
-            self.markStepRunning("validate")
-            self.appendLog("Step: Verify Zoom signature, home directory, and required sandbox profile")
-            do {
-                var isDirectory: ObjCBool = false
-                guard normalizedHomeDirectory != nil,
-                      ShellCommands.isSafeHomeDirectory(homeDirectory),
-                      FileManager.default.fileExists(atPath: homeDirectory, isDirectory: &isDirectory),
-                      isDirectory.boolValue else {
-                    throw self.appError("Safety checks: refusing to continue because the home directory '\(requestedHomeDirectory)' is not a safe, existing directory.")
+        // If a previous run created a backup, demote it to previousBackupPath before starting this run.
+        if let priorRunBackup = currentRunBackupPath {
+            previousBackupPath = priorRunBackup
+        }
+        currentRunBackupPath = nil
+        latestBackupPath = previousBackupPath
+        lastRunResults = nil
+        expandedStepIDs.removeAll()
+        initProgress(steps: stepPairs)
+
+        let initialSteps = canonicalSpecs.map {
+            StepResult(id: $0.id, name: $0.name, outcome: .unstarted, detail: $0.plannedSummary)
+        }
+        let runRecordID = UUID()
+        let selectedPath = zoomAppPath
+        currentRunRecord = RunRecord(
+            id: runRecordID,
+            title: "Repair Zoom 1132",
+            startedAt: Date(),
+            finishedAt: nil,
+            selectedAppPath: selectedPath,
+            outcome: .running,
+            steps: initialSteps,
+            createdBackupPath: nil,
+            failureMessage: nil,
+            failedStepID: nil
+        )
+
+        runTask("Start Zoom") {
+            var completedResults: [StepResult] = []
+            var activeStepSpec: RepairStepSpec?
+            var runCreatedBackup: String?
+
+            @MainActor
+            func syncRunRecord(outcome: RunRecord.Outcome, failureMessage: String? = nil, failedStepID: String? = nil) {
+                var merged: [StepResult] = []
+                for spec in canonicalSpecs {
+                    if let finished = completedResults.first(where: { $0.id == spec.id }) {
+                        merged.append(finished)
+                    } else if activeStepSpec?.id == spec.id && (outcome == .running || outcome == .stopping) {
+                        merged.append(StepResult(id: spec.id, name: spec.name, outcome: .running, detail: spec.plannedSummary))
+                    } else {
+                        merged.append(StepResult(id: spec.id, name: spec.name, outcome: .unstarted, detail: "Not run"))
+                    }
                 }
-                _ = try await self.verifiedZoomBinaryPath()
-                let output = try await self.runProcess(
-                    stepName: "Validate Zoom sandbox profile",
-                    executable: Constants.bashPath,
-                    arguments: ["-c", ShellCommands.makeSandboxProfileValidationCommand(homeDirectory: homeDirectory)],
-                    timeout: 15
+                self.lastRunResults = merged
+                self.currentRunRecord = RunRecord(
+                    id: runRecordID,
+                    title: "Repair Zoom 1132",
+                    startedAt: self.currentRunRecord?.startedAt ?? Date(),
+                    finishedAt: (outcome == .running || outcome == .stopping) ? nil : Date(),
+                    selectedAppPath: selectedPath,
+                    outcome: outcome,
+                    steps: merged,
+                    createdBackupPath: runCreatedBackup,
+                    failureMessage: failureMessage,
+                    failedStepID: failedStepID
                 )
-                self.markStepDone("validate", succeeded: true)
-                results.append(.init(
-                    id: "validate",
-                    name: "Safety Check",
-                    outcome: .success,
-                    detail: output.trimmingCharacters(in: .whitespacesAndNewlines)
-                ))
+            }
+
+            @MainActor
+            func beginStep(_ id: String) {
+                activeStepSpec = canonicalSpecs.first(where: { $0.id == id })
+                self.markStepRunning(id)
+                syncRunRecord(outcome: self.isCanceling ? .stopping : .running)
+            }
+
+            @MainActor
+            func finishStep(_ result: StepResult) {
+                completedResults.removeAll(where: { $0.id == result.id })
+                completedResults.append(result)
+                if activeStepSpec?.id == result.id {
+                    activeStepSpec = nil
+                }
+                if result.outcome == .failed || result.outcome == .warning {
+                    self.expandedStepIDs.insert(result.id)
+                }
+                syncRunRecord(outcome: self.isCanceling ? .stopping : .running)
+            }
+
+            do {
+                // 1. Fail fast before anything is closed or changed.
+                self.workflowState = .preflight
+                beginStep("validate")
+                self.appendLog("Step: Verify Zoom signature, home directory, and required sandbox profile")
+                do {
+                    var isDirectory: ObjCBool = false
+                    guard normalizedHomeDirectory != nil,
+                          ShellCommands.isSafeHomeDirectory(homeDirectory),
+                          FileManager.default.fileExists(atPath: homeDirectory, isDirectory: &isDirectory),
+                          isDirectory.boolValue else {
+                        throw self.appError("Safety checks: refusing to continue because the home directory '\(requestedHomeDirectory)' is not a safe, existing directory.")
+                    }
+                    _ = try await self.verifiedZoomBinaryPath()
+                    let output = try await self.runProcess(
+                        stepName: "Validate Zoom sandbox profile",
+                        executable: Constants.bashPath,
+                        arguments: ["-c", ShellCommands.makeSandboxProfileValidationCommand(homeDirectory: homeDirectory)],
+                        timeout: 15
+                    )
+                    self.markStepDone("validate", succeeded: true)
+                    let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                    finishStep(.init(
+                        id: "validate",
+                        name: "Safety Check",
+                        outcome: .success,
+                        detail: trimmed.isEmpty ? "Verified signature and compiled sandbox launch profile." : trimmed
+                    ))
+                } catch {
+                    try Task.checkCancellation()
+                    self.markStepDone("validate", succeeded: false)
+                    finishStep(.init(id: "validate", name: "Safety Check", outcome: .failed, detail: error.localizedDescription))
+                    throw error
+                }
+
+                // 2. Close Zoom
+                self.workflowState = .closingZoom
+                beginStep("closeZoom")
+                self.appendLog("Step: Close Zoom if it is running")
+                do {
+                    let output = try await self.runProcess(
+                        stepName: "Close Zoom",
+                        executable: Constants.bashPath,
+                        arguments: ["-c", self.stopZoomCommand]
+                    )
+                    self.markStepDone("closeZoom", succeeded: true)
+                    let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                    finishStep(.init(
+                        id: "closeZoom",
+                        name: "Close Zoom",
+                        outcome: .success,
+                        detail: trimmed.isEmpty ? "Zoom processes closed cleanly." : trimmed
+                    ))
+                } catch {
+                    try Task.checkCancellation()
+                    self.markStepDone("closeZoom", succeeded: false)
+                    finishStep(.init(id: "closeZoom", name: "Close Zoom", outcome: .failed, detail: error.localizedDescription))
+                    throw self.appError("Zoom could not be closed safely, so no backup, network, or data changes were made. \(error.localizedDescription)")
+                }
+
+                // 3. Back up Zoom state before any network mutation or deletion.
+                self.workflowState = .backingUpState
+                beginStep("backup")
+                self.appendLog("Step: Backup Zoom local state")
+                do {
+                    let output = try await self.runProcess(
+                        stepName: "Backup Zoom state",
+                        executable: Constants.bashPath,
+                        arguments: ["-c", ShellCommands.makeBackupZoomDataCommand(homeDirectory: homeDirectory)],
+                        timeout: 60
+                    )
+                    let backupPath = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !backupPath.isEmpty else {
+                        throw self.appError("Backup completed without returning a recovery location.")
+                    }
+                    runCreatedBackup = backupPath
+                    self.currentRunBackupPath = backupPath
+                    self.latestBackupPath = backupPath
+                    self.markStepDone("backup", succeeded: true)
+                    finishStep(.init(id: "backup", name: "Backup State", outcome: .success, detail: "Saved to \(backupPath)"))
+                } catch {
+                    try Task.checkCancellation()
+                    self.markStepDone("backup", succeeded: false)
+                    finishStep(.init(id: "backup", name: "Backup State", outcome: .failed, detail: error.localizedDescription))
+                    throw self.appError("Backup failed, so no network or Zoom data changes were made. \(error.localizedDescription)")
+                }
+
+                // 4. Network handling.
+                let networkStepName = ShellCommands.isMacSpoofingDisabledForCurrentOS() ? "Network Check" : "MAC Spoof & Network"
+                self.workflowState = ShellCommands.isMacSpoofingDisabledForCurrentOS() ? .checkingNetwork : .spoofingMAC
+                beginStep("network")
+                self.appendLog(ShellCommands.isMacSpoofingDisabledForCurrentOS()
+                    ? "Step: Check active network; legacy MAC spoofing is disabled on macOS 14+"
+                    : "Step: Spoof MAC and reconnect active network (admin prompt expected)")
+                do {
+                    let networkResult = try await self.spoofMACAndReconnectActiveInterface()
+                    let outcome: StepResult.Outcome
+                    if networkResult.wasSkipped {
+                        outcome = .skipped
+                        self.markStepSkipped("network")
+                    } else if networkResult.hasWarning {
+                        outcome = .warning
+                        self.markStepWarning("network")
+                    } else {
+                        outcome = .success
+                        self.markStepDone("network", succeeded: true)
+                    }
+                    finishStep(.init(
+                        id: "network",
+                        name: networkStepName,
+                        outcome: outcome,
+                        detail: networkResult.summary
+                    ))
+                } catch {
+                    try Task.checkCancellation()
+                    self.markStepWarning("network")
+                    finishStep(.init(id: "network", name: networkStepName, outcome: .warning, detail: error.localizedDescription))
+                    self.appendLog("Warning: Network identity was not changed: \(error.localizedDescription)")
+                }
+
+                // 5. Reset Zoom data
+                self.workflowState = .clearingState
+                beginStep("resetData")
+                self.appendLog("Step: Reset Zoom data")
+                do {
+                    guard ShellCommands.isSafeHomeDirectory(homeDirectory) else {
+                        throw self.appError("Reset Zoom data: refusing to delete files because the home directory '\(homeDirectory)' is not a safe absolute path.")
+                    }
+                    let output = try await self.runProcess(
+                        stepName: "Reset Zoom data",
+                        executable: Constants.bashPath,
+                        arguments: ["-c", ShellCommands.makeResetZoomDataWithStatusCommand(homeDirectory: homeDirectory)]
+                    )
+                    let lines = output.components(separatedBy: .newlines)
+                    let resetSucceeded = lines.contains("__1132_RESET_STATUS__=0")
+                    let detail = lines.filter { !$0.hasPrefix("__1132_") }.joined(separator: "\n")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if resetSucceeded {
+                        self.markStepDone("resetData", succeeded: true)
+                    } else {
+                        self.markStepWarning("resetData")
+                    }
+                    finishStep(.init(
+                        id: "resetData",
+                        name: "Clear Local State",
+                        outcome: resetSucceeded ? .success : .warning,
+                        detail: resetSucceeded
+                            ? (detail.isEmpty ? "Cleared local Zoom caches, preferences, and containers." : detail)
+                            : "Could not clear all Zoom data. \(detail)"
+                    ))
+                } catch {
+                    try Task.checkCancellation()
+                    self.markStepWarning("resetData")
+                    finishStep(.init(id: "resetData", name: "Clear Local State", outcome: .warning, detail: error.localizedDescription))
+                    self.appendLog("Warning: \(error.localizedDescription)")
+                }
+
+                // 6. DNS flush.
+                self.workflowState = .flushingDNS
+                beginStep("dns")
+                self.appendLog("Step: Refresh DNS cache (admin prompt may appear)")
+                do {
+                    let script = ShellCommands.appleScriptDoShellScript(
+                        ShellCommands.makeTimeBoundedCommand(ShellCommands.makeRefreshDNSCommand(), seconds: 55),
+                        administratorPrivileges: true
+                    )
+                    let output = try await self.runProcess(
+                        stepName: "Refresh DNS cache",
+                        executable: Constants.osascriptPath,
+                        arguments: ["-e", script]
+                    )
+                    let lines = output.components(separatedBy: .newlines)
+                    let dnsSucceeded = lines.contains("__1132_DNS_STATUS__=0")
+                    let detail = lines.filter { !$0.hasPrefix("__1132_") }.joined(separator: "\n")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if dnsSucceeded {
+                        self.markStepDone("dns", succeeded: true)
+                    } else {
+                        self.markStepWarning("dns")
+                    }
+                    finishStep(.init(
+                        id: "dns",
+                        name: "DNS Flush",
+                        outcome: dnsSucceeded ? .success : .warning,
+                        detail: dnsSucceeded
+                            ? (detail.isEmpty ? "Flushed system DNS cache and restarted mDNSResponder." : detail)
+                            : "Could not refresh DNS cache. \(detail)"
+                    ))
+                } catch {
+                    try Task.checkCancellation()
+                    self.markStepWarning("dns")
+                    finishStep(.init(id: "dns", name: "DNS Flush", outcome: .warning, detail: error.localizedDescription))
+                    self.appendLog("Warning: \(error.localizedDescription)")
+                }
+
+                // 7. Stop updaters
+                self.workflowState = .stoppingUpdaters
+                beginStep("updaters")
+                self.appendLog("Step: Stop Zoom updaters")
+                do {
+                    let output = try await self.runProcess(
+                        stepName: "Stop Zoom updaters",
+                        executable: Constants.bashPath,
+                        arguments: ["-c", self.stopZoomUpdatersCommand]
+                    )
+                    self.markStepDone("updaters", succeeded: true)
+                    let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                    finishStep(.init(
+                        id: "updaters",
+                        name: "Stop Updaters",
+                        outcome: .success,
+                        detail: trimmed.isEmpty ? "Unloaded Zoom updater agents for the current session." : trimmed
+                    ))
+                } catch {
+                    try Task.checkCancellation()
+                    self.markStepWarning("updaters")
+                    finishStep(.init(id: "updaters", name: "Stop Updaters", outcome: .warning, detail: error.localizedDescription))
+                    self.appendLog("Warning: \(error.localizedDescription)")
+                }
+
+                // 8. Ensure camera and microphone access before the sandboxed launch.
+                self.workflowState = .checkingMediaAccess
+                beginStep("mediaAccess")
+                self.appendLog("Step: Check camera and microphone access")
+                do {
+                    let detail = try await self.ensureMediaAccessForSandboxedZoom()
+                    self.markStepDone("mediaAccess", succeeded: true)
+                    finishStep(.init(id: "mediaAccess", name: "Camera & Mic", outcome: .success, detail: detail))
+                } catch {
+                    try Task.checkCancellation()
+                    self.markStepWarning("mediaAccess")
+                    finishStep(.init(id: "mediaAccess", name: "Camera & Mic", outcome: .warning, detail: error.localizedDescription))
+                    self.appendLog("Warning: \(error.localizedDescription)")
+                }
+
+                // 9. Launch Zoom
+                self.workflowState = .launchingZoom
+                beginStep("launch")
+                self.appendLog("Step: Launch Zoom")
+                do {
+                    let verifiedBinaryPath = try await self.verifiedZoomBinaryPath()
+                    let output = try await self.runProcess(
+                        stepName: "Launch Zoom",
+                        executable: Constants.bashPath,
+                        arguments: ["-c", ShellCommands.makeLaunchZoomCommand(
+                            zoomBinaryPath: verifiedBinaryPath,
+                            homeDirectory: homeDirectory
+                        )],
+                        timeout: 120
+                    )
+                    self.markStepDone("launch", succeeded: true)
+                    let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                    finishStep(.init(
+                        id: "launch",
+                        name: "Launch Zoom",
+                        outcome: .success,
+                        detail: trimmed.isEmpty ? "Launched verified Zoom binary inside sandbox-exec." : trimmed
+                    ))
+                } catch {
+                    try Task.checkCancellation()
+                    self.markStepDone("launch", succeeded: false)
+                    finishStep(.init(id: "launch", name: "Launch Zoom", outcome: .failed, detail: error.localizedDescription))
+                    throw error
+                }
+
+                let hasIssues = completedResults.contains { $0.outcome != .success }
+                syncRunRecord(outcome: hasIssues ? .completedWithWarnings : .succeeded)
+                return WorkflowResultFormatter.summary(for: self.lastRunResults ?? completedResults)
+            } catch is CancellationError {
+                if let active = activeStepSpec {
+                    self.markStepInterrupted(active.id)
+                    completedResults.removeAll(where: { $0.id == active.id })
+                    completedResults.append(.init(
+                        id: active.id,
+                        name: active.name,
+                        outcome: .interrupted,
+                        detail: "Stopped by user."
+                    ))
+                    self.expandedStepIDs.insert(active.id)
+                    activeStepSpec = nil
+                }
+                syncRunRecord(outcome: .cancelled)
+                throw CancellationError()
             } catch {
-                try Task.checkCancellation()
-                self.markStepDone("validate", succeeded: false)
-                results.append(.init(id: "validate", name: "Safety Check", outcome: .failed, detail: error.localizedDescription))
+                if Task.isCancelled {
+                    if let active = activeStepSpec {
+                        self.markStepInterrupted(active.id)
+                        completedResults.removeAll(where: { $0.id == active.id })
+                        completedResults.append(.init(
+                            id: active.id,
+                            name: active.name,
+                            outcome: .interrupted,
+                            detail: "Stopped by user."
+                        ))
+                        self.expandedStepIDs.insert(active.id)
+                        activeStepSpec = nil
+                    }
+                    syncRunRecord(outcome: .cancelled)
+                    throw CancellationError()
+                }
+                let failedID = completedResults.last(where: { $0.outcome == .failed })?.id ?? activeStepSpec?.id
+                syncRunRecord(
+                    outcome: .failed,
+                    failureMessage: error.localizedDescription,
+                    failedStepID: failedID
+                )
                 throw error
             }
-
-            // 1. Close Zoom
-            self.workflowState = .closingZoom
-            self.markStepRunning("closeZoom")
-            self.appendLog("Step: Close Zoom if it is running")
-            do {
-                let output = try await self.runProcess(
-                    stepName: "Close Zoom",
-                    executable: Constants.bashPath,
-                    arguments: ["-c", self.stopZoomCommand]
-                )
-                self.markStepDone("closeZoom", succeeded: true)
-                results.append(.init(id: "closeZoom", name: "Close Zoom", outcome: .success, detail: output.isEmpty ? nil : output))
-            } catch {
-                try Task.checkCancellation()
-                self.markStepDone("closeZoom", succeeded: false)
-                results.append(.init(id: "closeZoom", name: "Close Zoom", outcome: .failed, detail: error.localizedDescription))
-                throw self.appError("Zoom could not be closed safely, so no backup, network, or data changes were made. \(error.localizedDescription)")
-            }
-
-            // 2. Back up Zoom state before any network mutation or deletion.
-            self.workflowState = .backingUpState
-            self.markStepRunning("backup")
-            self.appendLog("Step: Backup Zoom local state")
-            do {
-                let output = try await self.runProcess(
-                    stepName: "Backup Zoom state",
-                    executable: Constants.bashPath,
-                    arguments: ["-c", ShellCommands.makeBackupZoomDataCommand(homeDirectory: homeDirectory)],
-                    timeout: 60
-                )
-                let backupPath = output.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !backupPath.isEmpty else {
-                    throw self.appError("Backup completed without returning a recovery location.")
-                }
-                self.latestBackupPath = backupPath
-                self.markStepDone("backup", succeeded: true)
-                results.append(.init(id: "backup", name: "Backup State", outcome: .success, detail: "Saved to \(backupPath)"))
-            } catch {
-                try Task.checkCancellation()
-                self.markStepDone("backup", succeeded: false)
-                results.append(.init(id: "backup", name: "Backup State", outcome: .failed, detail: error.localizedDescription))
-                throw self.appError("Backup failed, so no network or Zoom data changes were made. \(error.localizedDescription)")
-            }
-
-            // 3. Network handling. Failures are non-destructive warnings because the
-            // private backup already exists and the remaining Zoom reset can still help.
-            self.workflowState = ShellCommands.isMacSpoofingDisabledForCurrentOS() ? .checkingNetwork : .spoofingMAC
-            self.markStepRunning("network")
-            self.appendLog(ShellCommands.isMacSpoofingDisabledForCurrentOS()
-                ? "Step: Check active network; legacy MAC spoofing is disabled on macOS 14+"
-                : "Step: Spoof MAC and reconnect active network (admin prompt expected)")
-            do {
-                let networkResult = try await self.spoofMACAndReconnectActiveInterface()
-                let outcome: StepResult.Outcome
-                if networkResult.wasSkipped {
-                    outcome = .skipped
-                    self.markStepSkipped("network")
-                } else if networkResult.hasWarning {
-                    outcome = .warning
-                    self.markStepWarning("network")
-                } else {
-                    outcome = .success
-                    self.markStepDone("network", succeeded: true)
-                }
-                results.append(.init(
-                    id: "network",
-                    name: ShellCommands.isMacSpoofingDisabledForCurrentOS() ? "Network Check" : "MAC Spoof & Network",
-                    outcome: outcome,
-                    detail: networkResult.summary
-                ))
-            } catch {
-                try Task.checkCancellation()
-                self.markStepWarning("network")
-                results.append(.init(id: "network", name: "Network Check", outcome: .warning, detail: error.localizedDescription))
-                self.appendLog("Warning: Network identity was not changed: \(error.localizedDescription)")
-            }
-
-            // 4. Reset Zoom data
-            self.workflowState = .clearingState
-            self.markStepRunning("resetData")
-            self.appendLog("Step: Reset Zoom data")
-            do {
-                // Runs unprivileged: every path is inside the user's own home directory.
-                let output = try await self.runProcess(
-                    stepName: "Reset Zoom data",
-                    executable: Constants.bashPath,
-                    arguments: ["-c", ShellCommands.makeResetZoomDataWithStatusCommand(homeDirectory: homeDirectory)]
-                )
-                let lines = output.components(separatedBy: .newlines)
-                let resetSucceeded = lines.contains("__1132_RESET_STATUS__=0")
-                let detail = lines.filter { !$0.hasPrefix("__1132_") }.joined(separator: "\n")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if resetSucceeded {
-                    self.markStepDone("resetData", succeeded: true)
-                } else {
-                    self.markStepWarning("resetData")
-                }
-                results.append(.init(id: "resetData", name: "Clear Local State", outcome: resetSucceeded ? .success : .warning,
-                                     detail: resetSucceeded ? (detail.isEmpty ? nil : detail) : "Could not clear all Zoom data. \(detail)"))
-            } catch {
-                try Task.checkCancellation()
-                self.markStepWarning("resetData")
-                results.append(.init(id: "resetData", name: "Clear Local State", outcome: .warning, detail: error.localizedDescription))
-                self.appendLog("Warning: \(error.localizedDescription)")
-            }
-
-            // 5. DNS flush. macOS requests administrator privileges for this step.
-            self.workflowState = .flushingDNS
-            self.markStepRunning("dns")
-            self.appendLog("Step: Refresh DNS cache (admin prompt may appear)")
-            do {
-                // The root shell cannot be killed from here, so it bounds itself just under the 60s timeout.
-                let script = ShellCommands.appleScriptDoShellScript(
-                    ShellCommands.makeTimeBoundedCommand(ShellCommands.makeRefreshDNSCommand(), seconds: 55),
-                    administratorPrivileges: true
-                )
-                let output = try await self.runProcess(
-                    stepName: "Refresh DNS cache",
-                    executable: Constants.osascriptPath,
-                    arguments: ["-e", script]
-                )
-                let lines = output.components(separatedBy: .newlines)
-                let dnsSucceeded = lines.contains("__1132_DNS_STATUS__=0")
-                let detail = lines.filter { !$0.hasPrefix("__1132_") }.joined(separator: "\n")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if dnsSucceeded {
-                    self.markStepDone("dns", succeeded: true)
-                } else {
-                    self.markStepWarning("dns")
-                }
-                results.append(.init(id: "dns", name: "DNS Flush", outcome: dnsSucceeded ? .success : .warning,
-                                     detail: dnsSucceeded ? (detail.isEmpty ? nil : detail) : "Could not refresh DNS cache. \(detail)"))
-            } catch {
-                try Task.checkCancellation()
-                self.markStepWarning("dns")
-                results.append(.init(id: "dns", name: "DNS Flush", outcome: .warning, detail: error.localizedDescription))
-                self.appendLog("Warning: \(error.localizedDescription)")
-            }
-
-            // 6. Stop updaters
-            self.workflowState = .stoppingUpdaters
-            self.markStepRunning("updaters")
-            self.appendLog("Step: Stop Zoom updaters")
-            do {
-                let output = try await self.runProcess(
-                    stepName: "Stop Zoom updaters",
-                    executable: Constants.bashPath,
-                    arguments: ["-c", self.stopZoomUpdatersCommand]
-                )
-                self.markStepDone("updaters", succeeded: true)
-                results.append(.init(id: "updaters", name: "Stop Updaters", outcome: .success, detail: output.isEmpty ? nil : output))
-            } catch {
-                try Task.checkCancellation()
-                self.markStepWarning("updaters")
-                results.append(.init(id: "updaters", name: "Stop Updaters", outcome: .warning, detail: error.localizedDescription))
-                self.appendLog("Warning: \(error.localizedDescription)")
-            }
-
-            // 7. Ensure camera and microphone access before the sandboxed launch.
-            // Zoom runs under sandbox-exec, so macOS attributes Zoom's camera/mic
-            // TCC requests to this app (the launcher). This app must therefore hold
-            // the grants for Zoom to see the camera/mic. Denial is non-fatal: Zoom
-            // still launches so the 1132 fix proceeds; only A/V is affected.
-            self.workflowState = .checkingMediaAccess
-            self.markStepRunning("mediaAccess")
-            self.appendLog("Step: Check camera and microphone access")
-            do {
-                let detail = try await self.ensureMediaAccessForSandboxedZoom()
-                self.markStepDone("mediaAccess", succeeded: true)
-                results.append(.init(id: "mediaAccess", name: "Camera & Mic", outcome: .success, detail: detail))
-            } catch {
-                try Task.checkCancellation()
-                self.markStepWarning("mediaAccess")
-                results.append(.init(id: "mediaAccess", name: "Camera & Mic", outcome: .warning, detail: error.localizedDescription))
-                self.appendLog("Warning: \(error.localizedDescription)")
-            }
-
-            // 8. Launch Zoom
-            self.workflowState = .launchingZoom
-            self.markStepRunning("launch")
-            self.appendLog("Step: Launch Zoom")
-            do {
-                // Verify again at launch time: the location may have changed since the start of the run.
-                let verifiedBinaryPath = try await self.verifiedZoomBinaryPath()
-                let output = try await self.runProcess(
-                    stepName: "Launch Zoom",
-                    executable: Constants.bashPath,
-                    arguments: ["-c", ShellCommands.makeLaunchZoomCommand(
-                        zoomBinaryPath: verifiedBinaryPath,
-                        homeDirectory: homeDirectory
-                    )],
-                    timeout: 120
-                )
-                self.markStepDone("launch", succeeded: true)
-                results.append(.init(id: "launch", name: "Launch Zoom", outcome: .success, detail: output.isEmpty ? nil : output))
-            } catch {
-                try Task.checkCancellation()
-                self.markStepDone("launch", succeeded: false)
-                results.append(.init(id: "launch", name: "Launch Zoom", outcome: .failed, detail: error.localizedDescription))
-                throw error // Launch failure is fatal
-            }
-
-            return WorkflowResultFormatter.summary(for: results)
         }
     }
 
     private func initProgress(steps: [(id: String, name: String)]) {
         workflowProgress = WorkflowProgress(
-            steps: steps.map { .init(id: $0.id, name: $0.name, state: .pending) },
+            steps: steps.map { .init(id: $0.id, name: $0.name, state: .unstarted) },
             currentStepIndex: 0
         )
     }
@@ -502,13 +845,20 @@ final class AppViewModel: ObservableObject {
         workflowProgress = progress
     }
 
-    private func markUnfinishedStepsSkipped() {
+    private func markStepInterrupted(_ id: String) {
+        guard var progress = workflowProgress,
+              let idx = progress.steps.firstIndex(where: { $0.id == id }) else { return }
+        progress.steps[idx].state = .interrupted
+        workflowProgress = progress
+    }
+
+    private func finalizeProgressOnTermination(wasCancelled: Bool) {
         guard var progress = workflowProgress else { return }
         for index in progress.steps.indices {
             switch progress.steps[index].state {
-            case .pending, .running:
-                progress.steps[index].state = .skipped
-            case .succeeded, .warning, .failed, .skipped:
+            case .running:
+                progress.steps[index].state = wasCancelled ? .interrupted : .failed
+            case .unstarted, .succeeded, .warning, .failed, .skipped, .interrupted:
                 break
             }
         }
@@ -519,29 +869,132 @@ final class AppViewModel: ObservableObject {
         guard isRunning, !isCanceling else { return }
         isCanceling = true
         workflowState = .canceling
-        appendLog("Cancel requested. Finishing the current step safely…")
+        if var record = currentRunRecord {
+            record.outcome = .stopping
+            currentRunRecord = record
+        }
+        if isExecutingPrivilegedStep {
+            appendLog("Stop requested. Waiting for the current privileged administrator step to finish safely…")
+        } else {
+            appendLog("Stop requested. Finishing the current step safely…")
+        }
         runningTask?.cancel()
     }
 
     func dryRun() {
-        guard !isRunning else {
+        guard !isRunning, !runGate.isActive else {
             appendLog("Another task is already running.")
             return
         }
         lastRunResults = nil
-        workflowProgress = nil
+        expandedStepIDs.removeAll()
+        let canonicalSpecs = RepairStepSpec.canonicalSteps()
+        initProgress(steps: canonicalSpecs.map { ($0.id, $0.name) })
+        let runRecordID = UUID()
+        let selectedPath = zoomAppPath
+        currentRunRecord = RunRecord(
+            id: runRecordID,
+            title: "Preview Steps (Dry Run)",
+            startedAt: Date(),
+            finishedAt: nil,
+            selectedAppPath: selectedPath,
+            outcome: .running,
+            steps: canonicalSpecs.map { StepResult(id: $0.id, name: $0.name, outcome: .unstarted, detail: "Pending") },
+            createdBackupPath: nil,
+            failureMessage: nil,
+            failedStepID: nil
+        )
         runTask("Dry Run") {
             var results: [String] = []
+            var completedResults: [StepResult] = []
+            var activeStepSpec: RepairStepSpec?
 
-            // Check macOS version
+            @MainActor
+            func syncRunRecord(outcome: RunRecord.Outcome, failureMessage: String? = nil, failedStepID: String? = nil) {
+                var merged: [StepResult] = []
+                for spec in canonicalSpecs {
+                    if let finished = completedResults.first(where: { $0.id == spec.id }) {
+                        merged.append(finished)
+                    } else if activeStepSpec?.id == spec.id && (outcome == .running || outcome == .stopping) {
+                        merged.append(StepResult(id: spec.id, name: spec.name, outcome: .running, detail: spec.plannedSummary))
+                    } else {
+                        merged.append(StepResult(id: spec.id, name: spec.name, outcome: .unstarted, detail: "Not run"))
+                    }
+                }
+                self.lastRunResults = merged
+                self.currentRunRecord = RunRecord(
+                    id: runRecordID,
+                    title: "Preview Steps (Dry Run)",
+                    startedAt: self.currentRunRecord?.startedAt ?? Date(),
+                    finishedAt: (outcome == .running || outcome == .stopping) ? nil : Date(),
+                    selectedAppPath: selectedPath,
+                    outcome: outcome,
+                    steps: merged,
+                    createdBackupPath: nil,
+                    failureMessage: failureMessage,
+                    failedStepID: failedStepID
+                )
+            }
+
+            @MainActor
+            func beginStep(_ id: String) {
+                activeStepSpec = canonicalSpecs.first(where: { $0.id == id })
+                self.markStepRunning(id)
+                syncRunRecord(outcome: self.isCanceling ? .stopping : .running)
+            }
+
+            @MainActor
+            func finishStep(_ id: String, outcome: StepResult.Outcome, detail: String) {
+                let name = canonicalSpecs.first(where: { $0.id == id })?.name ?? id
+                switch outcome {
+                case .success:
+                    self.markStepDone(id, succeeded: true)
+                case .failed:
+                    self.markStepDone(id, succeeded: false)
+                case .warning:
+                    self.markStepWarning(id)
+                case .skipped:
+                    self.markStepSkipped(id)
+                case .interrupted:
+                    self.markStepInterrupted(id)
+                case .unstarted, .running:
+                    break
+                }
+                let result = StepResult(id: id, name: name, outcome: outcome, detail: detail)
+                completedResults.removeAll(where: { $0.id == id })
+                completedResults.append(result)
+                if activeStepSpec?.id == id {
+                    activeStepSpec = nil
+                }
+                if outcome == .failed || outcome == .warning {
+                    self.expandedStepIDs.insert(id)
+                }
+                syncRunRecord(outcome: self.isCanceling ? .stopping : .running)
+            }
+
             let osVersion = ProcessInfo.processInfo.operatingSystemVersion
             results.append("macOS: \(osVersion.majorVersion).\(osVersion.minorVersion).\(osVersion.patchVersion)")
 
-            // Check architecture
             let arch = ShellCommands.machineArchitecture()
             results.append("Architecture: \(arch == "arm64" ? "Apple Silicon" : (arch == "x86_64" ? "Intel" : arch))")
 
-            // Verify Zoom and the required launch profile using the same checks as a real run.
+            self.workflowState = .preflight
+            beginStep("validate")
+            var validateFailure: String?
+            let requestedHome = self.homeDirectoryProvider()
+            let normalizedHome = ShellCommands.normalizedSafeHomeDirectory(requestedHome).map {
+                URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardized.path
+            }
+            var isHomeDir: ObjCBool = false
+            let homeIsSafe = normalizedHome.map {
+                ShellCommands.isSafeHomeDirectory($0)
+                    && FileManager.default.fileExists(atPath: $0, isDirectory: &isHomeDir)
+                    && isHomeDir.boolValue
+            } ?? false
+            if !homeIsSafe {
+                validateFailure = "Safety checks: home directory '\(requestedHome)' is not a safe, existing directory."
+            }
+
             do {
                 let verified = try await self.verifiedZoomBinaryPath()
                 results.append("Zoom signature: Verified")
@@ -549,14 +1002,18 @@ final class AppViewModel: ObservableObject {
             } catch {
                 try Task.checkCancellation()
                 results.append("Zoom signature: FAILED — \(error.localizedDescription)")
+                if validateFailure == nil {
+                    validateFailure = error.localizedDescription
+                }
             }
 
             do {
+                let sandboxHome = normalizedHome ?? requestedHome
                 _ = try await self.runProcess(
                     stepName: "Validate Zoom sandbox profile",
                     executable: Constants.bashPath,
                     arguments: ["-c", ShellCommands.makeSandboxProfileValidationCommand(
-                        homeDirectory: self.homeDirectoryProvider()
+                        homeDirectory: sandboxHome
                     )],
                     timeout: 15
                 )
@@ -564,22 +1021,54 @@ final class AppViewModel: ObservableObject {
             } catch {
                 try Task.checkCancellation()
                 results.append("Sandbox profile: FAILED — \(error.localizedDescription)")
+                if validateFailure == nil {
+                    validateFailure = error.localizedDescription
+                }
             }
 
-            if let availableBytes = BackupStore.availableCapacityBytes() {
-                results.append("Backup space available: \(ByteCountFormatter.string(fromByteCount: availableBytes, countStyle: .file))")
+            if let validateFailure {
+                finishStep("validate", outcome: .failed, detail: validateFailure)
             } else {
-                results.append("Backup space available: Could not determine")
+                finishStep(
+                    "validate",
+                    outcome: .success,
+                    detail: "Verified Zoom bundle and sandbox launch profile (read-only preview)."
+                )
             }
 
+            self.workflowState = .closingZoom
+            beginStep("closeZoom")
             let zoomRunning = (try? await self.runProcess(
                 stepName: "Check Zoom process",
                 executable: Constants.bashPath,
                 arguments: ["-c", "/usr/bin/pgrep -x \"zoom.us\" >/dev/null 2>&1 && echo running || echo stopped"]
             ))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
             results.append("Zoom process: \(zoomRunning)")
+            finishStep(
+                "closeZoom",
+                outcome: .skipped,
+                detail: "Read-only preview: Zoom process is \(zoomRunning); live repair would close Zoom before backup."
+            )
 
-            // Check network interface
+            self.workflowState = .backingUpState
+            beginStep("backup")
+            let spaceDetail: String
+            if let availableBytes = self.effectiveAvailableBackupBytes() {
+                let formatted = ByteCountFormatter.string(fromByteCount: availableBytes, countStyle: .file)
+                results.append("Backup space available: \(formatted)")
+                spaceDetail = "Backup space available: \(formatted)"
+            } else {
+                results.append("Backup space available: Could not determine")
+                spaceDetail = "Backup space available: Could not determine"
+            }
+            finishStep(
+                "backup",
+                outcome: .skipped,
+                detail: "Read-only preview: \(spaceDetail); live repair would create a private backup before any reset."
+            )
+
+            self.workflowState = .checkingNetwork
+            beginStep("network")
             do {
                 let routeOutput = try await self.runProcess(
                     stepName: "Detect interface",
@@ -597,26 +1086,84 @@ final class AppViewModel: ObservableObject {
                 let portName = portMap[device] ?? "Unknown"
                 results.append("Active interface: \(portName) (\(device))")
 
+                var networkOutcome: StepResult.Outcome = .skipped
+                var strategyDetail = "Active interface: \(portName) (\(device))"
                 if let kind = try? ShellCommands.classifySupportedInterface(hardwarePortName: portName) {
                     results.append("Interface type: \(kind.rawValue)")
                     switch ShellCommands.networkIdentityStrategy(isWiFi: kind == .wifi) {
                     case .rotatingPrivateWiFiAddress:
-                        results.append("Network identity: Rotating Private Wi-Fi Address (Apple Silicon + macOS 14+)")
+                        let desc = "Rotating Private Wi-Fi Address (Apple Silicon + macOS 14+)"
+                        results.append("Network identity: \(desc)")
+                        strategyDetail += " — Read-only preview: would use \(desc)."
                     case .unsupported:
-                        results.append("Network identity: UNAVAILABLE — MAC spoofing is disabled on macOS 14+")
+                        let desc = "UNAVAILABLE — MAC spoofing is disabled on macOS 14+"
+                        results.append("Network identity: \(desc)")
+                        strategyDetail += " — \(desc)."
+                        networkOutcome = .warning
                     case .legacyMACSpoof:
-                        results.append("Network identity: MAC spoofing available")
+                        let desc = "MAC spoofing available"
+                        results.append("Network identity: \(desc)")
+                        strategyDetail += " — Read-only preview: \(desc)."
                     }
                 }
+                finishStep("network", outcome: networkOutcome, detail: strategyDetail)
             } catch {
                 try Task.checkCancellation()
                 results.append("Network: \(error.localizedDescription)")
+                finishStep(
+                    "network",
+                    outcome: .warning,
+                    detail: "Read-only preview: \(error.localizedDescription)"
+                )
             }
 
+            self.workflowState = .clearingState
+            beginStep("resetData")
+            finishStep(
+                "resetData",
+                outcome: .skipped,
+                detail: "Read-only preview: would clear local Zoom state, saved window state, and logs."
+            )
+
+            self.workflowState = .flushingDNS
+            beginStep("dns")
+            finishStep(
+                "dns",
+                outcome: .skipped,
+                detail: "Read-only preview: would flush system DNS cache (administrator prompt in live repair)."
+            )
+
+            self.workflowState = .stoppingUpdaters
+            beginStep("updaters")
+            finishStep(
+                "updaters",
+                outcome: .skipped,
+                detail: "Read-only preview: would unload Zoom LaunchAgents for the current session."
+            )
+
+            self.workflowState = .checkingMediaAccess
+            beginStep("mediaAccess")
             let camera = Self.mediaAccessPreflightValue(for: .video)
             let microphone = Self.mediaAccessPreflightValue(for: .audio)
             results.append("Camera access: \(camera.value)")
             results.append("Microphone access: \(microphone.value)")
+            let mediaHasWarning = camera.isWarning || microphone.isWarning
+            finishStep(
+                "mediaAccess",
+                outcome: mediaHasWarning ? .warning : .success,
+                detail: "Camera access: \(camera.value); Microphone access: \(microphone.value)"
+            )
+
+            self.workflowState = .launchingZoom
+            beginStep("launch")
+            finishStep(
+                "launch",
+                outcome: .skipped,
+                detail: "Read-only preview: would launch verified Zoom binary inside sandbox-exec."
+            )
+
+            let hasAdvisories = completedResults.contains { $0.outcome == .warning || $0.outcome == .failed }
+            syncRunRecord(outcome: hasAdvisories ? .completedWithWarnings : .succeeded)
 
             results.append("")
             results.append("Dry run complete. No changes were made to your system.")
@@ -626,7 +1173,16 @@ final class AppViewModel: ObservableObject {
 
     func clearLogs() {
         logs.removeAll()
+        logEntries.removeAll()
         retainedLogBytes = 0
+        logRevision &+= 1
+    }
+
+    private func effectiveAvailableBackupBytes() -> Int64? {
+        if let override = availableBackupCapacityBytesOverride {
+            return override()
+        }
+        return BackupStore.availableCapacityBytes()
     }
 
     func runPreflight() {
@@ -636,6 +1192,7 @@ final class AppViewModel: ObservableObject {
         preflight = PreflightInfo(status: .loading, checks: [])
         let selectedZoomPath = zoomAppPath
         let selectedZoomIsCustom = customZoomAppPath != nil
+        let verifier = bundleVerifierOverride
         let requestedHomeDirectory = homeDirectoryProvider()
         let homeDirectory = ShellCommands.normalizedSafeHomeDirectory(requestedHomeDirectory).map {
             URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardized.path
@@ -677,7 +1234,13 @@ final class AppViewModel: ObservableObject {
 
             // Verify the selected Zoom bundle without touching it.
             do {
-                _ = try await self.zoomVerifier(selectedZoomPath)
+                if let verifier {
+                    _ = try await Task.detached(priority: .userInitiated) {
+                        try verifier(selectedZoomPath)
+                    }.value
+                } else {
+                    _ = try await self.zoomVerifier(selectedZoomPath)
+                }
                 checks.append(.init(
                     id: "zoom",
                     label: "Zoom App",
@@ -695,8 +1258,7 @@ final class AppViewModel: ObservableObject {
                 ))
             }
 
-            // Compile the same sandbox profile used at launch. A rejected profile is
-            // blocking because the app must never fall back to an unsandboxed launch.
+            // Compile the same sandbox profile used at launch.
             do {
                 guard let homeDirectory, homeIsSafe else {
                     throw self.appError("A safe home directory is required to build the Zoom sandbox profile.")
@@ -720,7 +1282,7 @@ final class AppViewModel: ObservableObject {
             }
 
             // Low space is a warning before it becomes a fail-closed backup error.
-            if let availableBytes = BackupStore.availableCapacityBytes() {
+            if let availableBytes = self.effectiveAvailableBackupBytes() {
                 let warningThreshold: Int64 = 1_073_741_824
                 let blockingThreshold: Int64 = 134_217_728
                 checks.append(.init(
@@ -765,10 +1327,8 @@ final class AppViewModel: ObservableObject {
                 }
             }
 
-            // Admin prompts expected (DNS flush needs admin; MAC spoofing on supported macOS also needs admin)
             checks.append(.init(id: "admin", label: "Admin Prompts", value: "Expected", isWarning: false))
 
-            // How the workflow can change network identity on this OS and interface.
             if let activeInterfaceKind {
                 switch ShellCommands.networkIdentityStrategy(isWiFi: activeInterfaceKind == .wifi) {
                 case .rotatingPrivateWiFiAddress:
@@ -839,29 +1399,84 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    func makeBugReportDraft(appVersion: String) async -> BugReportDraft {
+    func saveReportDraftAttachment(_ draft: ReportDraft) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = draft.diagnosticsFileName
+        panel.allowedContentTypes = [.plainText]
+        panel.canCreateDirectories = true
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            try draft.attachmentData.write(to: url, options: .atomic)
+            appendLog("Report attachment saved to \(url.lastPathComponent)")
+        } catch {
+            appendLog("Failed to save report attachment: \(error.localizedDescription)")
+        }
+    }
+
+    func makeReportDraft(appVersion: String) async -> ReportDraft {
         let now = Date()
         let title = "Bug Report \(Self.bugTitleFormatter.string(from: now))"
         let timestamp = Self.logTimestampFormatter.string(from: now)
         let osVersion = ProcessInfo.processInfo.operatingSystemVersionString
         let architecture = ShellCommands.machineArchitecture()
         let lastStatus = inferLastActionStatus()
+        let selectedPath = DiagnosticsCollector.redactingHomeDirectory(zoomAppPath)
+        let readinessText = "\(readinessSnapshot.state.badgeLabel) — \(DiagnosticsCollector.redactingHomeDirectory(readinessSnapshot.headline))"
+        let runSummaryText: String
+        if let record = currentRunRecord {
+            let stepSummary = record.steps
+                .filter { $0.outcome != .unstarted }
+                .map { "\($0.name): \($0.outcome.displayLabel)" }
+                .joined(separator: ", ")
+            runSummaryText = "\(record.outcome.badgeLabel)\(stepSummary.isEmpty ? "" : " (\(stepSummary))")"
+        } else {
+            runSummaryText = "No repair run in this session"
+        }
+
         let systemInfo = """
 App version: \(appVersion)
 OS: \(osVersion)
 Architecture: \(architecture)
 Timestamp: \(timestamp)
+Selected Zoom path: \(selectedPath)
+Readiness: \(readinessText)
 Last action status: \(lastStatus)
 """
         let diagnostics = await makeDiagnosticsExport(
             appVersion: appVersion,
             maxLogLines: Self.maxInMemoryLogEntries
         )
-        return BugReportDraft(
+        let truncated = ReportDraft.truncateDiagnosticsUTF8(
+            diagnostics.content,
+            maxBytes: ReportDraft.maxAttachmentBytes
+        )
+        return ReportDraft(
+            id: UUID(),
+            createdAt: now,
             title: title,
+            appVersion: appVersion,
+            selectedAppPath: selectedPath,
             systemInfo: systemInfo,
+            readinessSummary: readinessText,
+            runSummary: runSummaryText,
             diagnosticsFileName: diagnostics.fileName,
-            diagnosticsData: Data(diagnostics.content.utf8)
+            fullDiagnosticsContent: diagnostics.content,
+            attachmentContent: truncated.text,
+            attachmentData: truncated.data,
+            originalByteCount: truncated.originalBytes,
+            wasTruncated: truncated.wasTruncated
+        )
+    }
+
+    func makeBugReportDraft(appVersion: String) async -> BugReportDraft {
+        let reportDraft = await makeReportDraft(appVersion: appVersion)
+        return BugReportDraft(
+            title: reportDraft.title,
+            systemInfo: reportDraft.systemInfo,
+            diagnosticsFileName: reportDraft.diagnosticsFileName,
+            diagnosticsData: reportDraft.attachmentData
         )
     }
 
@@ -881,7 +1496,14 @@ Last action status: \(lastStatus)
         lines.append("App version: \(appVersion)")
         lines.append("OS: \(osVersion)")
         lines.append("Architecture: \(arch)")
+        lines.append("Selected Zoom bundle: \(zoomAppPath)")
+        lines.append("Readiness state: \(readinessSnapshot.state.badgeLabel)")
         lines.append("Last action status: \(lastStatus)")
+        if let runBackup = currentRunBackupPath {
+            lines.append("Current run backup: \(runBackup)")
+        } else if let prevBackup = previousBackupPath {
+            lines.append("Previous backup on disk: \(prevBackup)")
+        }
         lines.append("")
         lines.append(contentsOf: environmentSnapshot)
         lines.append("")
@@ -906,7 +1528,6 @@ Last action status: \(lastStatus)
         lines.append("--- Activity Log (\(capturedLogs.count) entries) ---")
         lines.append(contentsOf: capturedLogs)
 
-        // This content is uploaded with bug reports, so strip the local account name.
         let content = DiagnosticsCollector.redactingHomeDirectory(lines.joined(separator: "\n"))
         return (Self.diagnosticsFileName, content)
     }
@@ -936,8 +1557,11 @@ Last action status: \(lastStatus)
                     appendLog("Timing: \(title) finished in \(Self.formatElapsed(startedAt.duration(to: clock.now))).")
                     isRunning = false
                     isCanceling = false
+                    isExecutingPrivilegedStep = false
                     runningTask = nil
-                    runPreflight()
+                    if processExecutorOverride == nil && bundleVerifierOverride == nil {
+                        runPreflight()
+                    }
                 }
             }
             do {
@@ -951,17 +1575,17 @@ Last action status: \(lastStatus)
                 appendLog("=== Completed ===")
             } catch is CancellationError {
                 workflowState = .canceled
-                markUnfinishedStepsSkipped()
+                finalizeProgressOnTermination(wasCancelled: true)
                 appendLog("=== Canceled safely ===")
             } catch {
                 if Task.isCancelled {
                     workflowState = .canceled
-                    markUnfinishedStepsSkipped()
+                    finalizeProgressOnTermination(wasCancelled: true)
                     appendLog("=== Canceled safely ===")
                     return
                 }
                 workflowState = .failed(error.localizedDescription)
-                markUnfinishedStepsSkipped()
+                finalizeProgressOnTermination(wasCancelled: false)
                 appendLog("Error: \(error.localizedDescription)")
                 appendLog("=== Failed ===")
             }
@@ -971,13 +1595,23 @@ Last action status: \(lastStatus)
     private func appendLog(_ text: String) {
         let timestamp = Self.logTimestampFormatter.string(from: Date())
         let boundedText = Self.tailLimitedUTF8(text, maxBytes: Self.maxSingleLogEntryBytes)
-        let entry = "[\(timestamp)] \(boundedText)"
-        logs.append(entry)
-        retainedLogBytes += entry.utf8.count
+        logRevision &+= 1
+        let entry = LogEntry(
+            sequence: logRevision,
+            timestamp: timestamp,
+            message: boundedText
+        )
+        let formatted = entry.formattedLine
+        logs.append(formatted)
+        logEntries.append(entry)
+        retainedLogBytes += formatted.utf8.count
 
         while logs.count > Self.maxInMemoryLogEntries || retainedLogBytes > Self.maxInMemoryLogBytes {
             guard !logs.isEmpty else { break }
             retainedLogBytes -= logs.removeFirst().utf8.count
+            if !logEntries.isEmpty {
+                logEntries.removeFirst()
+            }
         }
     }
 
@@ -1001,6 +1635,16 @@ Last action status: \(lastStatus)
     }
 
     private func inferLastActionStatus() -> String {
+        if let record = currentRunRecord {
+            switch record.outcome {
+            case .running: return "In Progress"
+            case .stopping: return "Stopping"
+            case .succeeded: return "Completed"
+            case .completedWithWarnings: return "Completed with Warnings"
+            case .failed: return "Error"
+            case .cancelled: return "Canceled"
+            }
+        }
         for line in logs.reversed() {
             if line.contains("=== Failed ===") {
                 return "Error"
@@ -1017,7 +1661,6 @@ Last action status: \(lastStatus)
         }
         return "Unknown"
     }
-
 
     private func spoofMACAndReconnectActiveInterface() async throws -> MACSpoofResult {
         let interface = try await resolveActiveSupportedInterface()
@@ -1040,7 +1683,6 @@ Last action status: \(lastStatus)
 
         appendLog("Network recovery: commands to be attempted on \(interface.device) (service: \(interface.networkService))")
 
-        // The root shell cannot be killed from here, so it bounds itself just under the 90s timeout below.
         let appleScript = ShellCommands.appleScriptDoShellScript(
             ShellCommands.makeTimeBoundedCommand(spoofScript, seconds: 85),
             administratorPrivileges: true
@@ -1055,7 +1697,6 @@ Last action status: \(lastStatus)
             )
         } catch {
             try Task.checkCancellation()
-            // Network step failed midway — log the exact commands and provide recovery
             appendLog("Network recovery: MAC spoof command failed. Commands attempted:")
             appendLog("  \(spoofScript)")
             appendLog("""
@@ -1138,7 +1779,6 @@ If your network connection is disrupted after this step:
         let previousMAC = ShellCommands.normalizedMACAddress(previousMACOutput)
         try Task.checkCancellation()
 
-        // 1. Check current private address mode
         let getModeCmd = ShellCommands.makeGetPrivateAddressModeCommand(networkService: networkService)
         let currentModeOutput = (try? await runProcess(
             stepName: "Check Private Wi-Fi Address mode",
@@ -1153,7 +1793,6 @@ If your network connection is disrupted after this step:
         var modeWasChanged = false
         var warnings: [String] = []
 
-        // 2. If not rotating, set it
         if currentMode == "unsupported" {
             warnings.append("Warning: Private Wi-Fi Address controls are unsupported on this macOS/networksetup version.")
         } else if currentMode != "rotating" {
@@ -1179,7 +1818,6 @@ If your network connection is disrupted after this step:
             }
         }
 
-        // 3. Cycle the interface to generate a new MAC — always brings it back up
         let resetCmd = ShellCommands.makeRotatingMACResetCommand(device: device)
         let resetScript = ShellCommands.appleScriptDoShellScript(
             ShellCommands.makeTimeBoundedCommand(resetCmd, seconds: 25),
@@ -1197,7 +1835,6 @@ If your network connection is disrupted after this step:
             let warning = "Warning: Wi-Fi cycle encountered an error: \(error.localizedDescription)"
             warnings.append(warning)
             appendLog(warning)
-            // Interface was already brought back up by the command — log and continue
         }
 
         // 4. Read the new MAC for logging
@@ -1310,15 +1947,14 @@ If your network connection is disrupted after this step:
 
     // MARK: - Zoom Location
 
-    /// Prompts the user to choose a `zoom.us.app` bundle when Zoom is installed
-    /// outside the default location. Sandbox-mode launch is unchanged; only the
-    /// bundle location is configurable.
-    /// Verifies the Zoom bundle currently in effect (name, symlinks and code signature) off
-    /// the main actor and returns the verified, symlink-resolved executable path. Called
-    /// before any destructive step and again right before launch, because the custom
-    /// location lives in `UserDefaults` and can change at any time.
     private func verifiedZoomBinaryPath() async throws -> String {
         let appPath = zoomAppPath
+        if let verifier = bundleVerifierOverride {
+            let verified = try await Task.detached(priority: .userInitiated) {
+                try verifier(appPath)
+            }.value
+            return verified.binaryPath
+        }
         let verified = try await zoomVerifier(appPath)
         return verified.binaryPath
     }
@@ -1335,12 +1971,32 @@ If your network connection is disrupted after this step:
         panel.directoryURL = URL(fileURLWithPath: "/Applications")
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        selectZoomLocation(at: url.path)
+    }
 
+    func selectZoomLocation(at selectedPath: String) {
         cancelPendingZoomLocationSelection()
-        let selectedPath = url.path
         guard let validated = ZoomLocation.validatedAppPath(selectedPath) else {
+            let reason = "The selected app does not contain the Zoom executable. Choose 'zoom.us.app'."
             appendLog("Selected app is not a valid Zoom installation: \(selectedPath)")
-            workflowState = .failed("The selected app does not contain the Zoom executable. Choose 'zoom.us.app'.")
+            installationNotice = reason
+            workflowState = .failed(reason)
+            return
+        }
+
+        if let verifier = bundleVerifierOverride {
+            do {
+                _ = try verifier(validated)
+                installationNotice = nil
+                ZoomLocation.customAppPath = validated
+                customZoomAppPath = validated
+                appendLog("Zoom location set to: \(validated)")
+                runPreflight()
+            } catch {
+                appendLog("Selected app was rejected: \(error.localizedDescription)")
+                installationNotice = error.localizedDescription
+                workflowState = .failed(error.localizedDescription)
+            }
             return
         }
 
@@ -1361,6 +2017,7 @@ If your network connection is disrupted after this step:
                 try Task.checkCancellation()
                 guard finishZoomLocationSelection(selectionID) else { return }
 
+                installationNotice = nil
                 ZoomLocation.customAppPath = validated
                 customZoomAppPath = validated
                 appendLog("Zoom location set to: \(validated)")
@@ -1370,6 +2027,7 @@ If your network connection is disrupted after this step:
             } catch {
                 guard finishZoomLocationSelection(selectionID) else { return }
                 appendLog("Selected app was rejected: \(error.localizedDescription)")
+                installationNotice = error.localizedDescription
                 workflowState = .failed(error.localizedDescription)
             }
         }
@@ -1391,16 +2049,30 @@ If your network connection is disrupted after this step:
     /// Reverts to the default `/Applications/zoom.us.app` location.
     func resetZoomLocation() {
         cancelPendingZoomLocationSelection()
+        installationNotice = nil
         ZoomLocation.customAppPath = nil
         customZoomAppPath = nil
         appendLog("Zoom location reset to default: \(ZoomLocation.defaultAppPath)")
         runPreflight()
     }
 
-    func revealLatestBackup() {
-        let candidate = latestBackupPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+    func revealBackup(at path: String?) {
+        let candidate = path.map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? BackupStore.latestBackupURL()
         guard let candidate, BackupStore.isManagedBackupURL(candidate) else {
+            appendLog("No managed Zoom backup is available to reveal.")
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([candidate])
+    }
+
+    func revealLatestBackup() {
+        let candidatePath = currentRunBackupPath ?? previousBackupPath ?? latestBackupPath
+        let candidate = candidatePath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? BackupStore.latestBackupURL()
+        guard let candidate, BackupStore.isManagedBackupURL(candidate) else {
+            currentRunBackupPath = nil
+            previousBackupPath = nil
             latestBackupPath = nil
             appendLog("No managed Zoom backup is available to reveal.")
             return
@@ -1410,8 +2082,8 @@ If your network connection is disrupted after this step:
         NSWorkspace.shared.activateFileViewerSelecting([candidate])
     }
 
-    /// How long to wait for an answer to a camera/microphone prompt before
-    /// giving up on it and continuing to the Zoom launch.
+    // MARK: - Media Access
+
     private static let mediaAccessPromptTimeout: TimeInterval = 60
 
     private struct MediaAccessResult {
@@ -1423,16 +2095,18 @@ If your network connection is disrupted after this step:
         if let mediaAccessChecker {
             return try await mediaAccessChecker()
         }
+        if processExecutorOverride != nil {
+            return "Camera access already granted; Microphone access already granted"
+        }
 
         // macOS only presents a privacy prompt while the requesting app is
         // frontmost. The admin (SecurityAgent) prompts in the earlier steps leave
         // another process in front, so without this the prompt is deferred and
         // the step waits on a dialog the user never gets to answer.
-        await bringAppToFront()
+        if !skipBringAppToFront {
+            await bringAppToFront()
+        }
 
-        // Both media types are always evaluated: a camera problem must not skip
-        // the microphone request, otherwise the microphone stays "not determined"
-        // and every later run stops at the same never-shown prompt.
         let camera = await ensureMediaAccess(
             mediaType: .video,
             displayName: "Camera",
@@ -1493,16 +2167,7 @@ If your network connection is disrupted after this step:
         }
     }
 
-    /// Requests access to `mediaType`, giving up once the prompt has gone
-    /// unanswered for `mediaAccessPromptTimeout` seconds.
-    ///
-    /// `AVCaptureDevice.requestAccess` has no timeout of its own: when macOS
-    /// never shows the prompt, its completion handler is never called and the
-    /// workflow would wait forever with nothing on screen to click. The timeout
-    /// keeps the step moving — camera/mic denial is already non-fatal, so Zoom
-    /// still launches and the 1132 fix still applies.
     private func requestMediaAccess(for mediaType: AVMediaType) async -> MediaAccessOutcome {
-        // Never raise a new prompt for a workflow the user already canceled.
         guard !Task.isCancelled else { return .unanswered }
 
         let waiter = MediaAccessWaiter()
@@ -1527,8 +2192,6 @@ If your network connection is disrupted after this step:
         }
     }
 
-    /// Makes 1132 Fixer the frontmost app so macOS presents its privacy prompts
-    /// instead of deferring them behind whatever ran last.
     private func bringAppToFront() async {
         let app = NSApplication.shared
         if #available(macOS 14.0, *) {
@@ -1537,8 +2200,6 @@ If your network connection is disrupted after this step:
             app.activate(ignoringOtherApps: true)
         }
         app.windows.first { $0.canBecomeKey }?.makeKeyAndOrderFront(nil)
-
-        // Activation is asynchronous; let it land before asking for the prompt.
         try? await Task.sleep(nanoseconds: 300_000_000)
     }
 
@@ -1559,15 +2220,26 @@ If your network connection is disrupted after this step:
     ) async throws -> String {
         try Task.checkCancellation()
 
+        let isPrivileged = (executable == Constants.osascriptPath)
+        if isPrivileged {
+            isExecutingPrivilegedStep = true
+        }
         let clock = ContinuousClock()
         let startedAt = clock.now
         defer {
+            if isPrivileged {
+                isExecutingPrivilegedStep = false
+            }
             appendLog("Timing: \(stepName) took \(Self.formatElapsed(startedAt.duration(to: clock.now))).")
+        }
+
+        if let override = processExecutorOverride {
+            return try await override(stepName, executable, arguments, timeout)
         }
 
         do {
             let result: ProcessExecutionResult
-            if executable == Constants.osascriptPath {
+            if isPrivileged {
                 let executor = processExecutor
                 result = try await Task.detached(priority: .userInitiated) {
                     try await executor.run(
@@ -1610,27 +2282,199 @@ If your network connection is disrupted after this step:
         }
     }
 
+    // MARK: - Deterministic UI Fixture Support (Validation & Screenshots)
+
+    func applyUIFixtureIfRequested(appVersion: String) {
+        guard let fixtureName = ProcessInfo.processInfo.environment["FIXER_UI_FIXTURE"],
+              !fixtureName.isEmpty else {
+            return
+        }
+        applyUIFixture(named: fixtureName, appVersion: appVersion)
+    }
+
+    func applyUIFixture(named fixtureName: String, appVersion: String = "1.8.2") {
+        preflightTask?.cancel()
+        activePreflightID = UUID()
+
+        let readyChecks: [PreflightInfo.Check] = [
+            .init(id: "os", label: "macOS", value: "macOS 15.1.0", isWarning: false),
+            .init(id: "arch", label: "Architecture", value: "Apple Silicon", isWarning: false),
+            .init(id: "zoom", label: "Zoom App", value: "Verified", isWarning: false),
+            .init(id: "sandbox", label: "Sandbox", value: "Profile validated", isWarning: false),
+            .init(id: "storage", label: "Backup Space", value: "148.4 GB available", isWarning: false),
+            .init(id: "iface", label: "Active Interface", value: "Wi-Fi (en0)", isWarning: false),
+            .init(id: "vpn", label: "VPN", value: "No VPN default route detected", isWarning: false),
+            .init(id: "admin", label: "Admin Prompts", value: "Expected", isWarning: false),
+            .init(id: "macspoof", label: "Network Identity", value: "Rotating Private Wi-Fi Address", isWarning: false),
+            .init(id: "camera", label: "Camera", value: "Allowed", isWarning: false),
+            .init(id: "microphone", label: "Microphone", value: "Allowed", isWarning: false),
+        ]
+
+        let canonical = RepairStepSpec.canonicalSteps()
+        appendLog("Loaded validation fixture: \(fixtureName)")
+
+        switch fixtureName {
+        case "ready":
+            preflight = PreflightInfo(status: .ready, checks: readyChecks)
+
+        case "warning":
+            var checks = readyChecks
+            checks[6] = .init(id: "vpn", label: "VPN", value: "Active (turn off before running)", isWarning: true)
+            checks[9] = .init(id: "camera", label: "Camera", value: "Will request access when needed", isWarning: true)
+            preflight = PreflightInfo(status: .ready, checks: checks)
+
+        case "blocked":
+            var checks = readyChecks
+            checks[2] = .init(
+                id: "zoom",
+                label: "Zoom App",
+                value: "Zoom is not installed at /Applications/zoom.us.app. Choose a valid Zoom.app bundle.",
+                isWarning: true,
+                isBlocking: true
+            )
+            preflight = PreflightInfo(status: .ready, checks: checks)
+
+        case "review":
+            preflight = PreflightInfo(status: .ready, checks: readyChecks)
+            prepareAndPresentRepairPlan()
+
+        case "running", "stopping":
+            preflight = PreflightInfo(status: .ready, checks: readyChecks)
+            isRunning = true
+            isCanceling = (fixtureName == "stopping")
+            isExecutingPrivilegedStep = (fixtureName == "stopping")
+            workflowState = (fixtureName == "stopping") ? .canceling : .flushingDNS
+            let backupDir = "/Users/user/Library/Application Support/1132Fixer/Backups/zoom.us-backup-20261019-040000"
+            currentRunBackupPath = backupDir
+            latestBackupPath = backupDir
+            let steps: [StepResult] = canonical.map { spec in
+                switch spec.index {
+                case 1...5:
+                    return StepResult(id: spec.id, name: spec.name, outcome: .success, detail: "Completed cleanly.")
+                case 6:
+                    return StepResult(
+                        id: spec.id,
+                        name: spec.name,
+                        outcome: .running,
+                        detail: fixtureName == "stopping"
+                            ? "Waiting for privileged DNS flush subprocess to exit safely…"
+                            : "Refreshing system DNS cache with administrator privileges…"
+                    )
+                default:
+                    return StepResult(id: spec.id, name: spec.name, outcome: .unstarted, detail: "Not run")
+                }
+            }
+            lastRunResults = steps
+            currentRunRecord = RunRecord(
+                id: UUID(),
+                title: "Repair Zoom 1132",
+                startedAt: Date().addingTimeInterval(-14),
+                finishedAt: nil,
+                selectedAppPath: zoomAppPath,
+                outcome: fixtureName == "stopping" ? .stopping : .running,
+                steps: steps,
+                createdBackupPath: backupDir,
+                failureMessage: nil,
+                failedStepID: nil
+            )
+
+        case "failed_after_backup":
+            preflight = PreflightInfo(status: .ready, checks: readyChecks)
+            isRunning = false
+            isCanceling = false
+            let failureMsg = "Launch Zoom: sandbox-exec exited with code 71 ( Zoom binary failed to initialize )."
+            workflowState = .failed(failureMsg)
+            let backupDir = "/Users/user/Library/Application Support/1132Fixer/Backups/zoom.us-backup-20261019-040500"
+            currentRunBackupPath = backupDir
+            latestBackupPath = backupDir
+            let steps: [StepResult] = canonical.map { spec in
+                switch spec.index {
+                case 1, 2, 5, 6, 7, 8:
+                    return StepResult(id: spec.id, name: spec.name, outcome: .success, detail: "Completed cleanly.")
+                case 3:
+                    return StepResult(id: spec.id, name: spec.name, outcome: .success, detail: "Saved to \(backupDir)")
+                case 4:
+                    return StepResult(id: spec.id, name: spec.name, outcome: .warning, detail: "Private Wi-Fi Address cycled; MAC rotation warning noted.")
+                default:
+                    return StepResult(id: spec.id, name: spec.name, outcome: .failed, detail: failureMsg)
+                }
+            }
+            lastRunResults = steps
+            expandedStepIDs = ["network", "launch"]
+            currentRunRecord = RunRecord(
+                id: UUID(),
+                title: "Repair Zoom 1132",
+                startedAt: Date().addingTimeInterval(-28),
+                finishedAt: Date(),
+                selectedAppPath: zoomAppPath,
+                outcome: .failed,
+                steps: steps,
+                createdBackupPath: backupDir,
+                failureMessage: failureMsg,
+                failedStepID: "launch"
+            )
+
+        case "bug_report":
+            preflight = PreflightInfo(status: .ready, checks: readyChecks)
+            appendLog("Step: Verify Zoom signature and required sandbox profile")
+            appendLog("Step: Backup Zoom local state")
+            appendLog("Error: Sample diagnostic log entry for bug report attachment inspection.")
+            let sampleDiag = """
+1132 Fixer Diagnostics Report
+Generated: 2026-10-19T08:00:00Z
+App version: \(appVersion)
+OS: macOS 15.1.0
+Architecture: arm64
+Selected Zoom bundle: /Applications/zoom.us.app
+Readiness state: Ready
+Last action status: Error
+
+--- Step Results ---
+[OK] Safety Check — Verified signature and compiled sandbox launch profile.
+[OK] Close Zoom — Zoom processes closed cleanly.
+[OK] Backup State — Saved to ~/Library/Application Support/1132Fixer/Backups/zoom.us-backup-20261019-040500
+[FAIL] Launch Zoom — sandbox-exec exited with code 71.
+
+--- Activity Log (3 entries) ---
+[2026-10-19T08:00:00Z] Step: Verify Zoom signature and required sandbox profile
+[2026-10-19T08:00:01Z] Step: Backup Zoom local state
+[2026-10-19T08:00:02Z] Error: Sample diagnostic log entry for bug report attachment inspection.
+"""
+            let truncated = ReportDraft.truncateDiagnosticsUTF8(sampleDiag)
+            activeReportDraft = ReportDraft(
+                id: UUID(),
+                createdAt: Date(),
+                title: "Bug Report 2026-10-19 04:05:00 -0400",
+                appVersion: appVersion,
+                selectedAppPath: "/Applications/zoom.us.app",
+                systemInfo: "App version: \(appVersion)\nOS: macOS 15.1.0\nArchitecture: arm64\nReadiness: Ready",
+                readinessSummary: "Ready — Ready to repair Zoom error 1132",
+                runSummary: "Failed (Safety Check: Succeeded, Close Zoom: Succeeded, Backup State: Succeeded, Launch Zoom: Failed)",
+                diagnosticsFileName: Self.diagnosticsFileName,
+                fullDiagnosticsContent: sampleDiag,
+                attachmentContent: truncated.text,
+                attachmentData: truncated.data,
+                originalByteCount: truncated.originalBytes,
+                wasTruncated: truncated.wasTruncated
+            )
+
+        default:
+            preflight = PreflightInfo(status: .ready, checks: readyChecks)
+        }
+    }
 }
 
 /// The result of a single `AVCaptureDevice.requestAccess` call.
 enum MediaAccessOutcome: Equatable {
-    /// The user answered the macOS privacy prompt.
     case answered(Bool)
-    /// No answer arrived: the prompt was never shown, was left open past the
-    /// timeout, or the workflow was canceled while waiting.
     case unanswered
 }
 
-/// Bridges `AVCaptureDevice.requestAccess` to `async`/`await` so that whichever
-/// comes first — the user's answer, the timeout, or workflow cancellation —
-/// resumes the caller exactly once. Later outcomes are discarded, and an outcome
-/// that lands before the caller starts awaiting is buffered.
 final class MediaAccessWaiter: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<MediaAccessOutcome, Never>?
     private var outcome: MediaAccessOutcome?
 
-    /// Records the first outcome and hands it to the waiting caller, if any.
     func finish(_ outcome: MediaAccessOutcome) {
         lock.lock()
         guard self.outcome == nil else {
@@ -1645,8 +2489,6 @@ final class MediaAccessWaiter: @unchecked Sendable {
         pending?.resume(returning: outcome)
     }
 
-    /// Suspends the caller until `finish` is called, or resumes it immediately
-    /// when an outcome has already been recorded.
     func attach(_ continuation: CheckedContinuation<MediaAccessOutcome, Never>) {
         lock.lock()
         if let outcome = self.outcome {

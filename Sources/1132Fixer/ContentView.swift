@@ -3,112 +3,118 @@ import Foundation
 import AppKit
 
 struct ContentView: View {
-    @StateObject private var vm = AppViewModel()
-    private let repositoryURL = AppConfiguration.repositoryURL
-    private let websiteURL = AppConfiguration.websiteURL
-    private let appVersion = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "dev"
+    @ObservedObject var viewModel: AppViewModel
+    private let appVersion = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.8.2"
 
-    @State private var updateAlertIsPresented = false
-    @State private var latestRelease: ReleaseInfo?
-    @State private var showRepairConfirmation = false
-    @State private var isReportingBug = false
-    @State private var showBugReportForm = false
-    @State private var bugReportEmail = ""
-    @State private var bugReportMessage = ""
-    @State private var bugReportError: String?
+    init(viewModel: AppViewModel) {
+        self.viewModel = viewModel
+    }
 
     var body: some View {
-        ZStack {
-            Theme.Colors.background.ignoresSafeArea()
+        GeometryReader { proxy in
+            let availableContentWidth = min(
+                max(proxy.size.width - (Theme.Spacing.outerPadding * 2), 0),
+                Theme.Window.contentMaxWidth
+            )
+            let isCompactLedger = availableContentWidth < Theme.Window.wideLedgerBreakpoint
 
-            ScrollView {
-                LazyVStack(spacing: Theme.Spacing.large) {
-                    HeaderCard(
-                        repositoryURL: repositoryURL,
-                        websiteURL: websiteURL,
-                        onReportBug: {
-                            bugReportError = nil
-                            showBugReportForm = true
-                        },
-                        isReportBugDisabled: isReportingBug,
-                        onExportDiagnostics: { vm.exportDiagnostics(appVersion: appVersion) },
-                        appVersion: appVersion
-                    )
+            ZStack {
+                Theme.Colors.background.ignoresSafeArea()
 
-                    PreflightPanel(preflight: vm.preflight)
-
-                    ZoomLocationPanel(
-                        appPath: vm.zoomAppPath,
-                        isCustom: vm.customZoomAppPath != nil,
-                        isDisabled: vm.isRunning,
-                        onChoose: { vm.chooseZoomLocation() },
-                        onReset: { vm.resetZoomLocation() }
-                    )
-
-                    HStack(alignment: .top, spacing: Theme.Spacing.large) {
-                        ActionCard(
-                            title: "Start Zoom Repair",
-                            subtitle: "Back up local state, refresh the active network and DNS, then launch verified Zoom in sandbox mode.",
-                            systemImage: "wrench.and.screwdriver.fill",
-                            tint: Theme.Colors.primary,
-                            isDisabled: !vm.canStartZoom,
-                            action: { showRepairConfirmation = true }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: Theme.Spacing.medium) {
+                        HeaderCard(
+                            appVersion: appVersion,
+                            workflowState: viewModel.workflowState,
+                            canStartZoom: viewModel.canStartZoom,
+                            logCount: viewModel.logEntries.count,
+                            isReportBugDisabled: viewModel.isReportingBug,
+                            onOpenActivityLog: { viewModel.isShowingActivityLogSheet = true },
+                            onExportDiagnostics: { viewModel.exportDiagnostics(appVersion: appVersion) },
+                            onReportBug: {
+                                viewModel.openBugReportSheet(appVersion: appVersion)
+                            }
                         )
 
-                        if vm.isRunning {
-                            ActionCard(
-                                title: vm.isCanceling ? "Canceling…" : "Cancel",
-                                subtitle: vm.isCanceling
-                                    ? "Finishing the current operation safely."
-                                    : "Stop before the next workflow step begins.",
-                                systemImage: "xmark.circle.fill",
-                                tint: Theme.Colors.error,
-                                isDisabled: vm.isCanceling,
-                                action: { vm.cancelWorkflow() }
-                            )
-                        } else {
-                            ActionCard(
-                                title: "Dry Run",
-                                subtitle: "Inspect compatibility, Zoom, network, backup space, and sandbox readiness without changing anything.",
-                                systemImage: "eye.fill",
-                                tint: Theme.Colors.textSecondary,
-                                isDisabled: false,
-                                action: { vm.dryRun() }
-                            )
-                        }
-                    }
+                        ReadinessSummaryLedger(
+                            preflight: viewModel.preflight,
+                            isRunning: viewModel.isRunning,
+                            onInspectDetails: { viewModel.isShowingSystemChecksSheet = true },
+                            onRecheck: { viewModel.runPreflight() }
+                        )
 
-                    if let progress = vm.workflowProgress {
-                        WorkflowProgressBar(progress: progress)
-                    }
+                        ZoomLocationPanel(
+                            appPath: viewModel.zoomAppPath,
+                            isCustom: viewModel.customZoomAppPath != nil,
+                            isDisabled: viewModel.isRunning,
+                            installationNotice: viewModel.installationNotice,
+                            onChoose: { viewModel.chooseZoomLocation() },
+                            onReset: { viewModel.resetZoomLocation() },
+                            onDismissNotice: { viewModel.installationNotice = nil }
+                        )
 
-                    if let results = vm.lastRunResults {
-                        WorkflowResultCard(
-                            results: results,
-                            workflowState: vm.workflowState,
-                            latestBackupPath: vm.latestBackupPath,
-                            onRevealBackup: vm.revealLatestBackup
+                        RepairRecordLedgerView(
+                            steps: viewModel.workflowProgress?.steps ?? [],
+                            stepResults: viewModel.lastRunResults ?? [],
+                            workflowState: viewModel.workflowState,
+                            runRecord: viewModel.currentRunRecord,
+                            expandedStepIDs: viewModel.expandedStepIDs,
+                            onToggleExpand: { stepID in
+                                if viewModel.expandedStepIDs.contains(stepID) {
+                                    viewModel.expandedStepIDs.remove(stepID)
+                                } else {
+                                    viewModel.expandedStepIDs.insert(stepID)
+                                }
+                            },
+                            isCompactLayout: isCompactLedger
+                        )
+
+                        BackupProvenanceBar(
+                            currentRunBackupPath: viewModel.currentRunBackupPath,
+                            previousBackupPath: viewModel.previousBackupPath,
+                            onRevealBackup: { viewModel.revealLatestBackup() }
                         )
                     }
-
-                    LogPanel(logs: vm.logs, onCopy: vm.copyLogs, onClear: vm.clearLogs)
+                    .frame(maxWidth: Theme.Window.contentMaxWidth, alignment: .leading)
+                    .padding(.horizontal, Theme.Spacing.outerPadding)
+                    .padding(.top, Theme.Spacing.outerPadding)
+                    .padding(.bottom, Theme.Spacing.large)
+                    .frame(maxWidth: .infinity, alignment: .top)
                 }
-                .padding(Theme.Spacing.xLarge)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    bottomActionBar
+                }
             }
         }
-        .frame(minWidth: 720, minHeight: 640)
+        .frame(
+            minWidth: Theme.Window.minWidth,
+            idealWidth: Theme.Window.idealWidth,
+            minHeight: Theme.Window.minHeight,
+            idealHeight: Theme.Window.idealHeight
+        )
         .preferredColorScheme(.dark)
-        .onAppear { vm.runPreflight() }
-        .task { await checkForUpdates() }
-        .alert("Update Available", isPresented: $updateAlertIsPresented) {
+        .onAppear {
+            if ProcessInfo.processInfo.environment["FIXER_UI_FIXTURE"] != nil {
+                viewModel.applyUIFixtureIfRequested(appVersion: appVersion)
+            } else {
+                viewModel.runPreflight()
+            }
+            configureWindowAndCaptureIfRequested()
+        }
+        .task {
+            if ProcessInfo.processInfo.environment["FIXER_UI_FIXTURE"] == nil {
+                await viewModel.checkForUpdates(appVersion: appVersion)
+            }
+        }
+        .alert("Update Available", isPresented: $viewModel.updateAlertIsPresented) {
             Button("View Release") {
-                if let latestRelease {
+                if let latestRelease = viewModel.latestRelease {
                     NSWorkspace.shared.open(latestRelease.htmlURL)
                 }
             }
             Button("Later", role: .cancel) {}
         } message: {
-            if let release = latestRelease {
+            if let release = viewModel.latestRelease {
                 if let notes = release.releaseNotes, !notes.isEmpty {
                     Text("Version \(release.version) is available. You have \(appVersion).\n\n\(notes)")
                 } else {
@@ -118,81 +124,277 @@ struct ContentView: View {
                 Text("A newer version is available.")
             }
         }
-        .sheet(isPresented: $showRepairConfirmation) {
-            RepairConfirmationSheet(
-                networkChangeDescription: "Change and reconnect the network identity when supported; otherwise verify the current connection without changing it.",
-                onCancel: { showRepairConfirmation = false },
-                onConfirm: {
-                    showRepairConfirmation = false
-                    vm.startZoom()
-                }
+        .sheet(
+            isPresented: Binding(
+                get: { viewModel.activeRepairPlan != nil },
+                set: { if !$0 { viewModel.dismissRepairPlan() } }
+            )
+        ) {
+            if let plan = viewModel.activeRepairPlan {
+                RepairConfirmationSheet(
+                    plan: plan,
+                    onCancel: { viewModel.dismissRepairPlan() },
+                    onConfirm: { viewModel.confirmRepairPlanAndStart() }
+                )
+            }
+        }
+        .sheet(isPresented: $viewModel.isShowingSystemChecksSheet) {
+            SystemCheckDetailsSheet(
+                preflight: viewModel.preflight,
+                zoomAppPath: viewModel.zoomAppPath,
+                isRunning: viewModel.isRunning,
+                onRecheck: { viewModel.runPreflight() },
+                onClose: { viewModel.isShowingSystemChecksSheet = false }
             )
         }
-        .sheet(isPresented: $showBugReportForm) {
-            BugReportFormSheet(
-                email: $bugReportEmail,
-                message: $bugReportMessage,
-                submissionError: $bugReportError,
-                isSubmitting: isReportingBug,
-                onCancel: { showBugReportForm = false },
-                onSubmit: {
-                    Task {
-                        await reportBug(email: bugReportEmail, message: bugReportMessage)
+        .sheet(isPresented: $viewModel.isShowingActivityLogSheet) {
+            ActivityLogSheet(
+                viewModel: viewModel,
+                appVersion: appVersion,
+                onClose: { viewModel.isShowingActivityLogSheet = false }
+            )
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { viewModel.activeReportDraft != nil },
+                set: { if !$0 { viewModel.closeBugReportSheet() } }
+            )
+        ) {
+            if let draft = viewModel.activeReportDraft {
+                BugReportFormSheet(
+                    draft: draft,
+                    email: $viewModel.bugReportEmail,
+                    message: $viewModel.bugReportMessage,
+                    submissionError: $viewModel.bugReportError,
+                    isAttachmentPreviewExpanded: $viewModel.isAttachmentPreviewExpanded,
+                    isSubmitting: viewModel.isReportingBug,
+                    onSaveAttachment: { viewModel.saveReportDraftAttachment(draft) },
+                    onCancel: { viewModel.closeBugReportSheet() },
+                    onSubmit: {
+                        Task {
+                            await viewModel.submitBugReport()
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    private var bottomActionBar: some View {
+        VStack(spacing: 0) {
+            Divider().overlay(Theme.Colors.border)
+
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: Theme.Spacing.large) {
+                    footerStatusText
+                    Spacer(minLength: Theme.Spacing.medium)
+                    footerActionButtons
+                }
+                VStack(alignment: .leading, spacing: Theme.Spacing.small) {
+                    footerStatusText
+                    HStack {
+                        Spacer()
+                        footerActionButtons
                     }
                 }
-            )
-        }
-    }
-
-    private func checkForUpdates() async {
-        guard appVersion != "dev", latestRelease == nil else { return }
-
-        do {
-            let release = try await UpdateChecker.fetchLatestRelease()
-            if UpdateChecker.isUpdateAvailable(currentVersion: appVersion, latestVersion: release.version) {
-                latestRelease = release
-                updateAlertIsPresented = true
             }
-        } catch {
-            // Update checks are advisory and must never block app usage.
+            .frame(maxWidth: Theme.Window.contentMaxWidth, alignment: .leading)
+            .padding(.horizontal, Theme.Spacing.outerPadding)
+            .padding(.vertical, Theme.Spacing.medium)
+            .frame(maxWidth: .infinity)
+            .background(Theme.Colors.surface)
         }
     }
 
-    @MainActor
-    private func reportBug(email: String, message: String) async {
-        guard !isReportingBug else { return }
+    private var footerStatusText: some View {
+        HStack(spacing: Theme.Spacing.small) {
+            Image(systemName: footerGuidance.icon)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(footerGuidance.color)
+                .accessibilityHidden(true)
 
-        let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedMessage.isEmpty else {
-            bugReportError = "Add a short description before sending the report."
-            return
+            Text(footerGuidance.message)
+                .font(Theme.Typography.body)
+                .foregroundStyle(Theme.Colors.textSecondary)
+                .lineLimit(2)
+        }
+    }
+
+    private var footerActionButtons: some View {
+        HStack(spacing: Theme.Spacing.small) {
+            if viewModel.isRunning {
+                Button(action: { viewModel.cancelWorkflow() }) {
+                    Label(
+                        viewModel.isCanceling ? "Stopping…" : "Stop Repair",
+                        systemImage: "stop.fill"
+                    )
+                }
+                .buttonStyle(ThemedButtonStyle(variant: .destructive))
+                .disabled(viewModel.isCanceling)
+            } else {
+                Button(action: { viewModel.dryRun() }) {
+                    Label("Preview Steps", systemImage: "eye")
+                }
+                .buttonStyle(ThemedButtonStyle(variant: .secondary))
+
+                Button(action: { viewModel.prepareAndPresentRepairPlan() }) {
+                    Label("Review & Run Repair…", systemImage: "play.fill")
+                }
+                .buttonStyle(ThemedButtonStyle(variant: .primary))
+                .disabled(!viewModel.canStartZoom)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+    }
+
+    private var footerGuidance: (message: String, icon: String, color: Color) {
+        if viewModel.isCanceling {
+            if viewModel.isExecutingPrivilegedStep {
+                return (
+                    "Waiting for the current administrator command to finish before stopping…",
+                    "lock.shield.fill",
+                    Theme.Colors.warning
+                )
+            }
+            return (
+                "Finishing the active step safely before stopping…",
+                "hand.raised.fill",
+                Theme.Colors.warning
+            )
         }
 
-        isReportingBug = true
-        bugReportError = nil
-        defer { isReportingBug = false }
-
-        vm.logMessage("=== Report a Bug ===")
-        let draft = await vm.makeBugReportDraft(appVersion: appVersion)
-        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        do {
-            try await BugReportService.sendBugReport(
-                title: draft.title,
-                email: trimmedEmail.isEmpty ? nil : trimmedEmail,
-                message: trimmedMessage,
-                systemInfo: draft.systemInfo,
-                diagnosticsFileName: draft.diagnosticsFileName,
-                diagnosticsData: draft.diagnosticsData
+        switch viewModel.workflowState {
+        case .preflight,
+            .closingZoom,
+            .spoofingMAC,
+            .checkingNetwork,
+            .backingUpState,
+            .clearingState,
+            .flushingDNS,
+            .stoppingUpdaters,
+            .checkingMediaAccess,
+            .launchingZoom:
+            let isPreview = viewModel.currentRunRecord?.title.localizedCaseInsensitiveContains("dry run") == true
+                || viewModel.currentRunRecord?.title.localizedCaseInsensitiveContains("preview") == true
+            return (
+                isPreview
+                    ? "Inspecting all 9 repair steps without modifying files, network state, or processes."
+                    : "Executing repair sequence. Steps 04 & 06 prompt for macOS administrator privileges.",
+                "bolt.horizontal.circle.fill",
+                Theme.Colors.primary
             )
-            vm.logMessage("Bug report submitted successfully.")
-            showBugReportForm = false
-            bugReportEmail = ""
-            bugReportMessage = ""
-        } catch {
-            let message = error.localizedDescription
-            bugReportError = message
-            vm.logMessage("Bug report failed: \(message)")
+        case .canceling:
+            return (
+                "Stopping repair safely…",
+                "hand.raised.fill",
+                Theme.Colors.warning
+            )
+        case .canceled:
+            return (
+                "Run stopped before completion. Unrun steps remain marked Not started.",
+                "stop.circle.fill",
+                Theme.Colors.warning
+            )
+        case .failed(let reason):
+            return (
+                "Stopped safely: \(reason)",
+                "xmark.circle.fill",
+                Theme.Colors.error
+            )
+        case .completed:
+            return (
+                "Sequence finished. You can inspect the activity log, export diagnostics, or run again.",
+                "checkmark.circle.fill",
+                Theme.Colors.success
+            )
+        case .idle:
+            if !viewModel.canStartZoom {
+                return (
+                    "Resolve the blocking preflight check above or run Preview Steps to inspect.",
+                    "exclamationmark.octagon.fill",
+                    Theme.Colors.error
+                )
+            }
+            return (
+                "Preview Steps runs a read-only check; Review & Run Repair shows the exact plan before changing anything.",
+                "shield.lefthalf.filled",
+                Theme.Colors.textSecondary
+            )
+        }
+    }
+
+    private func configureWindowAndCaptureIfRequested() {
+        let env = ProcessInfo.processInfo.environment
+        let sizeRaw = env["FIXER_WINDOW_SIZE"]
+        let screenshotPath = env["FIXER_SCREENSHOT_PATH"]
+        guard sizeRaw != nil || screenshotPath != nil else { return }
+
+        DispatchQueue.main.async {
+            if let window = NSApplication.shared.windows.first {
+                window.appearance = NSAppearance(named: .darkAqua)
+                if let sizeRaw {
+                    let parts = sizeRaw.lowercased().split(separator: "x")
+                    if parts.count == 2,
+                       let width = Double(parts[0]),
+                       let height = Double(parts[1]) {
+                        window.setContentSize(CGSize(width: width, height: height))
+                    }
+                }
+            }
+        }
+
+        if let screenshotPath, !screenshotPath.isEmpty {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) {
+                guard let window = NSApplication.shared.windows.first(where: { $0.attachedSheet != nil || $0.isVisible }) ?? NSApplication.shared.windows.first,
+                      let contentView = window.contentView else {
+                    NSApplication.shared.terminate(nil)
+                    return
+                }
+
+                contentView.layoutSubtreeIfNeeded()
+                let bounds = contentView.bounds
+                guard let baseRep = contentView.bitmapImageRepForCachingDisplay(in: bounds) else {
+                    NSApplication.shared.terminate(nil)
+                    return
+                }
+                contentView.cacheDisplay(in: bounds, to: baseRep)
+
+                let finalImage = NSImage(size: bounds.size)
+                finalImage.lockFocus()
+                baseRep.draw(in: bounds)
+
+                if let sheetWindow = window.attachedSheet,
+                   let sheetView = sheetWindow.contentView {
+                    sheetView.layoutSubtreeIfNeeded()
+                    let sheetBounds = sheetView.bounds
+                    if let sheetRep = sheetView.bitmapImageRepForCachingDisplay(in: sheetBounds) {
+                        sheetView.cacheDisplay(in: sheetBounds, to: sheetRep)
+                        NSColor.black.withAlphaComponent(0.45).setFill()
+                        bounds.fill(using: .sourceOver)
+                        let originX = max((bounds.width - sheetBounds.width) / 2, 0)
+                        let originY = max((bounds.height - sheetBounds.height) / 2, 0)
+                        let destRect = NSRect(
+                            x: originX,
+                            y: originY,
+                            width: sheetBounds.width,
+                            height: sheetBounds.height
+                        )
+                        sheetRep.draw(in: destRect)
+                    }
+                }
+
+                finalImage.unlockFocus()
+
+                if let tiffData = finalImage.tiffRepresentation,
+                   let outRep = NSBitmapImageRep(data: tiffData),
+                   let pngData = outRep.representation(using: .png, properties: [:]) {
+                    try? pngData.write(to: URL(fileURLWithPath: screenshotPath), options: .atomic)
+                }
+
+                fflush(nil)
+                _exit(0)
+            }
         }
     }
 }
+

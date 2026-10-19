@@ -1,9 +1,8 @@
 import Foundation
 import Testing
-import XCTest
 @testable import _132Fixer
 
-class MockURLProtocol: URLProtocol {
+final class MockURLProtocol: URLProtocol {
     static var requestHandler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
 
     override class func canInit(with request: URLRequest) -> Bool {
@@ -34,25 +33,18 @@ class MockURLProtocol: URLProtocol {
     }
 }
 
-final class UpdateCheckerTests: XCTestCase {
-
-    var session: URLSession!
-
-    override func setUp() {
-        super.setUp()
-
+@Suite("UpdateChecker network fetch", .serialized)
+struct UpdateCheckerTests {
+    private func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]
-        session = URLSession(configuration: configuration)
+        return URLSession(configuration: configuration)
     }
 
-    override func tearDown() {
-        session = nil
-        MockURLProtocol.requestHandler = nil
-        super.tearDown()
-    }
+    @Test func fetchLatestReleaseSuccess() async throws {
+        defer { MockURLProtocol.requestHandler = nil }
+        let session = makeSession()
 
-    func testFetchLatestRelease_Success() async throws {
         let jsonString = """
         {
             "tag_name": "v1.2.3",
@@ -65,19 +57,22 @@ final class UpdateCheckerTests: XCTestCase {
         let data = jsonString.data(using: .utf8)!
 
         MockURLProtocol.requestHandler = { request in
-            XCTAssertEqual(request.url, AppConfiguration.latestReleaseAPIURL)
+            #expect(request.url == AppConfiguration.latestReleaseAPIURL)
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
             return (response, data)
         }
 
         let releaseInfo = try await UpdateChecker.fetchLatestRelease(session: session)
 
-        XCTAssertEqual(releaseInfo.version, "1.2.3")
-        XCTAssertEqual(releaseInfo.htmlURL.absoluteString, "https://github.com/1132-Fixer/macos/releases/tag/v1.2.3")
-        XCTAssertEqual(releaseInfo.releaseNotes, "Test release notes")
+        #expect(releaseInfo.version == "1.2.3")
+        #expect(releaseInfo.htmlURL.absoluteString == "https://github.com/1132-Fixer/macos/releases/tag/v1.2.3")
+        #expect(releaseInfo.releaseNotes == "Test release notes")
     }
 
-    func testFetchLatestRelease_HTTPError() async {
+    @Test func fetchLatestReleaseHTTPError() async {
+        defer { MockURLProtocol.requestHandler = nil }
+        let session = makeSession()
+
         MockURLProtocol.requestHandler = { request in
             let response = HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!
             return (response, Data())
@@ -85,14 +80,17 @@ final class UpdateCheckerTests: XCTestCase {
 
         do {
             _ = try await UpdateChecker.fetchLatestRelease(session: session)
-            XCTFail("Expected fetchLatestRelease to throw an error")
+            Issue.record("Expected fetchLatestRelease to throw an error")
         } catch let error as NSError {
-            XCTAssertEqual(error.domain, UpdateChecker.errorDomain)
-            XCTAssertEqual(error.code, 404)
+            #expect(error.domain == UpdateChecker.errorDomain)
+            #expect(error.code == 404)
         }
     }
 
-    func testFetchLatestRelease_DraftRelease() async {
+    @Test func fetchLatestReleaseDraftRelease() async {
+        defer { MockURLProtocol.requestHandler = nil }
+        let session = makeSession()
+
         let jsonString = """
         {
             "tag_name": "v1.2.3",
@@ -111,14 +109,17 @@ final class UpdateCheckerTests: XCTestCase {
 
         do {
             _ = try await UpdateChecker.fetchLatestRelease(session: session)
-            XCTFail("Expected fetchLatestRelease to throw an error for draft release")
+            Issue.record("Expected fetchLatestRelease to throw an error for draft release")
         } catch let error as NSError {
-            XCTAssertEqual(error.domain, UpdateChecker.errorDomain)
-            XCTAssertEqual(error.code, 1)
+            #expect(error.domain == UpdateChecker.errorDomain)
+            #expect(error.code == 1)
         }
     }
 
-    func testFetchLatestRelease_PreRelease() async {
+    @Test func fetchLatestReleasePreRelease() async {
+        defer { MockURLProtocol.requestHandler = nil }
+        let session = makeSession()
+
         let jsonString = """
         {
             "tag_name": "v1.2.3-beta",
@@ -137,14 +138,17 @@ final class UpdateCheckerTests: XCTestCase {
 
         do {
             _ = try await UpdateChecker.fetchLatestRelease(session: session)
-            XCTFail("Expected fetchLatestRelease to throw an error for pre-release")
+            Issue.record("Expected fetchLatestRelease to throw an error for pre-release")
         } catch let error as NSError {
-            XCTAssertEqual(error.domain, UpdateChecker.errorDomain)
-            XCTAssertEqual(error.code, 1)
+            #expect(error.domain == UpdateChecker.errorDomain)
+            #expect(error.code == 1)
         }
     }
 
-    func testFetchLatestRelease_InvalidURL() async {
+    @Test func fetchLatestReleaseInvalidURL() async {
+        defer { MockURLProtocol.requestHandler = nil }
+        let session = makeSession()
+
         let jsonString = """
         {
             "tag_name": "v1.2.3",
@@ -163,14 +167,17 @@ final class UpdateCheckerTests: XCTestCase {
 
         do {
             _ = try await UpdateChecker.fetchLatestRelease(session: session)
-            XCTFail("Expected fetchLatestRelease to throw an error for invalid URL")
+            Issue.record("Expected fetchLatestRelease to throw an error for invalid URL")
         } catch let error as NSError {
-            XCTAssertEqual(error.domain, UpdateChecker.errorDomain)
-            XCTAssertEqual(error.code, 2)
+            #expect(error.domain == UpdateChecker.errorDomain)
+            #expect(error.code == 2)
         }
     }
 
-    func testFetchLatestRelease_LookalikeHostRejected() async {
+    @Test func fetchLatestReleaseLookalikeHostRejected() async {
+        defer { MockURLProtocol.requestHandler = nil }
+        let session = makeSession()
+
         let jsonString = """
         {
             "tag_name": "v9.9.9",
@@ -189,14 +196,17 @@ final class UpdateCheckerTests: XCTestCase {
 
         do {
             _ = try await UpdateChecker.fetchLatestRelease(session: session)
-            XCTFail("Expected fetchLatestRelease to reject a github.com lookalike host")
+            Issue.record("Expected fetchLatestRelease to reject a github.com lookalike host")
         } catch let error as NSError {
-            XCTAssertEqual(error.domain, UpdateChecker.errorDomain)
-            XCTAssertEqual(error.code, 2)
+            #expect(error.domain == UpdateChecker.errorDomain)
+            #expect(error.code == 2)
         }
     }
 
-    func testFetchLatestRelease_InvalidJSON() async {
+    @Test func fetchLatestReleaseInvalidJSON() async {
+        defer { MockURLProtocol.requestHandler = nil }
+        let session = makeSession()
+
         let jsonString = """
         {
             "tag_name": "v1.2.3",
@@ -211,10 +221,9 @@ final class UpdateCheckerTests: XCTestCase {
 
         do {
             _ = try await UpdateChecker.fetchLatestRelease(session: session)
-            XCTFail("Expected fetchLatestRelease to throw a decoding error")
+            Issue.record("Expected fetchLatestRelease to throw a decoding error")
         } catch {
-            // Decoding error is expected
-            XCTAssertTrue(error is DecodingError)
+            #expect(error is DecodingError)
         }
     }
 }

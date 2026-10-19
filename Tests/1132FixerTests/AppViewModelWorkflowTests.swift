@@ -59,7 +59,7 @@ struct AppViewModelWorkflowTests {
         let commands = await executor.recordedCommands()
         #expect(!commands.contains { $0.contains(".incomplete.XXXXXX") })
         #expect(!commands.contains { $0.contains("__1132_RESET_STATUS__") })
-        #expect(viewModel.workflowProgress?.steps.first { $0.id == "backup" }?.state == .skipped)
+        #expect(viewModel.workflowProgress?.steps.first { $0.id == "backup" }?.state == .unstarted)
     }
 
     @Test
