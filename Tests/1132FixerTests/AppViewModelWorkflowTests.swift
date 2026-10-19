@@ -84,13 +84,13 @@ struct AppViewModelWorkflowTests {
     @MainActor
     func resetPreventsObsoleteZoomLocationVerificationFromApplying() async throws {
         let path = "/Applications/First/zoom.us.app"
-        let verifier = DeferredZoomVerifier(controlledPaths: [path])
+        let verifier = DelayedZoomVerifier(delays: [path: 50_000_000])
         let viewModel = makeLocationViewModel(verifier: verifier)
 
         viewModel.verifyAndSelectZoomLocation(path)
         try await waitForVerification(path, toStartIn: verifier)
         viewModel.resetZoomLocation()
-        await verifier.complete(path)
+        try await waitForVerification(path, toCompleteIn: verifier)
         await settleAsyncWork()
 
         #expect(viewModel.customZoomAppPath == nil)
@@ -102,7 +102,10 @@ struct AppViewModelWorkflowTests {
     func newerZoomLocationSelectionWinsWhenOlderVerificationFinishesLast() async throws {
         let first = "/Applications/First/zoom.us.app"
         let second = "/Applications/Second/zoom.us.app"
-        let verifier = DeferredZoomVerifier(controlledPaths: [first, second])
+        let verifier = DelayedZoomVerifier(delays: [
+            first: 100_000_000,
+            second: 10_000_000,
+        ])
         let viewModel = makeLocationViewModel(verifier: verifier)
 
         viewModel.verifyAndSelectZoomLocation(first)
@@ -110,9 +113,8 @@ struct AppViewModelWorkflowTests {
         viewModel.verifyAndSelectZoomLocation(second)
         try await waitForVerification(second, toStartIn: verifier)
 
-        await verifier.complete(second)
         try await waitForSelectedLocation(second, in: viewModel)
-        await verifier.complete(first)
+        try await waitForVerification(first, toCompleteIn: verifier)
         await settleAsyncWork()
 
         #expect(viewModel.customZoomAppPath == second)
@@ -139,7 +141,7 @@ struct AppViewModelWorkflowTests {
     }
 
     @MainActor
-    private func makeLocationViewModel(verifier: DeferredZoomVerifier) -> AppViewModel {
+    private func makeLocationViewModel(verifier: DelayedZoomVerifier) -> AppViewModel {
         AppViewModel(
             processExecutor: WorkflowProcessFake(),
             zoomVerifier: { await verifier.verify($0) },
@@ -171,7 +173,7 @@ struct AppViewModelWorkflowTests {
 
     private func waitForVerification(
         _ path: String,
-        toStartIn verifier: DeferredZoomVerifier,
+        toStartIn verifier: DelayedZoomVerifier,
         attempts: Int = 500
     ) async throws {
         for _ in 0..<attempts {
@@ -179,6 +181,18 @@ struct AppViewModelWorkflowTests {
             try await Task.sleep(nanoseconds: 1_000_000)
         }
         Issue.record("Timed out waiting for Zoom verification of \(path)")
+    }
+
+    private func waitForVerification(
+        _ path: String,
+        toCompleteIn verifier: DelayedZoomVerifier,
+        attempts: Int = 500
+    ) async throws {
+        for _ in 0..<attempts {
+            if await verifier.hasCompleted(path) { return }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        Issue.record("Timed out waiting for Zoom verification to complete for \(path)")
     }
 
     @MainActor
@@ -201,30 +215,35 @@ struct AppViewModelWorkflowTests {
     }
 }
 
-private actor DeferredZoomVerifier {
-    private let controlledPaths: Set<String>
+private actor DelayedZoomVerifier {
+    private let delays: [String: UInt64]
     private var startedPaths: Set<String> = []
-    private var continuations: [String: CheckedContinuation<ZoomBundleVerifier.VerifiedBundle, Never>] = [:]
+    private var completedPaths: Set<String> = []
 
-    init(controlledPaths: Set<String>) {
-        self.controlledPaths = controlledPaths
+    init(delays: [String: UInt64]) {
+        self.delays = delays
     }
 
     func verify(_ path: String) async -> ZoomBundleVerifier.VerifiedBundle {
         startedPaths.insert(path)
-        guard controlledPaths.contains(path) else { return verifiedBundle(for: path) }
-
-        return await withCheckedContinuation { continuation in
-            continuations[path] = continuation
+        if let delay = delays[path] {
+            // Detached delay deliberately ignores cancellation so the production
+            // generation guard is exercised when an obsolete verifier returns late.
+            let delayTask = Task.detached {
+                try? await Task.sleep(nanoseconds: delay)
+            }
+            await delayTask.value
         }
+        completedPaths.insert(path)
+        return verifiedBundle(for: path)
     }
 
     func hasStarted(_ path: String) -> Bool {
         startedPaths.contains(path)
     }
 
-    func complete(_ path: String) {
-        continuations.removeValue(forKey: path)?.resume(returning: verifiedBundle(for: path))
+    func hasCompleted(_ path: String) -> Bool {
+        completedPaths.contains(path)
     }
 
     private func verifiedBundle(for path: String) -> ZoomBundleVerifier.VerifiedBundle {
