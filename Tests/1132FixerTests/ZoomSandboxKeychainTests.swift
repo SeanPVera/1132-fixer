@@ -32,10 +32,16 @@ struct ZoomSandboxKeychainTests {
         try ShellCommands.makeZoomSandboxProfile(homeDirectory: NSHomeDirectory())
             .write(to: keychainProfileURL, atomically: true, encoding: .utf8)
 
-        // Keep the destructive/private-data assertions isolated in a synthetic
-        // home so the test never creates files in the developer's actual account.
+        // Keep the destructive/private-data assertions in a unique cache subtree
+        // under the real home. This exercises the profile's `/Users` deny/allow
+        // ordering without touching any real private data or persistence files.
+        let restrictionHome = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+            .appendingPathComponent("Library/Caches/1132FixerSandboxTests-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: restrictionHome, withIntermediateDirectories: true,
+                                        attributes: [.posixPermissions: 0o700])
+        defer { try? fileManager.removeItem(at: restrictionHome) }
         let restrictionProfileURL = fixture.appendingPathComponent("zoom-restrictions.sb")
-        try ShellCommands.makeZoomSandboxProfile(homeDirectory: fixture.path)
+        try ShellCommands.makeZoomSandboxProfile(homeDirectory: restrictionHome.path)
             .write(to: restrictionProfileURL, atomically: true, encoding: .utf8)
         let keychainProbe = try await buildKeychainProbe(in: fixture)
         let probePhaseURL = keychainDirectory.appendingPathComponent("probe-phase")
@@ -75,7 +81,7 @@ struct ZoomSandboxKeychainTests {
 
         // The keychain compatibility fix must preserve the other private-data
         // and persistence restrictions in the same generated profile.
-        let sshDirectory = fixture.appendingPathComponent(".ssh", isDirectory: true)
+        let sshDirectory = restrictionHome.appendingPathComponent(".ssh", isDirectory: true)
         try fileManager.createDirectory(at: sshDirectory, withIntermediateDirectories: true)
         let sshKey = sshDirectory.appendingPathComponent("test-key")
         try Data("private-test-data".utf8).write(to: sshKey)
@@ -86,7 +92,7 @@ struct ZoomSandboxKeychainTests {
         )
         #expect(sshRead.status != 0, "Sandbox allowed reading private SSH data")
 
-        let agentsDirectory = fixture.appendingPathComponent("Library/LaunchAgents", isDirectory: true)
+        let agentsDirectory = restrictionHome.appendingPathComponent("Library/LaunchAgents", isDirectory: true)
         try fileManager.createDirectory(at: agentsDirectory, withIntermediateDirectories: true)
         let agent = agentsDirectory.appendingPathComponent("test-agent.plist")
         let agentWrite = try await runSandboxed(
