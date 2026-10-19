@@ -42,8 +42,15 @@ The profile therefore denies specific things rather than permitting specific
 things. It closes the channels that expose stable hardware identity (IOKit
 platform properties, the unique `sysctl` identifiers, the command-line tools that
 report them, and the plists recording network identity), and it blocks the
-sandboxed session from reading private user data such as SSH keys, keychains,
-browser profiles, and other accounts' home directories.
+sandboxed session from reading private user data such as SSH keys, browser
+profiles, and other accounts' home directories.
+
+The user's keychain files remain accessible because macOS's Security framework
+reads the database and writes lock/temporary files from the client process.
+Blocking these files prevents Zoom from using the login keychain at startup.
+Keychain item access still follows macOS unlock requirements and access controls;
+the repair does not delete, reset, or unlock keychains. System keychains remain
+readable for Keychain and trust operations, but direct writes to them are denied.
 
 Anything not named in the profile is still allowed. Treat it as identity and
 privacy containment for the Zoom session, not as a general confinement boundary
