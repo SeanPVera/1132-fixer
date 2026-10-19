@@ -19,6 +19,9 @@ struct ZoomSandboxKeychainTests {
         // operations below name it explicitly, leaving the real login keychain alone.
         let keychainURL = keychainDirectory.appendingPathComponent("sandbox-test.keychain")
         let password = UUID().uuidString
+        let security = "/usr/bin/security"
+        let account = "sandbox-test"
+        let service = "1132FixerSandboxTest"
         var keychain: SecKeychain?
         let status = password.withCString {
             SecKeychainCreate(keychainURL.path, UInt32(password.utf8.count), $0, false, nil, &keychain)
@@ -32,25 +35,41 @@ struct ZoomSandboxKeychainTests {
         }
         try #require(unlockStatus == errSecSuccess, "Could not unlock test keychain: \(unlockStatus)")
 
+        var trustedApplication: SecTrustedApplication?
+        let trustedStatus = SecTrustedApplicationCreateFromPath(security, &trustedApplication)
+        try #require(trustedStatus == errSecSuccess, "Could not trust security tool: \(trustedStatus)")
+        let trustedSecurity = try #require(trustedApplication)
+
+        var access: SecAccess?
+        let accessStatus = SecAccessCreate(
+            "1132 Fixer sandbox fixture" as CFString,
+            [trustedSecurity] as CFArray,
+            &access
+        )
+        try #require(accessStatus == errSecSuccess, "Could not create test item access: \(accessStatus)")
+        let fixtureAccess = try #require(access)
+
+        let addQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: account,
+            kSecAttrService as String: service,
+            kSecAttrAccess as String: fixtureAccess,
+            kSecValueData as String: Data("initial-value".utf8),
+            kSecUseKeychain as String: createdKeychain,
+        ]
+        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        try #require(addStatus == errSecSuccess, "Could not create test item: \(addStatus)")
+
         let profileURL = fixture.appendingPathComponent("zoom.sb")
         try ShellCommands.makeZoomSandboxProfile(homeDirectory: fixture.path)
             .write(to: profileURL, atomically: true, encoding: .utf8)
 
-        let security = "/usr/bin/security"
-        let account = "sandbox-test"
-        let service = "1132FixerSandboxTest"
         func writeArguments(_ value: String) -> [String] {
             ["add-generic-password", "-U", "-a", account, "-s", service,
-             "-w", value, "-A", keychainURL.path]
+             "-w", value, keychainURL.path]
         }
         let readArguments = ["find-generic-password", "-a", account, "-s", service,
                              "-w", keychainURL.path]
-
-        // The fixture validates sandbox file and securityd access, not item ACLs.
-        // Allow access to this private, disposable item so a headless test runner
-        // never waits for a Keychain approval dialog.
-        let setup = try await runCommand(security, arguments: writeArguments("initial-value"))
-        try #require(setup.status == 0, "Test item setup failed: \(setup.output)")
 
         func runSandboxed(_ executable: String, arguments: [String]) async throws -> CommandResult {
             try await runCommand(
