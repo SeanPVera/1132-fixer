@@ -13,7 +13,8 @@ struct Fixer1132App: App {
     }
 
     private static var requestedWindowSize: CGSize {
-        if let raw = ProcessInfo.processInfo.environment["FIXER_WINDOW_SIZE"] {
+        if AppConfiguration.allowsDebugEnvironmentOverrides,
+           let raw = ProcessInfo.processInfo.environment["FIXER_WINDOW_SIZE"] {
             let parts = raw.lowercased().split(separator: "x")
             if parts.count == 2,
                let width = Double(parts[0]),
@@ -36,14 +37,10 @@ struct Fixer1132App: App {
         .commands {
             CommandGroup(replacing: .help) {
                 Button("1132 Fixer Website") {
-                    if let url = URL(string: "https://1132-fixer.xyz") {
-                        NSWorkspace.shared.open(url)
-                    }
+                    NSWorkspace.shared.open(AppConfiguration.websiteURL)
                 }
                 Button("GitHub Repository") {
-                    if let url = URL(string: "https://github.com/PrimeUpYourLife/1132-fixer") {
-                        NSWorkspace.shared.open(url)
-                    }
+                    NSWorkspace.shared.open(AppConfiguration.repositoryURL)
                 }
             }
         }

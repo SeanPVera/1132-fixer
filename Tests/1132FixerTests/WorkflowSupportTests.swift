@@ -417,6 +417,55 @@ struct WorkflowExecutionSemanticsTests {
         #expect(record.steps.first(where: { $0.id == "backup" })?.outcome == AppViewModel.StepResult.Outcome.skipped)
         #expect(record.steps.first(where: { $0.id == "launch" })?.outcome == AppViewModel.StepResult.Outcome.skipped)
     }
+
+    @Test func unverifiedOnDiskBackupPathAbortsBeforeResetZoomData() async throws {
+        let fileManager = FileManager.default
+        let tempHome = fileManager.temporaryDirectory
+            .appendingPathComponent("1132-on-disk-backup-check-\(UUID().uuidString)")
+        try fileManager.createDirectory(at: tempHome, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: tempHome) }
+
+        let commandLog = LockedArray<String>()
+        let runner: AppViewModel.ProcessExecutor = { stepName, _, _, _ in
+            commandLog.append(stepName)
+            if stepName == "Backup Zoom state" {
+                // Return a non-existent snapshot path to simulate a pruned or unverified directory.
+                return tempHome
+                    .appendingPathComponent("Library/Application Support/1132Fixer/Backups/snapshot-missing")
+                    .path
+            }
+            return "ok"
+        }
+        let verifier: AppViewModel.BundleVerifier = { _ in
+            ZoomBundleVerifier.VerifiedBundle(
+                appPath: "/Applications/zoom.us.app",
+                binaryPath: "/Applications/zoom.us.app/Contents/MacOS/zoom.us"
+            )
+        }
+
+        let viewModel = AppViewModel(
+            initialDiskBackupPath: nil,
+            homeDirectoryProvider: { tempHome.path }
+        )
+        viewModel.processExecutorOverride = runner
+        viewModel.bundleVerifierOverride = verifier
+        viewModel.requireOnDiskBackupVerification = true
+        viewModel.preflight = Self.makeReadyPreflight()
+
+        viewModel.startZoom()
+        while viewModel.isRunning {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        #expect(commandLog.values == [
+            "Validate Zoom sandbox profile",
+            "Close Zoom",
+            "Backup Zoom state",
+        ])
+        #expect(!commandLog.values.contains("Reset Zoom data"))
+        #expect(viewModel.currentRunBackupPath == nil)
+        #expect(viewModel.currentRunRecord?.outcome == .failed)
+    }
 }
 
 @Suite("Activity log cap and monotonic sequence")

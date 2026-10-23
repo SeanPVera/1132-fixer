@@ -917,4 +917,163 @@ struct ShellCommandsTests {
         #expect(!arch.isEmpty)
         #expect(arch == "arm64" || arch == "x86_64")
     }
+
+    // MARK: - Security Audit Regressions (WP-1 through WP-4)
+
+    @Test func appConfigurationMetadataPointsToForkAndGatesDebugEnvironment() {
+        #expect(AppConfiguration.repositoryURL.absoluteString == "https://github.com/1132-Fixer/macos")
+        #expect(AppConfiguration.websiteURL.absoluteString == "https://1132-fixer.xyz")
+        #expect(!AppConfiguration.repositoryURL.absoluteString.contains("PrimeUpYourLife"))
+        #if DEBUG
+        #expect(AppConfiguration.allowsDebugEnvironmentOverrides == true)
+        #else
+        #expect(AppConfiguration.allowsDebugEnvironmentOverrides == false)
+        #endif
+    }
+
+    @Test func timeBoundedCommandTriggersRecoveryTrapInSubshellOnTimeout() throws {
+        let fileManager = FileManager.default
+        let markerURL = fileManager.temporaryDirectory
+            .appendingPathComponent("1132-watchdog-recovery-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: markerURL) }
+
+        let subshellBody = """
+        (
+          __1132_step_pid=""
+          run_step() { "$@" & __1132_step_pid=$!; wait "$__1132_step_pid"; }
+          restore_network() {
+            [ -n "${__1132_step_pid:-}" ] && /bin/kill -TERM "$__1132_step_pid" 2>/dev/null || true
+            echo "restored" > \(ShellCommands.shellSingleQuote(markerURL.path))
+          }
+          trap restore_network EXIT
+          trap 'exit 1' HUP INT TERM
+          run_step /bin/sleep 10
+          trap - EXIT HUP INT TERM
+        ) &
+        __1132_subshell_pid=$!
+        wait "$__1132_subshell_pid"
+        """
+        let bounded = ShellCommands.makeTimeBoundedCommand(subshellBody, seconds: 1)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-c", bounded]
+        try process.run()
+        process.waitUntilExit()
+
+        let markerContent = (try? String(contentsOf: markerURL, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(markerContent == "restored")
+        #expect(process.terminationStatus != 0)
+    }
+
+    @Test func backupCommandPreservesNewestSnapshotEvenWhenFutureDatedSnapshotExists() throws {
+        let fileManager = FileManager.default
+        let testRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("1132-future-prune-\(UUID().uuidString)")
+        let home = testRoot.appendingPathComponent("home")
+        let zoomData = home.appendingPathComponent("Library/Application Support/zoom.us")
+        let backupRoot = home.appendingPathComponent("Library/Application Support/1132Fixer/Backups")
+        let futureSnapshot = backupRoot.appendingPathComponent("snapshot-2099-01-01T00-00-00Z-future")
+        try fileManager.createDirectory(at: zoomData, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: futureSnapshot, withIntermediateDirectories: true)
+        try Data("active-session".utf8).write(to: zoomData.appendingPathComponent("session.db"))
+        try Data("future".utf8).write(to: futureSnapshot.appendingPathComponent(".1132fixer-backup"))
+        try fileManager.setAttributes(
+            [.modificationDate: Date.distantFuture],
+            ofItemAtPath: futureSnapshot.path
+        )
+        defer { try? fileManager.removeItem(at: testRoot) }
+
+        let process = Process()
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [
+            "-c",
+            ShellCommands.makeBackupZoomDataCommand(
+                homeDirectory: home.path,
+                retainedBackupCount: 1,
+                retainedBackupMegabytes: 2_048
+            )
+        ]
+        process.standardOutput = stdout
+        process.standardError = stderr
+        try process.run()
+        let output = stdout.fileHandleForReading.readDataToEndOfFile()
+        let error = stderr.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        let errorText = String(decoding: error, as: UTF8.self)
+        #expect(process.terminationStatus == 0, "Backup command failed: \(errorText)")
+        let backupPath = String(decoding: output, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let backupURL = URL(fileURLWithPath: backupPath, isDirectory: true)
+        #expect(BackupStore.isManagedBackupURL(backupURL, rootURL: backupRoot))
+        #expect(fileManager.fileExists(atPath: backupPath + "/zoom.us/session.db"))
+    }
+
+    @Test func backupAndResetCommandsRefuseSymlinkedLibraryParents() throws {
+        let fileManager = FileManager.default
+        let testRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("1132-symlink-guard-\(UUID().uuidString)")
+        let home = testRoot.appendingPathComponent("home")
+        let library = home.appendingPathComponent("Library")
+        let outsideTarget = testRoot.appendingPathComponent("outside-caches")
+        let outsideZoomCache = outsideTarget.appendingPathComponent("us.zoom.xos")
+        try fileManager.createDirectory(at: library, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: outsideZoomCache, withIntermediateDirectories: true)
+        let sentinel = outsideZoomCache.appendingPathComponent("keep.txt")
+        try Data("must-not-delete".utf8).write(to: sentinel)
+        try fileManager.createSymbolicLink(
+            at: library.appendingPathComponent("Caches"),
+            withDestinationURL: outsideTarget
+        )
+        defer { try? fileManager.removeItem(at: testRoot) }
+
+        let resetProcess = Process()
+        resetProcess.executableURL = URL(fileURLWithPath: "/bin/bash")
+        resetProcess.arguments = ["-c", ShellCommands.makeResetZoomDataCommand(homeDirectory: home.path)]
+        try resetProcess.run()
+        resetProcess.waitUntilExit()
+        #expect(resetProcess.terminationStatus != 0)
+        #expect(fileManager.fileExists(atPath: sentinel.path))
+
+        let backupProcess = Process()
+        backupProcess.executableURL = URL(fileURLWithPath: "/bin/bash")
+        backupProcess.arguments = ["-c", ShellCommands.makeBackupZoomDataCommand(homeDirectory: home.path)]
+        try backupProcess.run()
+        backupProcess.waitUntilExit()
+        #expect(backupProcess.terminationStatus != 0)
+    }
+
+    @Test func launchCommandReverifiesCodesignAfterStoppingZoomAndBeforeSandboxExec() {
+        let cmd = ShellCommands.makeLaunchZoomCommand(zoomBinaryExists: true)
+        guard
+            let stopRange = cmd.range(of: "\nstop_zoom_processes\n"),
+            let codesignRange = cmd.range(of: #"/usr/bin/codesign --verify --strict -R='anchor apple generic and certificate leaf[subject.OU] = "BJ4HAAB9B3"' "$zoom_app""#),
+            let execRange = cmd.range(of: #"/usr/bin/sandbox-exec -f "$profile_path" "$zoom_binary""#)
+        else {
+            Issue.record("Launch command is missing stop_zoom_processes, codesign re-verification, or sandbox-exec invocation")
+            return
+        }
+        #expect(stopRange.lowerBound < codesignRange.lowerBound)
+        #expect(codesignRange.lowerBound < execRange.lowerBound)
+    }
+
+    @Test func zoomSandboxProfileBlocksShellDotfilePersistenceAndCookiesAndTraversalHomes() {
+        #expect(ShellCommands.normalizedSandboxHome("/Users/alice/..") == nil)
+        #expect(ShellCommands.normalizedSandboxHome("/Users/alice/../bob") == nil)
+
+        let profile = ShellCommands.makeZoomSandboxProfile(homeDirectory: "/Users/alice")
+        #expect(profile.contains(#"(subpath "/Users/alice/Library/Cookies")"#))
+        #expect(profile.contains(#"(subpath "/Users/alice/.config")"#))
+        #expect(profile.contains(#"(subpath "/Users/alice/Applications")"#))
+        #expect(profile.contains(#"(literal "/Users/alice/.zshrc")"#))
+        #expect(profile.contains(#"(literal "/Users/alice/.zprofile")"#))
+        #expect(profile.contains(#"(literal "/Users/alice/.zshenv")"#))
+        #expect(profile.contains(#"(literal "/Users/alice/.bashrc")"#))
+        #expect(profile.contains(#"(literal "/Users/alice/.bash_profile")"#))
+        #expect(profile.contains(#"(literal "/Users/alice/.gitconfig")"#))
+    }
 }

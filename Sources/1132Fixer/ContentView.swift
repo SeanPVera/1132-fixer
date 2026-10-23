@@ -4,7 +4,7 @@ import AppKit
 
 struct ContentView: View {
     @ObservedObject var viewModel: AppViewModel
-    private let appVersion = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.8.2"
+    private let appVersion = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.8.3"
 
     init(viewModel: AppViewModel) {
         self.viewModel = viewModel
@@ -94,7 +94,8 @@ struct ContentView: View {
         )
         .preferredColorScheme(.dark)
         .onAppear {
-            if ProcessInfo.processInfo.environment["FIXER_UI_FIXTURE"] != nil {
+            if AppConfiguration.allowsDebugEnvironmentOverrides,
+               ProcessInfo.processInfo.environment["FIXER_UI_FIXTURE"] != nil {
                 viewModel.applyUIFixtureIfRequested(appVersion: appVersion)
             } else {
                 viewModel.runPreflight()
@@ -102,7 +103,8 @@ struct ContentView: View {
             configureWindowAndCaptureIfRequested()
         }
         .task {
-            if ProcessInfo.processInfo.environment["FIXER_UI_FIXTURE"] == nil {
+            if !AppConfiguration.allowsDebugEnvironmentOverrides ||
+               ProcessInfo.processInfo.environment["FIXER_UI_FIXTURE"] == nil {
                 await viewModel.checkForUpdates(appVersion: appVersion)
             }
         }
@@ -324,6 +326,7 @@ struct ContentView: View {
     }
 
     private func configureWindowAndCaptureIfRequested() {
+        guard AppConfiguration.allowsDebugEnvironmentOverrides else { return }
         let env = ProcessInfo.processInfo.environment
         let sizeRaw = env["FIXER_WINDOW_SIZE"]
         let screenshotPath = env["FIXER_SCREENSHOT_PATH"]

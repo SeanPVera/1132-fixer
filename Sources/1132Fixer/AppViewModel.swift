@@ -237,6 +237,7 @@ final class AppViewModel: ObservableObject {
     var bundleVerifierOverride: BundleVerifier?
     var availableBackupCapacityBytesOverride: (() -> Int64?)?
     var skipBringAppToFront = false
+    var requireOnDiskBackupVerification = false
 
     private var runningTask: Task<Void, Never>?
     private var preflightTask: Task<Void, Never>?
@@ -386,7 +387,7 @@ final class AppViewModel: ObservableObject {
     func checkForUpdates(appVersion: String) async {
         guard appVersion != "dev",
               latestRelease == nil,
-              ProcessInfo.processInfo.environment["FIXER_UI_FIXTURE"] == nil else {
+              !(AppConfiguration.allowsDebugEnvironmentOverrides && ProcessInfo.processInfo.environment["FIXER_UI_FIXTURE"] != nil) else {
             return
         }
 
@@ -572,6 +573,13 @@ final class AppViewModel: ObservableObject {
                     let backupPath = output.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !backupPath.isEmpty else {
                         throw self.appError("Backup completed without returning a recovery location.")
+                    }
+                    if self.requireOnDiskBackupVerification || (self.processExecutorOverride == nil && self.processExecutor is BoundedProcessExecutor) {
+                        let backupURL = URL(fileURLWithPath: backupPath, isDirectory: true)
+                        let expectedRootURL = BackupStore.rootURL(forHomeDirectory: homeDirectory)
+                        guard BackupStore.isManagedBackupURL(backupURL, rootURL: expectedRootURL) else {
+                            throw self.appError("Backup verification failed: '\(backupPath)' is not a valid recovery snapshot on disk.")
+                        }
                     }
                     runCreatedBackup = backupPath
                     self.currentRunBackupPath = backupPath
@@ -2285,14 +2293,15 @@ If your network connection is disrupted after this step:
     // MARK: - Deterministic UI Fixture Support (Validation & Screenshots)
 
     func applyUIFixtureIfRequested(appVersion: String) {
-        guard let fixtureName = ProcessInfo.processInfo.environment["FIXER_UI_FIXTURE"],
+        guard AppConfiguration.allowsDebugEnvironmentOverrides,
+              let fixtureName = ProcessInfo.processInfo.environment["FIXER_UI_FIXTURE"],
               !fixtureName.isEmpty else {
             return
         }
         applyUIFixture(named: fixtureName, appVersion: appVersion)
     }
 
-    func applyUIFixture(named fixtureName: String, appVersion: String = "1.8.2") {
+    func applyUIFixture(named fixtureName: String, appVersion: String = "1.8.3") {
         preflightTask?.cancel()
         activePreflightID = UUID()
 
