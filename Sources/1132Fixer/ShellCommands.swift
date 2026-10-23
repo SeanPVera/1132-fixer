@@ -97,9 +97,18 @@ enum ShellCommands {
     static func makeTimeBoundedCommand(_ command: String, seconds: Int) -> String {
         let limit = max(seconds, 1)
         return """
-        ( /bin/sleep \(limit); /bin/kill -TERM $$ ) >/dev/null 2>&1 &
+        ( trap '/bin/kill "$__1132_timer" 2>/dev/null; exit 0' TERM; { exec /bin/sleep \(limit); } & __1132_timer=$!; wait "$__1132_timer" && /bin/kill -TERM $$ ) >/dev/null 2>&1 &
         __1132_watchdog=$!
-        trap '/usr/bin/pkill -P "$__1132_watchdog" 2>/dev/null; /bin/kill "$__1132_watchdog" 2>/dev/null' EXIT
+        __1132_cleanup_watchdog() {
+          if [ -n "${__1132_subshell_pid:-}" ]; then
+            /bin/kill -TERM "$__1132_subshell_pid" 2>/dev/null || true
+            wait "$__1132_subshell_pid" 2>/dev/null || true
+          fi
+          /usr/bin/pkill -P "$__1132_watchdog" 2>/dev/null
+          /bin/kill "$__1132_watchdog" 2>/dev/null
+        }
+        trap '/usr/bin/pkill -P "$__1132_watchdog" 2>/dev/null; /bin/kill "$__1132_watchdog" 2>/dev/null; __1132_cleanup_watchdog' EXIT
+        trap 'exit 143' HUP INT TERM
         \(command)
         """
     }
@@ -237,12 +246,24 @@ enum ShellCommands {
           echo "Reset Zoom data: home directory resolves to the filesystem root; refusing to delete anything." >&2
           exit 1
         fi
+        for parent_dir in \
+          "$home_physical/Library" \
+          "$home_physical/Library/Application Support" \
+          "$home_physical/Library/Caches" \
+          "$home_physical/Library/Preferences" \
+          "$home_physical/Library/Logs" \
+          "$home_physical/Library/Saved Application State"; do
+          if [ -L "$parent_dir" ]; then
+            echo "Reset Zoom data: refusing to traverse symbolic link at '$parent_dir'." >&2
+            exit 1
+          fi
+        done
 
-        zoom_data="$home/Library/Application Support/zoom.us"
-        zoom_cache="$home/Library/Caches/us.zoom.xos"
-        zoom_prefs="$home/Library/Preferences/us.zoom.xos.plist"
-        zoom_logs="$home/Library/Logs/zoom.us.log"
-        zoom_saved_state="$home/Library/Saved Application State/us.zoom.xos.savedState"
+        zoom_data="$home_physical/Library/Application Support/zoom.us"
+        zoom_cache="$home_physical/Library/Caches/us.zoom.xos"
+        zoom_prefs="$home_physical/Library/Preferences/us.zoom.xos.plist"
+        zoom_logs="$home_physical/Library/Logs/zoom.us.log"
+        zoom_saved_state="$home_physical/Library/Saved Application State/us.zoom.xos.savedState"
 
         /bin/rm -rf "$zoom_data" "$zoom_cache" "$zoom_prefs" "$zoom_saved_state"
         /bin/rm -f "$zoom_logs"*
@@ -299,8 +320,19 @@ enum ShellCommands {
           echo "Backup Zoom data: home directory resolves to the filesystem root; refusing to continue." >&2
           exit 1
         fi
+        for parent_dir in \
+          "$home_physical/Library" \
+          "$home_physical/Library/Application Support" \
+          "$home_physical/Library/Caches" \
+          "$home_physical/Library/Preferences" \
+          "$home_physical/Library/Saved Application State"; do
+          if [ -L "$parent_dir" ]; then
+            printf 'Backup Zoom data: refusing to traverse symbolic link at %s\n' "$parent_dir" >&2
+            exit 1
+          fi
+        done
 
-        backup_root="$home/Library/Application Support/1132Fixer/Backups"
+        backup_root="$home_physical/Library/Application Support/1132Fixer/Backups"
         if ! /bin/mkdir -p "$backup_root" || ! /bin/chmod 700 "$backup_root"; then
           printf 'Could not create the private backup folder at %s\\n' "$backup_root" >&2
           exit 1
@@ -328,10 +360,10 @@ enum ShellCommands {
         backup_started="$(/bin/date +%s)"
         backup_failed=0
         for src in \
-          "$home/Library/Application Support/zoom.us" \
-          "$home/Library/Caches/us.zoom.xos" \
-          "$home/Library/Preferences/us.zoom.xos.plist" \
-          "$home/Library/Saved Application State/us.zoom.xos.savedState"; do
+          "$home_physical/Library/Application Support/zoom.us" \
+          "$home_physical/Library/Caches/us.zoom.xos" \
+          "$home_physical/Library/Preferences/us.zoom.xos.plist" \
+          "$home_physical/Library/Saved Application State/us.zoom.xos.savedState"; do
           [ -e "$src" ] || continue
           if ! /bin/cp -a "$src" "$staging_dir/" 2>/dev/null; then
             printf 'Could not back up %s\\n' "$src" >&2
@@ -352,7 +384,8 @@ enum ShellCommands {
         # Publish only a fully copied snapshot. The rename is atomic because staging and
         # final directories live under the same backup root.
         unique_suffix="${staging_dir##*.incomplete.}"
-        backup_dir="$backup_root/snapshot-\(timestamp)-$unique_suffix"
+        current_snapshot="snapshot-\(timestamp)-$unique_suffix"
+        backup_dir="$backup_root/$current_snapshot"
         /bin/mv "$staging_dir" "$backup_dir" || exit 1
         backup_complete=1
         staging_dir=""
@@ -363,13 +396,19 @@ enum ShellCommands {
         # timestamp-only directories written by releases before 1.8.
         (
           cd "$backup_root" || exit 0
-          snapshot_index=0
-          total_kb=0
+          snapshot_index=1
+          current_kb="$(/usr/bin/du -sk "$current_snapshot" 2>/dev/null | /usr/bin/awk '{print $1}')"
+          case "$current_kb" in
+            ''|*[!0-9]*) current_kb=0 ;;
+          esac
+          total_kb="$current_kb"
           { /bin/ls -1dt snapshot-* 20??-* 2>/dev/null || true; } | while IFS= read -r stale; do
+            [ "$stale" = "$current_snapshot" ] && continue
             case "$stale" in
               snapshot-*|20??-*) ;;
               *) continue ;;
             esac
+            [ ! -L "$stale" ] || continue
             [ -d "$stale" ] || continue
             snapshot_index=$((snapshot_index + 1))
             size_kb="$(/usr/bin/du -sk "$stale" 2>/dev/null | /usr/bin/awk '{print $1}')"
@@ -382,6 +421,11 @@ enum ShellCommands {
             fi
           done
         )
+
+        if [ ! -d "$backup_dir" ] || [ -L "$backup_dir" ] || [ ! -f "$backup_dir/.1132fixer-backup" ]; then
+          printf 'Backup snapshot is missing after retention pruning: %s\n' "$backup_dir" >&2
+          exit 1
+        fi
 
         echo "$backup_dir"
         """
@@ -675,16 +719,23 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         // EXIT trap installed by `makeTimeBoundedCommand` around privileged scripts.
         return """
         (
-          restore_wifi() { \(on) >/dev/null 2>&1 || true; }
+          __1132_step_pid=""
+          run_step() { "$@" & __1132_step_pid=$!; wait "$__1132_step_pid"; }
+          restore_wifi() {
+            [ -n "${__1132_step_pid:-}" ] && /bin/kill -TERM "$__1132_step_pid" 2>/dev/null || true
+            \(on) >/dev/null 2>&1 || true
+          }
           trap restore_wifi EXIT
           trap 'exit 1' HUP INT TERM
-          { \(off); \(sleep1); } 2>/dev/null || true
-          if ! \(on); then
+          { run_step \(off); run_step \(sleep1); } 2>/dev/null || true
+          if ! run_step \(on); then
             echo "Could not turn Wi-Fi back on after cycling the active interface." >&2
             exit 1
           fi
           trap - EXIT HUP INT TERM
-        )
+        ) &
+        __1132_subshell_pid=$!
+        wait "$__1132_subshell_pid"
         """
     }
 
@@ -701,26 +752,31 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         let macAttempt = "(\(interfaceDownCommand) && \(sleepShort) && \(setMACCommand)) 2>/dev/null || true"
         return """
         (
+          __1132_step_pid=""
+          run_step() { "$@" & __1132_step_pid=$!; wait "$__1132_step_pid"; }
           restore_network() {
+            [ -n "${__1132_step_pid:-}" ] && /bin/kill -TERM "$__1132_step_pid" 2>/dev/null || true
             \(interfaceUpCommand) >/dev/null 2>&1 || true
             \(enableServiceCommand) >/dev/null 2>&1 || true
           }
           trap restore_network EXIT
           trap 'exit 1' HUP INT TERM
-          \(macAttempt)
-          if ! \(interfaceUpCommand); then
+          \(macAttempt) & __1132_step_pid=$!; wait "$__1132_step_pid" || true
+          if ! run_step \(interfaceUpCommand); then
             echo "Could not bring the active network interface back up." >&2
             exit 1
           fi
-          \(sleepShort)
-          \(disableServiceCommand) 2>/dev/null || true
-          \(sleepShort)
-          if ! \(enableServiceCommand); then
+          run_step \(sleepShort)
+          run_step \(disableServiceCommand) 2>/dev/null || true
+          run_step \(sleepShort)
+          if ! run_step \(enableServiceCommand); then
             echo "Could not re-enable the active network service." >&2
             exit 1
           fi
           trap - EXIT HUP INT TERM
-        )
+        ) &
+        __1132_subshell_pid=$!
+        wait "$__1132_subshell_pid"
         """
     }
 
@@ -786,6 +842,7 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         ".docker",
         ".config",
         "Library/Containers",
+        "Library/Cookies",
         "Library/Mail",
         "Library/Messages",
         "Library/Safari",
@@ -816,8 +873,21 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         ".ssh",
         ".gnupg",
         ".aws",
+        ".config",
+        "Applications",
         "Library/LaunchAgents",
         "Library/Application Support/1132Fixer"
+    ]
+
+    private static let deniedHomeWriteLiterals = [
+        ".zshrc",
+        ".zprofile",
+        ".zshenv",
+        ".zlogin",
+        ".bashrc",
+        ".bash_profile",
+        ".profile",
+        ".gitconfig"
     ]
 
     /// Returns an absolute home path with trailing slashes trimmed, or `nil` when the
@@ -829,7 +899,9 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
             path.removeLast()
         }
         guard path.hasPrefix("/"), path != "/" else { return nil }
-        return path
+        let standardized = (path as NSString).standardizingPath
+        guard standardized == path, standardized != "/" else { return nil }
+        return standardized
     }
 
     /// Builds the sandbox profile Zoom runs under.
@@ -872,6 +944,9 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         let writeSubpaths = deniedHomeWriteSubpaths
             .map { "    (subpath \(sandboxStringLiteral("\(home)/\($0)")))" }
             .joined(separator: "\n")
+        let writeLiterals = deniedHomeWriteLiterals
+            .map { "    (literal \(sandboxStringLiteral("\(home)/\($0)")))" }
+            .joined(separator: "\n")
 
         profile += """
 
@@ -890,6 +965,7 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
 
         (deny file-write*
         \(writeSubpaths)
+        \(writeLiterals)
         )
         """
 
@@ -1188,6 +1264,13 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         # fallback here.
         echo "Launch mode: persistentSandbox"
         stop_zoom_processes
+        zoom_app="${zoom_binary%/Contents/MacOS/*}"
+        if [ "$zoom_app" != "$zoom_binary" ] && [ -x /usr/bin/codesign ]; then
+          if ! /usr/bin/codesign --verify --strict -R='anchor apple generic and certificate leaf[subject.OU] = "BJ4HAAB9B3"' "$zoom_app" >/dev/null 2>&1; then
+            echo "Error: Zoom code signature verification failed after stopping existing processes; refusing to launch $zoom_binary." >&2
+            exit 1
+          fi
+        fi
         /usr/bin/sandbox-exec -f "$profile_path" "$zoom_binary" >/dev/null 2>&1 &
         sandbox_pid=$!
         /bin/sleep 1

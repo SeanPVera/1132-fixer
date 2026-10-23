@@ -7,7 +7,11 @@ enum BackupStore {
     private static let completionMarkerName = ".1132fixer-backup"
 
     static var rootURL: URL {
-        URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+        rootURL(forHomeDirectory: NSHomeDirectory())
+    }
+
+    static func rootURL(forHomeDirectory homeDirectory: String) -> URL {
+        URL(fileURLWithPath: homeDirectory, isDirectory: true)
             .appendingPathComponent("Library/Application Support/1132Fixer/Backups", isDirectory: true)
     }
 
@@ -40,6 +44,10 @@ enum BackupStore {
         fileManager: FileManager = .default,
         rootURL: URL = BackupStore.rootURL
     ) -> Bool {
+        if let rawAttributes = try? fileManager.attributesOfItem(atPath: url.path),
+           rawAttributes[.type] as? FileAttributeType == .typeSymbolicLink {
+            return false
+        }
         let resolvedRoot = rootURL.resolvingSymlinksInPath().standardizedFileURL
         let resolvedURL = url.resolvingSymlinksInPath().standardizedFileURL
         guard resolvedURL.deletingLastPathComponent() == resolvedRoot else { return false }

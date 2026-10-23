@@ -11,4 +11,12 @@ enum AppConfiguration {
     static let latestReleaseAPIURL = URL(
         string: "https://api.github.com/repos/\(githubOwner)/\(githubRepository)/releases/latest"
     )!
+
+    static var allowsDebugEnvironmentOverrides: Bool {
+        #if DEBUG
+        return true
+        #else
+        return false
+        #endif
+    }
 }
