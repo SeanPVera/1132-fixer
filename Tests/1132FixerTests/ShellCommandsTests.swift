@@ -263,6 +263,43 @@ struct ShellCommandsTests {
         #expect(legacy.contains("networksetup -setnetworkserviceenabled 'Office Wi-Fi' on"))
     }
 
+    @Test func combinedPrivilegedCommandsConsolidateNetworkAndDNSIntoSingleAdminScript() {
+        let rotatingWithMode = ShellCommands.makeRotatingMACAndDNSResetCommand(
+            device: "en0",
+            networkService: "Wi-Fi",
+            enableRotatingMode: true,
+            includeDNSFlush: true
+        )
+        #expect(rotatingWithMode.contains("networksetup -setPrivateNetworkAddress 'Wi-Fi' 'rotating'"))
+        #expect(rotatingWithMode.contains("__1132_PRIVATE_MODE_STATUS__="))
+        #expect(rotatingWithMode.contains("networksetup -setairportpower 'en0' off"))
+        #expect(rotatingWithMode.contains("__1132_WIFI_RESET_STATUS__="))
+        #expect(rotatingWithMode.contains("dscacheutil -flushcache"))
+        #expect(rotatingWithMode.contains("__1132_DNS_STATUS__="))
+
+        let rotatingWithoutMode = ShellCommands.makeRotatingMACAndDNSResetCommand(
+            device: "en0",
+            networkService: "Wi-Fi",
+            enableRotatingMode: false,
+            includeDNSFlush: true
+        )
+        #expect(!rotatingWithoutMode.contains("-setPrivateNetworkAddress"))
+        #expect(rotatingWithoutMode.contains("__1132_WIFI_RESET_STATUS__="))
+        #expect(rotatingWithoutMode.contains("__1132_DNS_STATUS__="))
+
+        let spoofAndDNS = ShellCommands.makeSpoofAndDNSCommand(
+            device: "en0",
+            spoofedMAC: "02:ab:cd:ef:12:34",
+            networkService: "Ethernet",
+            includeDNSFlush: true
+        )
+        #expect(spoofAndDNS.contains("ifconfig 'en0' lladdr '02:ab:cd:ef:12:34'"))
+        #expect(spoofAndDNS.contains("__1132_SPOOF_STATUS__="))
+        #expect(!spoofAndDNS.contains("exit \"$spoof_status\""))
+        #expect(spoofAndDNS.contains("dscacheutil -flushcache"))
+        #expect(spoofAndDNS.contains("__1132_DNS_STATUS__="))
+    }
+
     @Test func makeVerifyMACCommand() {
         let cmd = ShellCommands.makeVerifyMACCommand(device: "en0")
         #expect(cmd.contains("ifconfig"))

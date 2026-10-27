@@ -37,10 +37,28 @@ final class AppViewModel: ObservableObject {
         let kind: Kind
     }
 
+    private struct PrivilegedDNSResult {
+        let succeeded: Bool
+        let detail: String
+    }
+
     private struct MACSpoofResult {
         let summary: String
         let hasWarning: Bool
         let wasSkipped: Bool
+        let dnsResult: PrivilegedDNSResult?
+
+        init(
+            summary: String,
+            hasWarning: Bool,
+            wasSkipped: Bool,
+            dnsResult: PrivilegedDNSResult? = nil
+        ) {
+            self.summary = summary
+            self.hasWarning = hasWarning
+            self.wasSkipped = wasSkipped
+            self.dnsResult = dnsResult
+        }
     }
 
     enum Constants {
@@ -600,8 +618,14 @@ final class AppViewModel: ObservableObject {
                 self.appendLog(ShellCommands.isMacSpoofingDisabledForCurrentOS()
                     ? "Step: Check active network; legacy MAC spoofing is disabled on macOS 14+"
                     : "Step: Spoof MAC and reconnect active network (admin prompt expected)")
+                var precomputedDNSResult: PrivilegedDNSResult?
                 do {
-                    let networkResult = try await self.spoofMACAndReconnectActiveInterface()
+                    let networkResult = try await self.spoofMACAndReconnectActiveInterface(
+                        onPrivilegedDNSResult: { precomputedDNSResult = $0 }
+                    )
+                    if let dnsResult = networkResult.dnsResult {
+                        precomputedDNSResult = dnsResult
+                    }
                     let outcome: StepResult.Outcome
                     if networkResult.wasSkipped {
                         outcome = .skipped
@@ -666,21 +690,10 @@ final class AppViewModel: ObservableObject {
                 // 6. DNS flush.
                 self.workflowState = .flushingDNS
                 beginStep("dns")
-                self.appendLog("Step: Refresh DNS cache (admin prompt may appear)")
-                do {
-                    let script = ShellCommands.appleScriptDoShellScript(
-                        ShellCommands.makeTimeBoundedCommand(ShellCommands.makeRefreshDNSCommand(), seconds: 55),
-                        administratorPrivileges: true
-                    )
-                    let output = try await self.runProcess(
-                        stepName: "Refresh DNS cache",
-                        executable: Constants.osascriptPath,
-                        arguments: ["-e", script]
-                    )
-                    let lines = output.components(separatedBy: .newlines)
-                    let dnsSucceeded = lines.contains("__1132_DNS_STATUS__=0")
-                    let detail = lines.filter { !$0.hasPrefix("__1132_") }.joined(separator: "\n")
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                if let precomputedDNSResult {
+                    self.appendLog("Step: Refresh DNS cache (completed during single administrator session)")
+                    let dnsSucceeded = precomputedDNSResult.succeeded
+                    let detail = precomputedDNSResult.detail
                     if dnsSucceeded {
                         self.markStepDone("dns", succeeded: true)
                     } else {
@@ -694,11 +707,44 @@ final class AppViewModel: ObservableObject {
                             ? (detail.isEmpty ? "Flushed system DNS cache and restarted mDNSResponder." : detail)
                             : "Could not refresh DNS cache. \(detail)"
                     ))
-                } catch {
-                    try Task.checkCancellation()
-                    self.markStepWarning("dns")
-                    finishStep(.init(id: "dns", name: "DNS Flush", outcome: .warning, detail: error.localizedDescription))
-                    self.appendLog("Warning: \(error.localizedDescription)")
+                    if !dnsSucceeded && !detail.isEmpty {
+                        self.appendLog("Warning: \(detail)")
+                    }
+                } else {
+                    self.appendLog("Step: Refresh DNS cache (admin prompt may appear)")
+                    do {
+                        let script = ShellCommands.appleScriptDoShellScript(
+                            ShellCommands.makeTimeBoundedCommand(ShellCommands.makeRefreshDNSCommand(), seconds: 55),
+                            administratorPrivileges: true
+                        )
+                        let output = try await self.runProcess(
+                            stepName: "Refresh DNS cache",
+                            executable: Constants.osascriptPath,
+                            arguments: ["-e", script]
+                        )
+                        let lines = output.components(separatedBy: .newlines)
+                        let dnsSucceeded = lines.contains("__1132_DNS_STATUS__=0")
+                        let detail = lines.filter { !$0.hasPrefix("__1132_") }.joined(separator: "\n")
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        if dnsSucceeded {
+                            self.markStepDone("dns", succeeded: true)
+                        } else {
+                            self.markStepWarning("dns")
+                        }
+                        finishStep(.init(
+                            id: "dns",
+                            name: "DNS Flush",
+                            outcome: dnsSucceeded ? .success : .warning,
+                            detail: dnsSucceeded
+                                ? (detail.isEmpty ? "Flushed system DNS cache and restarted mDNSResponder." : detail)
+                                : "Could not refresh DNS cache. \(detail)"
+                        ))
+                    } catch {
+                        try Task.checkCancellation()
+                        self.markStepWarning("dns")
+                        finishStep(.init(id: "dns", name: "DNS Flush", outcome: .warning, detail: error.localizedDescription))
+                        self.appendLog("Warning: \(error.localizedDescription)")
+                    }
                 }
 
                 // 7. Stop updaters
@@ -1670,7 +1716,9 @@ Last action status: \(lastStatus)
         return "Unknown"
     }
 
-    private func spoofMACAndReconnectActiveInterface() async throws -> MACSpoofResult {
+    private func spoofMACAndReconnectActiveInterface(
+        onPrivilegedDNSResult: ((PrivilegedDNSResult) -> Void)? = nil
+    ) async throws -> MACSpoofResult {
         let interface = try await resolveActiveSupportedInterface()
 
         switch ShellCommands.networkIdentityStrategy(isWiFi: interface.kind == .wifi) {
@@ -1687,7 +1735,12 @@ Last action status: \(lastStatus)
         }
 
         let spoofedMAC = try ShellCommands.generateRandomMACAddress()
-        let spoofScript = ShellCommands.makeSpoofCommand(device: interface.device, spoofedMAC: spoofedMAC, networkService: interface.networkService)
+        let spoofScript = ShellCommands.makeSpoofAndDNSCommand(
+            device: interface.device,
+            spoofedMAC: spoofedMAC,
+            networkService: interface.networkService,
+            includeDNSFlush: true
+        )
 
         appendLog("Network recovery: commands to be attempted on \(interface.device) (service: \(interface.networkService))")
 
@@ -1705,6 +1758,7 @@ Last action status: \(lastStatus)
             )
         } catch {
             try Task.checkCancellation()
+            onPrivilegedDNSResult?(PrivilegedDNSResult(succeeded: false, detail: error.localizedDescription))
             appendLog("Network recovery: MAC spoof command failed. Commands attempted:")
             appendLog("  \(spoofScript)")
             appendLog("""
@@ -1715,6 +1769,49 @@ Network recovery: Your network interface may be in an inconsistent state. To res
   4. If Wi-Fi is disconnected, click the Wi-Fi menu and reconnect to your network
 """)
             throw error
+        }
+
+        let outputLines = commandOutput.components(separatedBy: .newlines)
+        let dnsSucceeded = outputLines.contains("__1132_DNS_STATUS__=0")
+        let spoofSentinelIndex = outputLines.firstIndex(where: { $0.hasPrefix("__1132_SPOOF_STATUS__=") })
+        let nonSentinelCommandOutput: String
+        let dnsOutput: String
+        if let spoofSentinelIndex {
+            nonSentinelCommandOutput = outputLines[..<spoofSentinelIndex]
+                .filter { !$0.hasPrefix("__1132_") }
+                .joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            dnsOutput = outputLines[(spoofSentinelIndex + 1)...]
+                .filter { !$0.hasPrefix("__1132_") }
+                .joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            let combinedNonSentinel = outputLines
+                .filter { !$0.hasPrefix("__1132_") }
+                .joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            nonSentinelCommandOutput = combinedNonSentinel
+            dnsOutput = dnsSucceeded ? "" : combinedNonSentinel
+        }
+        let dnsResult = PrivilegedDNSResult(succeeded: dnsSucceeded, detail: dnsOutput)
+        onPrivilegedDNSResult?(dnsResult)
+
+        if let spoofSentinelIndex,
+           outputLines[spoofSentinelIndex] != "__1132_SPOOF_STATUS__=0" {
+            appendLog("Network recovery: MAC spoof command failed. Commands attempted:")
+            appendLog("  \(spoofScript)")
+            appendLog("""
+Network recovery: Your network interface may be in an inconsistent state. To restore manually:
+  1. Open System Settings > Network
+  2. Find '\(interface.networkService)' and turn it off, then on again
+  3. Or run in Terminal: sudo /sbin/ifconfig \(interface.device) up
+  4. If Wi-Fi is disconnected, click the Wi-Fi menu and reconnect to your network
+""")
+            let statusValue = outputLines[spoofSentinelIndex].replacingOccurrences(of: "__1132_SPOOF_STATUS__=", with: "")
+            let failureDetail = nonSentinelCommandOutput.isEmpty
+                ? "Spoof MAC and reconnect \(interface.kind.rawValue): Command exited with status \(statusValue)."
+                : "Spoof MAC and reconnect \(interface.kind.rawValue): \(nonSentinelCommandOutput)"
+            throw appError(failureDetail)
         }
 
         let verifyScript = ShellCommands.makeVerifyMACCommand(device: interface.device)
@@ -1759,11 +1856,10 @@ If your network connection is disrupted after this step:
             warnings.append(recoveryWarning)
         }
 
-        let trimmedCommandOutput = commandOutput.trimmingCharacters(in: .whitespacesAndNewlines)
         var summaryParts = [summary]
 
-        if !trimmedCommandOutput.isEmpty {
-            summaryParts.append(trimmedCommandOutput)
+        if !nonSentinelCommandOutput.isEmpty {
+            summaryParts.append(nonSentinelCommandOutput)
         }
         for warning in warnings where warning != summary {
             summaryParts.append(warning)
@@ -1773,7 +1869,8 @@ If your network connection is disrupted after this step:
         return MACSpoofResult(
             summary: combinedSummary,
             hasWarning: !warnings.isEmpty,
-            wasSkipped: false
+            wasSkipped: false,
+            dnsResult: dnsResult
         )
     }
 
@@ -1800,49 +1897,77 @@ If your network connection is disrupted after this step:
 
         var modeWasChanged = false
         var warnings: [String] = []
+        let shouldEnableRotating = (currentMode != "unsupported" && currentMode != "rotating")
 
         if currentMode == "unsupported" {
             warnings.append("Warning: Private Wi-Fi Address controls are unsupported on this macOS/networksetup version.")
-        } else if currentMode != "rotating" {
-            let setModeCmd = ShellCommands.makeSetPrivateAddressModeCommand(networkService: networkService, mode: "rotating")
-            let setModeScript = ShellCommands.appleScriptDoShellScript(
-                ShellCommands.makeTimeBoundedCommand(setModeCmd, seconds: 10),
-                administratorPrivileges: true
-            )
-            do {
-                _ = try await runProcess(
-                    stepName: "Enable rotating Private Wi-Fi Address",
-                    executable: Constants.osascriptPath,
-                    arguments: ["-e", setModeScript],
-                    timeout: 15
-                )
-                modeWasChanged = true
-                appendLog("Private Wi-Fi Address set to rotating (was: \(currentMode))")
-            } catch {
-                try Task.checkCancellation()
-                let warning = "Warning: Could not set Private Wi-Fi Address to rotating: \(error.localizedDescription)"
-                warnings.append(warning)
-                appendLog(warning)
-            }
         }
 
-        let resetCmd = ShellCommands.makeRotatingMACResetCommand(device: device)
+        let resetAndDNSCmd = ShellCommands.makeRotatingMACAndDNSResetCommand(
+            device: device,
+            networkService: networkService,
+            enableRotatingMode: shouldEnableRotating,
+            includeDNSFlush: true
+        )
         let resetScript = ShellCommands.appleScriptDoShellScript(
-            ShellCommands.makeTimeBoundedCommand(resetCmd, seconds: 25),
+            ShellCommands.makeTimeBoundedCommand(resetAndDNSCmd, seconds: 55),
             administratorPrivileges: true
         )
+        var dnsResult: PrivilegedDNSResult?
         do {
-            _ = try await runProcess(
+            let output = try await runProcess(
                 stepName: "Reset Wi-Fi to generate new rotating MAC",
                 executable: Constants.osascriptPath,
                 arguments: ["-e", resetScript],
-                timeout: 30
+                timeout: 60
             )
+            let lines = output.components(separatedBy: .newlines)
+            let wifiSentinelIndex = lines.firstIndex(where: { $0.hasPrefix("__1132_WIFI_RESET_STATUS__=") })
+            let dnsDetail: String
+            if let wifiSentinelIndex {
+                dnsDetail = lines[(wifiSentinelIndex + 1)...]
+                    .filter { !$0.hasPrefix("__1132_") }
+                    .joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                dnsDetail = lines
+                    .filter { !$0.hasPrefix("__1132_") }
+                    .joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+
+            if shouldEnableRotating {
+                if lines.contains("__1132_PRIVATE_MODE_STATUS__=0")
+                    || !lines.contains(where: { $0.hasPrefix("__1132_PRIVATE_MODE_STATUS__=") }) {
+                    modeWasChanged = true
+                    appendLog("Private Wi-Fi Address set to rotating (was: \(currentMode))")
+                } else {
+                    let warning = "Warning: Could not set Private Wi-Fi Address to rotating."
+                    warnings.append(warning)
+                    appendLog(warning)
+                }
+            }
+
+            if let wifiStatusLine = lines.first(where: { $0.hasPrefix("__1132_WIFI_RESET_STATUS__=") }),
+               wifiStatusLine != "__1132_WIFI_RESET_STATUS__=0" {
+                let warning = "Warning: Wi-Fi cycle encountered an error."
+                warnings.append(warning)
+                appendLog(warning)
+            }
+
+            let dnsSucceeded = lines.contains("__1132_DNS_STATUS__=0")
+            dnsResult = PrivilegedDNSResult(succeeded: dnsSucceeded, detail: dnsDetail)
         } catch {
             try Task.checkCancellation()
+            if shouldEnableRotating {
+                let modeWarning = "Warning: Could not set Private Wi-Fi Address to rotating: \(error.localizedDescription)"
+                warnings.append(modeWarning)
+                appendLog(modeWarning)
+            }
             let warning = "Warning: Wi-Fi cycle encountered an error: \(error.localizedDescription)"
             warnings.append(warning)
             appendLog(warning)
+            dnsResult = PrivilegedDNSResult(succeeded: false, detail: error.localizedDescription)
         }
 
         // 4. Read the new MAC for logging
@@ -1893,7 +2018,8 @@ If your network connection is disrupted after this step:
         return MACSpoofResult(
             summary: summaryParts.joined(separator: "\n"),
             hasWarning: !warnings.isEmpty,
-            wasSkipped: false
+            wasSkipped: false,
+            dnsResult: dnsResult
         )
     }
 
@@ -2301,7 +2427,7 @@ If your network connection is disrupted after this step:
         applyUIFixture(named: fixtureName, appVersion: appVersion)
     }
 
-    func applyUIFixture(named fixtureName: String, appVersion: String = "1.8.3") {
+    func applyUIFixture(named fixtureName: String, appVersion: String = "1.8.4") {
         preflightTask?.cancel()
         activePreflightID = UUID()
 

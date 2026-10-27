@@ -42,7 +42,7 @@ struct RepairConfirmationSheet: View {
                         .font(Theme.Typography.sectionHeading)
                         .foregroundStyle(Theme.Colors.textPrimary)
                     Spacer()
-                    Text("\(plan.steps.count) steps • \(plan.adminStepCount) admin prompts")
+                    Text("\(plan.steps.count) steps • \(plan.adminPromptCount) admin \(plan.adminPromptCount == 1 ? "prompt" : "prompts")")
                         .font(Theme.Typography.metadata)
                         .foregroundStyle(Theme.Colors.textSecondary)
                 }
@@ -218,7 +218,7 @@ struct RepairConfirmationSheet: View {
 
                 Spacer()
 
-                Label("Administrator password required for Steps 4 & 6", systemImage: "lock.fill")
+                Label("Single administrator password prompt for Steps 4 & 6", systemImage: "lock.fill")
                     .font(Theme.Typography.metadata)
                     .foregroundStyle(Theme.Colors.warning)
 

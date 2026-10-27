@@ -80,6 +80,21 @@ struct AppViewModelWorkflowTests {
         #expect(viewModel.workflowState == .canceled)
     }
 
+    @Test
+    @MainActor
+    func rotatingWiFiWorkflowPromptsForAdministratorPasswordOnlyOnce() async throws {
+        let executor = WorkflowProcessFake(interfaceMode: .wifiStatic)
+        let viewModel = makeViewModel(executor: executor)
+
+        viewModel.startZoom()
+        try await waitForCompletion(viewModel)
+
+        #expect(viewModel.workflowState == .completed)
+        let osascriptCount = await executor.osascriptInvocationCount()
+        #expect(osascriptCount == 1)
+        #expect(viewModel.workflowProgress?.steps.first { $0.id == "dns" }?.state == .succeeded)
+    }
+
     @MainActor
     private func makeViewModel(executor: WorkflowProcessFake) -> AppViewModel {
         let viewModel = AppViewModel(
@@ -127,12 +142,20 @@ private actor WorkflowProcessFake: ProcessExecuting {
         case waitForCancellation
     }
 
+    enum InterfaceMode {
+        case ethernet
+        case wifiStatic
+    }
+
     private let closeBehavior: CloseBehavior
+    private let interfaceMode: InterfaceMode
     private var commands: [String] = []
+    private var osascriptCount = 0
     private var closeStarted = false
 
-    init(closeBehavior: CloseBehavior = .succeed) {
+    init(closeBehavior: CloseBehavior = .succeed, interfaceMode: InterfaceMode = .ethernet) {
         self.closeBehavior = closeBehavior
+        self.interfaceMode = interfaceMode
     }
 
     func run(
@@ -143,6 +166,9 @@ private actor WorkflowProcessFake: ProcessExecuting {
     ) async throws -> ProcessExecutionResult {
         let command = arguments.last ?? ""
         commands.append(command)
+        if executable == ShellCommands.osascriptPath {
+            osascriptCount += 1
+        }
 
         if command == ShellCommands.stopZoom {
             closeStarted = true
@@ -161,10 +187,23 @@ private actor WorkflowProcessFake: ProcessExecuting {
             return result("route to: default\ninterface: en0\n")
         }
         if command == "/usr/sbin/networksetup -listallhardwareports" {
-            return result("Hardware Port: Ethernet\nDevice: en0\nEthernet Address: 00:11:22:33:44:55\n")
+            switch interfaceMode {
+            case .ethernet:
+                return result("Hardware Port: Ethernet\nDevice: en0\nEthernet Address: 00:11:22:33:44:55\n")
+            case .wifiStatic:
+                return result("Hardware Port: Wi-Fi\nDevice: en0\nEthernet Address: 00:11:22:33:44:55\n")
+            }
         }
         if command == "/usr/sbin/networksetup -listnetworkserviceorder" {
-            return result("(1) Ethernet\n(Hardware Port: Ethernet, Device: en0)\n")
+            switch interfaceMode {
+            case .ethernet:
+                return result("(1) Ethernet\n(Hardware Port: Ethernet, Device: en0)\n")
+            case .wifiStatic:
+                return result("(1) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)\n")
+            }
+        }
+        if command.contains("-getPrivateAddressMode") {
+            return result("static")
         }
         if command.contains(".incomplete.XXXXXX") {
             return result("/Users/test/Library/Application Support/1132Fixer/Backups/test")
@@ -173,7 +212,7 @@ private actor WorkflowProcessFake: ProcessExecuting {
             return result("__1132_RESET_STATUS__=0")
         }
         if executable == ShellCommands.osascriptPath {
-            return result("__1132_DNS_STATUS__=0")
+            return result("__1132_PRIVATE_MODE_STATUS__=0\n__1132_WIFI_RESET_STATUS__=0\n__1132_DNS_STATUS__=0")
         }
         if command.contains("route -n get default") && command.contains("Network did not become ready") {
             return result("Network ready on en0.")
@@ -186,6 +225,10 @@ private actor WorkflowProcessFake: ProcessExecuting {
 
     func recordedCommands() -> [String] {
         commands
+    }
+
+    func osascriptInvocationCount() -> Int {
+        osascriptCount
     }
 
     func hasStartedClose() -> Bool {

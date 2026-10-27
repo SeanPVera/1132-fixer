@@ -739,6 +739,37 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         """
     }
 
+    /// Combines Private Wi-Fi Address rotation setup, Wi-Fi power cycling, and DNS cache
+    /// flushing into a single privileged script so the user is prompted for an administrator
+    /// password only once during the workflow.
+    static func makeRotatingMACAndDNSResetCommand(
+        device: String,
+        networkService: String,
+        enableRotatingMode: Bool,
+        includeDNSFlush: Bool = true
+    ) -> String {
+        var sections: [String] = []
+        if enableRotatingMode {
+            sections.append("""
+            (
+            \(makeSetPrivateAddressModeCommand(networkService: networkService, mode: "rotating"))
+            )
+            private_mode_status=$?
+            printf '\n__1132_PRIVATE_MODE_STATUS__=%s\n' "$private_mode_status"
+            """)
+        }
+        sections.append("""
+        \(makeRotatingMACResetCommand(device: device))
+        wifi_reset_status=$?
+        __1132_subshell_pid=""
+        printf '\n__1132_WIFI_RESET_STATUS__=%s\n' "$wifi_reset_status"
+        """)
+        if includeDNSFlush {
+            sections.append(makeRefreshDNSCommand())
+        }
+        return sections.joined(separator: "\n")
+    }
+
     // MARK: - MAC Spoof Command
 
     static func makeSpoofCommand(device: String, spoofedMAC: String, networkService: String) -> String {
@@ -777,6 +808,26 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         ) &
         __1132_subshell_pid=$!
         wait "$__1132_subshell_pid"
+        """
+    }
+
+    /// Combines legacy MAC spoofing, network service cycling, and DNS cache flushing
+    /// into a single privileged script so the user is prompted for an administrator
+    /// password only once during the workflow.
+    static func makeSpoofAndDNSCommand(
+        device: String,
+        spoofedMAC: String,
+        networkService: String,
+        includeDNSFlush: Bool = true
+    ) -> String {
+        let spoof = makeSpoofCommand(device: device, spoofedMAC: spoofedMAC, networkService: networkService)
+        guard includeDNSFlush else { return spoof }
+        return """
+        \(spoof)
+        spoof_status=$?
+        __1132_subshell_pid=""
+        printf '\n__1132_SPOOF_STATUS__=%s\n' "$spoof_status"
+        \(makeRefreshDNSCommand())
         """
     }
 
