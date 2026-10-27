@@ -1773,11 +1773,46 @@ Network recovery: Your network interface may be in an inconsistent state. To res
 
         let outputLines = commandOutput.components(separatedBy: .newlines)
         let dnsSucceeded = outputLines.contains("__1132_DNS_STATUS__=0")
-        let nonSentinelCommandOutput = outputLines
-            .filter { !$0.hasPrefix("__1132_") }
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let dnsResult = PrivilegedDNSResult(succeeded: dnsSucceeded, detail: nonSentinelCommandOutput)
+        let spoofSentinelIndex = outputLines.firstIndex(where: { $0.hasPrefix("__1132_SPOOF_STATUS__=") })
+        let nonSentinelCommandOutput: String
+        let dnsOutput: String
+        if let spoofSentinelIndex {
+            nonSentinelCommandOutput = outputLines[..<spoofSentinelIndex]
+                .filter { !$0.hasPrefix("__1132_") }
+                .joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            dnsOutput = outputLines[(spoofSentinelIndex + 1)...]
+                .filter { !$0.hasPrefix("__1132_") }
+                .joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            let combinedNonSentinel = outputLines
+                .filter { !$0.hasPrefix("__1132_") }
+                .joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            nonSentinelCommandOutput = combinedNonSentinel
+            dnsOutput = dnsSucceeded ? "" : combinedNonSentinel
+        }
+        let dnsResult = PrivilegedDNSResult(succeeded: dnsSucceeded, detail: dnsOutput)
+        onPrivilegedDNSResult?(dnsResult)
+
+        if let spoofSentinelIndex,
+           outputLines[spoofSentinelIndex] != "__1132_SPOOF_STATUS__=0" {
+            appendLog("Network recovery: MAC spoof command failed. Commands attempted:")
+            appendLog("  \(spoofScript)")
+            appendLog("""
+Network recovery: Your network interface may be in an inconsistent state. To restore manually:
+  1. Open System Settings > Network
+  2. Find '\(interface.networkService)' and turn it off, then on again
+  3. Or run in Terminal: sudo /sbin/ifconfig \(interface.device) up
+  4. If Wi-Fi is disconnected, click the Wi-Fi menu and reconnect to your network
+""")
+            let statusValue = outputLines[spoofSentinelIndex].replacingOccurrences(of: "__1132_SPOOF_STATUS__=", with: "")
+            let failureDetail = nonSentinelCommandOutput.isEmpty
+                ? "Spoof MAC and reconnect \(interface.kind.rawValue): Command exited with status \(statusValue)."
+                : "Spoof MAC and reconnect \(interface.kind.rawValue): \(nonSentinelCommandOutput)"
+            throw appError(failureDetail)
+        }
 
         let verifyScript = ShellCommands.makeVerifyMACCommand(device: interface.device)
         let actualMACOutput = (try? await runProcess(
@@ -1887,10 +1922,19 @@ If your network connection is disrupted after this step:
                 timeout: 60
             )
             let lines = output.components(separatedBy: .newlines)
-            let nonSentinelDetail = lines
-                .filter { !$0.hasPrefix("__1132_") }
-                .joined(separator: "\n")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let wifiSentinelIndex = lines.firstIndex(where: { $0.hasPrefix("__1132_WIFI_RESET_STATUS__=") })
+            let dnsDetail: String
+            if let wifiSentinelIndex {
+                dnsDetail = lines[(wifiSentinelIndex + 1)...]
+                    .filter { !$0.hasPrefix("__1132_") }
+                    .joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                dnsDetail = lines
+                    .filter { !$0.hasPrefix("__1132_") }
+                    .joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
 
             if shouldEnableRotating {
                 if lines.contains("__1132_PRIVATE_MODE_STATUS__=0")
@@ -1912,7 +1956,7 @@ If your network connection is disrupted after this step:
             }
 
             let dnsSucceeded = lines.contains("__1132_DNS_STATUS__=0")
-            dnsResult = PrivilegedDNSResult(succeeded: dnsSucceeded, detail: nonSentinelDetail)
+            dnsResult = PrivilegedDNSResult(succeeded: dnsSucceeded, detail: dnsDetail)
         } catch {
             try Task.checkCancellation()
             if shouldEnableRotating {

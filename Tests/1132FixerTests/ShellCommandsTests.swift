@@ -294,6 +294,8 @@ struct ShellCommandsTests {
             includeDNSFlush: true
         )
         #expect(spoofAndDNS.contains("ifconfig 'en0' lladdr '02:ab:cd:ef:12:34'"))
+        #expect(spoofAndDNS.contains("__1132_SPOOF_STATUS__="))
+        #expect(!spoofAndDNS.contains("exit \"$spoof_status\""))
         #expect(spoofAndDNS.contains("dscacheutil -flushcache"))
         #expect(spoofAndDNS.contains("__1132_DNS_STATUS__="))
     }

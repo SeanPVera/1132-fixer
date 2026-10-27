@@ -826,9 +826,7 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         \(spoof)
         spoof_status=$?
         __1132_subshell_pid=""
-        if [ "$spoof_status" -ne 0 ]; then
-          exit "$spoof_status"
-        fi
+        printf '\n__1132_SPOOF_STATUS__=%s\n' "$spoof_status"
         \(makeRefreshDNSCommand())
         """
     }
