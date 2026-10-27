@@ -234,7 +234,7 @@ struct RepairStepSpec: Identifiable, Equatable {
                 name: "DNS Flush",
                 scope: "Administrator",
                 requiresAdmin: true,
-                plannedSummary: "Flush system DNS cache and restart mDNSResponder using administrator privileges.",
+                plannedSummary: "Flush system DNS cache and restart mDNSResponder using the single administrator authorization.",
                 commandSummary: "dscacheutil -flushcache & killall -HUP mDNSResponder (Administrator)"
             ),
             RepairStepSpec(
@@ -291,6 +291,12 @@ struct RepairPlan: Identifiable, Equatable {
         steps.filter(\.requiresAdmin).count
     }
 
+    /// Network identity reset (Step 4) and DNS cache flush (Step 6) are consolidated into a
+    /// single privileged administrator session so the user is prompted at most once per run.
+    var adminPromptCount: Int {
+        steps.contains(where: \.requiresAdmin) ? 1 : 0
+    }
+
     static func build(
         readiness: ReadinessSnapshot,
         selectedAppPath: String,
@@ -339,7 +345,7 @@ struct RepairPlan: Identifiable, Equatable {
                 id: "network-dns",
                 label: "Network & DNS Cache",
                 path: "Active default-route interface & mDNSResponder",
-                action: "Updated in Steps 4 and 6 via macOS Administrator authorization prompt",
+                action: "Updated in Steps 4 and 6 via a single macOS Administrator authorization prompt",
                 requiresAdmin: true
             ),
         ]
