@@ -129,16 +129,16 @@
   },
   "native_checks": {
     "swift build": {
-      "status": "NOT RUN",
-      "reason": "SwiftUI/AppKit unavailable on Linux (AGENTS.md cloud guidance)"
+      "status": "PASS on hosted macos-15 only",
+      "evidence": "CI run 42422840660"
     },
     "swift test": {
-      "status": "NOT RUN",
-      "reason": "SwiftUI/AppKit unavailable on Linux"
+      "status": "PASS on hosted macos-15 only",
+      "evidence": "CI run 42422840660"
     },
     "swift build -c release": {
-      "status": "NOT RUN",
-      "reason": "SwiftUI/AppKit unavailable on Linux"
+      "status": "PASS on hosted macos-15 only",
+      "evidence": "CI run 42422840660"
     },
     "swift run": {
       "status": "NOT RUN",
@@ -151,13 +151,13 @@
   },
   "prior_session": "Original Codex receipt (Swift absent, exit 127 for all swift commands) is preserved in git at b3814f9.",
   "essential_unverified": [
-    "Swift compile and test execution",
     "native startup and rendered UI",
     "Darwin cross-instance lock and durable settlement",
     "actual administrator authorization, watchdog/restoration and root process lifecycle",
     "real signed sandboxed Zoom startup, SSO, media, keychain, helper/TCC and PID continuity",
     "complete mounted universal DMG, runtime resources, signatures, entitlements, notarization, cleanup",
-    "hosted CI and repository/tag/release-signing protections"
+    "hosted CI and repository/tag/release-signing protections",
+    "Swift build/test on macOS 13/14, Intel and Rosetta"
   ],
   "core_candidate_sha256": {
     ".github/CODEOWNERS": "b9c394c3dc0cd3871af06213ab67fe35134ec57def6c6d46873ef0ef864e0064",
@@ -280,6 +280,23 @@
       "observed": "swift build passed; swift test hung after 22:19:19Z; ~20 workflow tests failed with the ownership-lock refusal before the hang",
       "cause": "test lock directory under /var (resolvingSymlinksInPath strips /private) refused by WorkflowOwnershipLock; unbounded AsyncGate wait",
       "follow_up": "realpath-based canonicalTemporaryDirectory() and bounded test waits"
+    },
+    {
+      "pr": "SeanPVera/1132-fixer#26",
+      "workflow": "CI",
+      "run_id": 42422840660,
+      "job": "Build & Test (macOS)",
+      "head_sha": "25f4a1c618e3914bee93ee64e751f02287967e5d",
+      "conclusion": "success",
+      "runner": "macos-15",
+      "xcode": "16.4",
+      "swift": "6.1.2",
+      "results": {
+        "swift build": "PASS",
+        "swift test": "PASS (211 tests, 0 failures)",
+        "sandbox and keychain canaries": "PASS",
+        "swift build -c release": "PASS"
+      }
     }
   ]
 }
