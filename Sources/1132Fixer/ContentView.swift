@@ -4,7 +4,7 @@ import AppKit
 
 struct ContentView: View {
     @ObservedObject var viewModel: AppViewModel
-    private let appVersion = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.8.4"
+    private let appVersion = AppConfiguration.appVersion
 
     init(viewModel: AppViewModel) {
         self.viewModel = viewModel
@@ -218,7 +218,7 @@ struct ContentView: View {
             Text(footerGuidance.message)
                 .font(Theme.Typography.body)
                 .foregroundStyle(Theme.Colors.textSecondary)
-                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -227,7 +227,7 @@ struct ContentView: View {
             if viewModel.isRunning {
                 Button(action: { viewModel.cancelWorkflow() }) {
                     Label(
-                        viewModel.isCanceling ? "Stopping…" : "Stop Repair",
+                        viewModel.isCanceling ? "Stopping…" : (viewModel.currentRunRecord?.title == "Sandbox-only Zoom launch" ? "Stop Launch" : "Stop Repair"),
                         systemImage: "stop.fill"
                     )
                 }
@@ -238,6 +238,11 @@ struct ContentView: View {
                     Label("Preview Steps", systemImage: "eye")
                 }
                 .buttonStyle(ThemedButtonStyle(variant: .secondary))
+
+                Button("Launch in Sandbox", action: { viewModel.launchZoomOnly() })
+                    .buttonStyle(ThemedButtonStyle(variant: .secondary))
+                    .disabled(!viewModel.canStartZoom)
+                    .help("Closes existing Zoom and launches in the required sandbox. No reset or administrator operations. Starting normal Zoom separately bypasses this protection.")
 
                 Button(action: { viewModel.prepareAndPresentRepairPlan() }) {
                     Label("Review & Run Repair…", systemImage: "play.fill")
@@ -250,6 +255,9 @@ struct ContentView: View {
     }
 
     private var footerGuidance: (message: String, icon: String, color: Color) {
+        if viewModel.hasUnsettledPrivilegedOperation {
+            return (PrivilegedOperationGuard.recoveryMessage, "exclamationmark.octagon.fill", Theme.Colors.error)
+        }
         if viewModel.isCanceling {
             if viewModel.isExecutingPrivilegedStep {
                 return (
@@ -281,7 +289,9 @@ struct ContentView: View {
             return (
                 isPreview
                     ? "Inspecting all 9 repair steps without modifying files, network state, or processes."
-                    : "Executing repair sequence. Steps 04 & 06 share a single macOS administrator prompt.",
+                    : (viewModel.currentRunRecord?.title == "Sandbox-only Zoom launch"
+                        ? "Launching verified Zoom in the required sandbox without reset or administrator operations."
+                        : "Executing repair sequence. Network and DNS work share authorization when supported; DNS may run before reset."),
                 "bolt.horizontal.circle.fill",
                 Theme.Colors.primary
             )
@@ -299,16 +309,20 @@ struct ContentView: View {
             )
         case .failed(let reason):
             return (
-                "Stopped safely: \(reason)",
+                "Run failed: \(reason)",
                 "xmark.circle.fill",
                 Theme.Colors.error
             )
         case .completed:
             return (
-                "Sequence finished. You can inspect the activity log, export diagnostics, or run again.",
+                viewModel.currentRunRecord?.title == "Sandbox-only Zoom launch"
+                    ? "Sandbox launch finished. Starting normal Zoom separately bypasses this protection."
+                    : "Sequence finished. Inspect the results and verify Zoom sign-in and media access.",
                 "checkmark.circle.fill",
                 Theme.Colors.success
             )
+        case .completedWithWarnings:
+            return ("Completed with warnings. Review the recorded results before continuing.", "exclamationmark.triangle.fill", Theme.Colors.warning)
         case .idle:
             if !viewModel.canStartZoom {
                 return (

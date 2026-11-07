@@ -152,9 +152,11 @@ struct HeaderCard: View {
         case .canceled:
             return ("Interrupted", "stop.circle.fill", Theme.Colors.warning)
         case .failed:
-            return ("Stopped Safely", "xmark.circle.fill", Theme.Colors.error)
+            return ("Failed", "xmark.circle.fill", Theme.Colors.error)
         case .completed:
             return ("Completed", "checkmark.circle.fill", Theme.Colors.success)
+        case .completedWithWarnings:
+            return ("Completed with Warnings", "exclamationmark.triangle.fill", Theme.Colors.warning)
         }
     }
 }

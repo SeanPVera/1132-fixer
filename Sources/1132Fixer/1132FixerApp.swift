@@ -1,11 +1,16 @@
 import SwiftUI
 import AppKit
+import Darwin
 
 @main
 struct Fixer1132App: App {
     @StateObject private var viewModel = AppViewModel()
 
     init() {
+        if CommandLine.arguments.contains("--check-packaged-resources") {
+            // Native mounted-artifact canary: use the same lookup as report submission.
+            exit(PackagedResources.hasUsableBugReportConfiguration() ? 0 : 1)
+        }
         // SwiftPM executables are not app bundles and have no main bundle ID.
         // Disable automatic tabbing so AppKit does not try to index tabs by bundle identifier.
         NSWindow.allowsAutomaticWindowTabbing = false

@@ -22,11 +22,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
 
       - name: Toolchain versions
         run: |
           xcodebuild -version
           swift --version
+
+      - name: Require canonical design tokens
+        run: test -s design-system/tokens/macos.json
 
       - name: Build (debug)
         run: swift build
@@ -34,5 +39,27 @@ jobs:
       - name: Test
         run: swift test
 
+      - name: Require and execute native sandbox and keychain canaries
+        run: |
+          set -euo pipefail
+          test -x /usr/bin/sandbox-exec
+          swift test list > .build/canary-tests.txt
+          grep -F 'ZoomSandboxKeychainTests.sandboxedClientCanReadAndUpdateItsKeychain' .build/canary-tests.txt || grep -F 'ZoomSandboxKeychainTests/sandboxedClientCanReadAndUpdateItsKeychain' .build/canary-tests.txt
+          grep -F 'zoomSandboxProfileIsAcceptedBySandboxExec' .build/canary-tests.txt
+          swift test --filter ZoomSandboxKeychainTests
+          swift test --filter zoomSandboxProfileIsAcceptedBySandboxExec
+
       - name: Build (release)
         run: swift build -c release
+
+  isolated-fixtures:
+    name: Packaging and shell fixtures (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check shell syntax and isolated fixtures
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          bash -n scripts/build-universal-dmg.sh scripts/check-dmg.sh
+          python3 -m unittest discover -s scripts/tests -v

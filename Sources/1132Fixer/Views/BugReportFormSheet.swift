@@ -17,7 +17,7 @@ struct BugReportFormSheet: View {
         "App version, macOS version/build, architecture, locale, and time zone",
         "Whether Zoom is installed, where it is, and whether its processes are running",
         "Network interface type, preflight checks, and the latest workflow results",
-        "Up to 5,000 recent activity-log entries (redacted for home-directory privacy)",
+        "Up to 2,000 recent log entries within 512 KiB; home paths and MAC addresses are sanitized",
     ]
 
     init(
@@ -137,7 +137,7 @@ struct BugReportFormSheet: View {
                                         .font(Theme.Typography.mono)
                                         .foregroundStyle(Theme.Colors.textSecondary)
                                     if draft.wasTruncated {
-                                        Text("Truncated to 1 MB limit")
+                                        Text("Truncated to 1 MiB limit")
                                             .font(Theme.Typography.metadata)
                                             .foregroundStyle(Theme.Colors.warning)
                                             .padding(.horizontal, Theme.Spacing.s8)

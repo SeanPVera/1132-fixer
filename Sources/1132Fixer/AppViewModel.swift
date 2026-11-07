@@ -8,6 +8,7 @@ import AVFoundation
 final class AppViewModel: ObservableObject {
     typealias ZoomVerifier = (_ appPath: String) async throws -> ZoomBundleVerifier.VerifiedBundle
     typealias MediaAccessChecker = () async throws -> String
+    typealias BackupVerifier = (_ snapshotPath: String, _ homeDirectory: String) -> Bool
 
     struct BugReportDraft {
         let title: String
@@ -95,6 +96,7 @@ final class AppViewModel: ObservableObject {
         case checkingMediaAccess
         case launchingZoom
         case completed
+        case completedWithWarnings
         case failed(String)
         case canceling
         case canceled
@@ -209,6 +211,7 @@ final class AppViewModel: ObservableObject {
     @Published var isRunning = false
     @Published var isCanceling = false
     @Published private(set) var isExecutingPrivilegedStep = false
+    @Published private(set) var privilegedOperationNeedsSettlement: Bool
     @Published var workflowState: WorkflowState = .idle
     @Published var preflight = PreflightInfo() {
         didSet {
@@ -255,7 +258,6 @@ final class AppViewModel: ObservableObject {
     var bundleVerifierOverride: BundleVerifier?
     var availableBackupCapacityBytesOverride: (() -> Int64?)?
     var skipBringAppToFront = false
-    var requireOnDiskBackupVerification = false
 
     private var runningTask: Task<Void, Never>?
     private var preflightTask: Task<Void, Never>?
@@ -267,7 +269,12 @@ final class AppViewModel: ObservableObject {
     private let processExecutor: any ProcessExecuting
     private let zoomVerifier: ZoomVerifier
     private let mediaAccessChecker: MediaAccessChecker?
+    private let backupVerifier: BackupVerifier
+    private let refreshPreflightAfterRun: Bool
     private let homeDirectoryProvider: () -> String
+    private let networkEnvironment: () -> NetworkEnvironment
+    private let privilegedGuard: PrivilegedOperationGuard
+    private var lastPrivilegedOutput: String?
     private let stopZoomCommand = ShellCommands.stopZoom
     private let stopZoomUpdatersCommand = ShellCommands.stopZoomUpdaters
 
@@ -280,13 +287,17 @@ final class AppViewModel: ObservableObject {
         customZoomAppPath ?? ZoomLocation.appPath
     }
 
+    var hasUnsettledPrivilegedOperation: Bool {
+        privilegedOperationNeedsSettlement || (!isExecutingPrivilegedStep && privilegedGuard.requiresSettlement)
+    }
+
     var isOperationGateActive: Bool {
-        runGate.isActive
+        runGate.isActive || hasUnsettledPrivilegedOperation
     }
 
     var canStartZoom: Bool {
         guard case .ready = preflight.status else { return false }
-        return !preflight.checks.contains(where: \.isBlocking) && !isRunning && !runGate.isActive
+        return !preflight.checks.contains(where: \.isBlocking) && !isRunning && !isOperationGateActive
     }
 
     init(
@@ -294,12 +305,24 @@ final class AppViewModel: ObservableObject {
         processExecutor: any ProcessExecuting = BoundedProcessExecutor(),
         zoomVerifier: @escaping ZoomVerifier = { try await ZoomBundleVerifier.verify(appPath: $0) },
         mediaAccessChecker: MediaAccessChecker? = nil,
-        homeDirectoryProvider: @escaping () -> String = NSHomeDirectory
+        homeDirectoryProvider: @escaping () -> String = NSHomeDirectory,
+        privilegedGuard: PrivilegedOperationGuard? = nil,
+        networkEnvironment: @escaping () -> NetworkEnvironment = { .current },
+        backupVerifier: @escaping BackupVerifier = { path, home in
+            BackupStore.isManagedBackupURL(URL(fileURLWithPath: path, isDirectory: true), rootURL: BackupStore.rootURL(forHomeDirectory: home))
+        },
+        refreshPreflightAfterRun: Bool = true
     ) {
         self.processExecutor = processExecutor
         self.zoomVerifier = zoomVerifier
         self.mediaAccessChecker = mediaAccessChecker
+        self.backupVerifier = backupVerifier
+        self.refreshPreflightAfterRun = refreshPreflightAfterRun
         self.homeDirectoryProvider = homeDirectoryProvider
+        self.networkEnvironment = networkEnvironment
+        let operationGuard = privilegedGuard ?? PrivilegedOperationGuard()
+        self.privilegedGuard = operationGuard
+        self.privilegedOperationNeedsSettlement = operationGuard.requiresSettlement
 
         let initialCustomPath = ZoomLocation.customAppPath
         let initialEffectivePath = initialCustomPath ?? ZoomLocation.appPath
@@ -323,7 +346,8 @@ final class AppViewModel: ObservableObject {
         activeRepairPlan = RepairPlan.build(
             readiness: readinessSnapshot,
             selectedAppPath: zoomAppPath,
-            isCustomLocation: customZoomAppPath != nil
+            isCustomLocation: customZoomAppPath != nil,
+            macSpoofingDisabled: networkEnvironment().osMajor >= 14
         )
     }
 
@@ -422,9 +446,109 @@ final class AppViewModel: ObservableObject {
 
     // MARK: - Primary Repair Workflow
 
+    func launchZoomOnly() {
+        guard canStartZoom else {
+            appendLog(hasUnsettledPrivilegedOperation ? PrivilegedOperationGuard.recoveryMessage : "Sandbox launch requires passing system checks.")
+            return
+        }
+        let specs = RepairStepSpec.canonicalSteps().filter { ["validate", "closeZoom", "mediaAccess", "launch"].contains($0.id) }
+        let selectedPath = zoomAppPath
+        if let priorBackup = currentRunBackupPath { previousBackupPath = priorBackup }
+        currentRunBackupPath = nil
+        latestBackupPath = previousBackupPath
+        lastRunResults = nil
+        expandedStepIDs.removeAll()
+        initProgress(steps: specs.map { ($0.id, $0.name) })
+        currentRunRecord = RunRecord(id: UUID(), title: "Sandbox-only Zoom launch", startedAt: Date(), finishedAt: nil,
+            selectedAppPath: selectedPath, outcome: .running,
+            steps: specs.map { .init(id: $0.id, name: $0.name, outcome: .unstarted) },
+            createdBackupPath: nil, failureMessage: nil, failedStepID: nil)
+
+        runTask("Sandbox-only Zoom launch") {
+            var activeID = "validate"
+            func record(_ id: String, _ outcome: StepResult.Outcome, _ detail: String) {
+                guard var run = self.currentRunRecord,
+                      let index = run.steps.firstIndex(where: { $0.id == id }) else { return }
+                run.steps[index] = .init(id: id, name: run.steps[index].name, outcome: outcome, detail: detail)
+                self.currentRunRecord = run
+                self.lastRunResults = run.steps
+                switch outcome {
+                case .running: self.markStepRunning(id)
+                case .success: self.markStepDone(id, succeeded: true)
+                case .failed: self.markStepDone(id, succeeded: false)
+                case .interrupted: self.markStepInterrupted(id)
+                case .warning: self.markStepWarning(id)
+                default: break
+                }
+            }
+            do {
+                self.workflowState = .preflight
+                record("validate", .running, "Verifying bundle, home, and exact sandbox profile.")
+                let requestedHome = self.homeDirectoryProvider()
+                guard let normalized = ShellCommands.normalizedSafeHomeDirectory(requestedHome) else {
+                    throw self.appError("Sandbox launch refused: invalid home directory.")
+                }
+                let home = URL(fileURLWithPath: normalized).resolvingSymlinksInPath().standardized.path
+                var directory: ObjCBool = false
+                guard ShellCommands.isSafeHomeDirectory(home),
+                      FileManager.default.fileExists(atPath: home, isDirectory: &directory), directory.boolValue else {
+                    throw self.appError("Sandbox launch requires a safe existing home directory.")
+                }
+                _ = try await self.verifiedZoomBundle()
+                _ = try await self.runProcess(stepName: "Validate Zoom sandbox profile", executable: Constants.bashPath,
+                    arguments: ["-c", ShellCommands.makeSandboxProfileValidationCommand(homeDirectory: home)], timeout: 15)
+                record("validate", .success, "Verified bundle and required sandbox profile.")
+
+                activeID = "closeZoom"
+                self.workflowState = .closingZoom
+                record(activeID, .running, "Closing this user's Zoom processes.")
+                _ = try await self.runProcess(stepName: "Close Zoom", executable: Constants.bashPath, arguments: ["-c", self.stopZoomCommand])
+                record(activeID, .success, "This user's existing Zoom processes closed.")
+
+                activeID = "mediaAccess"
+                self.workflowState = .checkingMediaAccess
+                record(activeID, .running, "Checking camera and microphone access.")
+                do {
+                    let detail = try await self.ensureMediaAccessForSandboxedZoom()
+                    record(activeID, .success, detail)
+                } catch {
+                    try Task.checkCancellation()
+                    record(activeID, .warning, error.localizedDescription)
+                }
+
+                activeID = "launch"
+                self.workflowState = .launchingZoom
+                record(activeID, .running, "Launching verified Zoom inside the required sandbox.")
+                let verified = try await self.verifiedZoomBundle()
+                let output = try await self.runProcess(stepName: "Launch Zoom", executable: Constants.bashPath,
+                    arguments: ["-c", ShellCommands.makeLaunchZoomCommand(zoomBinaryPath: verified.binaryPath,
+                        homeDirectory: home, verifiedAppPath: verified.appPath)], timeout: 120)
+                record(activeID, .success, output)
+                if var run = self.currentRunRecord {
+                    run.outcome = run.steps.contains { $0.outcome == .warning } ? .completedWithWarnings : .succeeded
+                    run.finishedAt = Date()
+                    self.currentRunRecord = run
+                }
+                return "Sandbox-only launch finished. No backup, reset, network change, or administrator DNS operation was requested. Independently starting normal Zoom bypasses this launcher's protection."
+            } catch {
+                let cancelled = error is CancellationError || Task.isCancelled
+                record(activeID, cancelled ? .interrupted : .failed, error.localizedDescription)
+                if var run = self.currentRunRecord {
+                    run.outcome = cancelled ? .cancelled : .failed
+                    run.failureMessage = cancelled ? nil : error.localizedDescription
+                    run.failedStepID = activeID
+                    run.finishedAt = Date()
+                    self.currentRunRecord = run
+                }
+                if cancelled { throw CancellationError() }
+                throw error
+            }
+        }
+    }
+
     func startZoom() {
         guard canStartZoom else {
-            appendLog("Start Zoom is unavailable until required preflight checks pass.")
+            appendLog(hasUnsettledPrivilegedOperation ? PrivilegedOperationGuard.recoveryMessage : "Start Zoom is unavailable until required preflight checks pass.")
             return
         }
 
@@ -434,7 +558,7 @@ final class AppViewModel: ObservableObject {
             URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardized.path
         } ?? requestedHomeDirectory
 
-        let canonicalSpecs = RepairStepSpec.canonicalSteps()
+        let canonicalSpecs = RepairStepSpec.canonicalSteps(macSpoofingDisabled: networkEnvironment().osMajor >= 14)
         let stepPairs = canonicalSpecs.map { ($0.id, $0.name) }
 
         // If a previous run created a backup, demote it to previousBackupPath before starting this run.
@@ -592,12 +716,8 @@ final class AppViewModel: ObservableObject {
                     guard !backupPath.isEmpty else {
                         throw self.appError("Backup completed without returning a recovery location.")
                     }
-                    if self.requireOnDiskBackupVerification || (self.processExecutorOverride == nil && self.processExecutor is BoundedProcessExecutor) {
-                        let backupURL = URL(fileURLWithPath: backupPath, isDirectory: true)
-                        let expectedRootURL = BackupStore.rootURL(forHomeDirectory: homeDirectory)
-                        guard BackupStore.isManagedBackupURL(backupURL, rootURL: expectedRootURL) else {
-                            throw self.appError("Backup verification failed: '\(backupPath)' is not a valid recovery snapshot on disk.")
-                        }
+                    guard self.backupVerifier(backupPath, homeDirectory) else {
+                        throw self.appError("Backup verification failed: '\(backupPath)' is not a valid recovery snapshot on disk.")
                     }
                     runCreatedBackup = backupPath
                     self.currentRunBackupPath = backupPath
@@ -612,19 +732,26 @@ final class AppViewModel: ObservableObject {
                 }
 
                 // 4. Network handling.
-                let networkStepName = ShellCommands.isMacSpoofingDisabledForCurrentOS() ? "Network Check" : "MAC Spoof & Network"
-                self.workflowState = ShellCommands.isMacSpoofingDisabledForCurrentOS() ? .checkingNetwork : .spoofingMAC
+                let networkStepName = self.networkEnvironment().osMajor >= 14 ? "Network Check" : "MAC Spoof & Network"
+                self.workflowState = self.networkEnvironment().osMajor >= 14 ? .checkingNetwork : .spoofingMAC
                 beginStep("network")
                 self.appendLog(ShellCommands.isMacSpoofingDisabledForCurrentOS()
                     ? "Step: Check active network; legacy MAC spoofing is disabled on macOS 14+"
                     : "Step: Spoof MAC and reconnect active network (admin prompt expected)")
                 var precomputedDNSResult: PrivilegedDNSResult?
+                func recordDNS(_ dns: PrivilegedDNSResult) {
+                    precomputedDNSResult = dns
+                    if dns.succeeded { self.markStepDone("dns", succeeded: true) }
+                    else { self.markStepWarning("dns") }
+                    finishStep(.init(id: "dns", name: "DNS Flush", outcome: dns.succeeded ? .success : .warning,
+                        detail: dns.detail.isEmpty ? "DNS operation completed during the combined administrator step." : dns.detail))
+                }
                 do {
                     let networkResult = try await self.spoofMACAndReconnectActiveInterface(
-                        onPrivilegedDNSResult: { precomputedDNSResult = $0 }
+                        onPrivilegedDNSResult: { recordDNS($0) }
                     )
                     if let dnsResult = networkResult.dnsResult {
-                        precomputedDNSResult = dnsResult
+                        recordDNS(dnsResult)
                     }
                     let outcome: StepResult.Outcome
                     if networkResult.wasSkipped {
@@ -644,6 +771,12 @@ final class AppViewModel: ObservableObject {
                         detail: networkResult.summary
                     ))
                 } catch {
+                    if self.privilegedOperationNeedsSettlement {
+                        self.markStepDone("network", succeeded: false)
+                        finishStep(.init(id: "network", name: networkStepName, outcome: .failed, detail: PrivilegedOperationGuard.recoveryMessage))
+                        throw self.appError(PrivilegedOperationGuard.recoveryMessage)
+                    }
+                    if error is CancellationError { throw error }
                     try Task.checkCancellation()
                     self.markStepWarning("network")
                     finishStep(.init(id: "network", name: networkStepName, outcome: .warning, detail: error.localizedDescription))
@@ -664,27 +797,21 @@ final class AppViewModel: ObservableObject {
                         arguments: ["-c", ShellCommands.makeResetZoomDataWithStatusCommand(homeDirectory: homeDirectory)]
                     )
                     let lines = output.components(separatedBy: .newlines)
-                    let resetSucceeded = lines.contains("__1132_RESET_STATUS__=0")
+                    try OperationStatus.requireSuccess(in: output, marker: "__1132_RESET_STATUS__")
                     let detail = lines.filter { !$0.hasPrefix("__1132_") }.joined(separator: "\n")
                         .trimmingCharacters(in: .whitespacesAndNewlines)
-                    if resetSucceeded {
-                        self.markStepDone("resetData", succeeded: true)
-                    } else {
-                        self.markStepWarning("resetData")
-                    }
+                    self.markStepDone("resetData", succeeded: true)
                     finishStep(.init(
                         id: "resetData",
                         name: "Clear Local State",
-                        outcome: resetSucceeded ? .success : .warning,
-                        detail: resetSucceeded
-                            ? (detail.isEmpty ? "Cleared local Zoom caches, preferences, and containers." : detail)
-                            : "Could not clear all Zoom data. \(detail)"
+                        outcome: .success,
+                        detail: detail.isEmpty ? "Cleared the listed Zoom state and local logs." : detail
                     ))
                 } catch {
                     try Task.checkCancellation()
-                    self.markStepWarning("resetData")
-                    finishStep(.init(id: "resetData", name: "Clear Local State", outcome: .warning, detail: error.localizedDescription))
-                    self.appendLog("Warning: \(error.localizedDescription)")
+                    self.markStepDone("resetData", succeeded: false)
+                    finishStep(.init(id: "resetData", name: "Clear Local State", outcome: .failed, detail: error.localizedDescription))
+                    throw self.appError("Reset failed. Zoom was not launched. Earlier network/DNS changes may remain; no rollback was performed. Backup: \(runCreatedBackup ?? "unavailable"). \(error.localizedDescription)")
                 }
 
                 // 6. DNS flush.
@@ -713,17 +840,15 @@ final class AppViewModel: ObservableObject {
                 } else {
                     self.appendLog("Step: Refresh DNS cache (admin prompt may appear)")
                     do {
-                        let script = ShellCommands.appleScriptDoShellScript(
-                            ShellCommands.makeTimeBoundedCommand(ShellCommands.makeRefreshDNSCommand(), seconds: 55),
-                            administratorPrivileges: true
-                        )
+                        let script = ShellCommands.makePrivilegedCommand(ShellCommands.makeRefreshDNSCommand(), policy: .dns)
                         let output = try await self.runProcess(
                             stepName: "Refresh DNS cache",
                             executable: Constants.osascriptPath,
-                            arguments: ["-e", script]
+                            arguments: ["-e", script],
+                            timeout: PrivilegedTimeoutPolicy.dns.processTimeout
                         )
                         let lines = output.components(separatedBy: .newlines)
-                        let dnsSucceeded = lines.contains("__1132_DNS_STATUS__=0")
+                        let dnsSucceeded = OperationStatus.value(in: output, marker: "__1132_DNS_STATUS__") == 0
                         let detail = lines.filter { !$0.hasPrefix("__1132_") }.joined(separator: "\n")
                             .trimmingCharacters(in: .whitespacesAndNewlines)
                         if dnsSucceeded {
@@ -740,6 +865,12 @@ final class AppViewModel: ObservableObject {
                                 : "Could not refresh DNS cache. \(detail)"
                         ))
                     } catch {
+                        if self.privilegedOperationNeedsSettlement {
+                            self.markStepDone("dns", succeeded: false)
+                            finishStep(.init(id: "dns", name: "DNS Flush", outcome: .failed, detail: PrivilegedOperationGuard.recoveryMessage))
+                            throw self.appError(PrivilegedOperationGuard.recoveryMessage)
+                        }
+                        if error is CancellationError { throw error }
                         try Task.checkCancellation()
                         self.markStepWarning("dns")
                         finishStep(.init(id: "dns", name: "DNS Flush", outcome: .warning, detail: error.localizedDescription))
@@ -792,13 +923,14 @@ final class AppViewModel: ObservableObject {
                 beginStep("launch")
                 self.appendLog("Step: Launch Zoom")
                 do {
-                    let verifiedBinaryPath = try await self.verifiedZoomBinaryPath()
+                    let verifiedBundle = try await self.verifiedZoomBundle()
                     let output = try await self.runProcess(
                         stepName: "Launch Zoom",
                         executable: Constants.bashPath,
                         arguments: ["-c", ShellCommands.makeLaunchZoomCommand(
-                            zoomBinaryPath: verifiedBinaryPath,
-                            homeDirectory: homeDirectory
+                            zoomBinaryPath: verifiedBundle.binaryPath,
+                            homeDirectory: homeDirectory,
+                            verifiedAppPath: verifiedBundle.appPath
                         )],
                         timeout: 120
                     )
@@ -836,7 +968,7 @@ final class AppViewModel: ObservableObject {
                 syncRunRecord(outcome: .cancelled)
                 throw CancellationError()
             } catch {
-                if Task.isCancelled {
+                if Task.isCancelled && !self.privilegedOperationNeedsSettlement {
                     if let active = activeStepSpec {
                         self.markStepInterrupted(active.id)
                         completedResults.removeAll(where: { $0.id == active.id })
@@ -919,6 +1051,21 @@ final class AppViewModel: ObservableObject {
         workflowProgress = progress
     }
 
+    private func finalizeRunRecordOnTermination(wasCancelled: Bool, message: String?) {
+        guard var run = currentRunRecord, run.outcome == .running || run.outcome == .stopping else { return }
+        let activeID = run.steps.first { $0.outcome == .running }?.id
+        run.steps = run.steps.map { step in
+            guard step.outcome == .running else { return step }
+            return .init(id: step.id, name: step.name, outcome: wasCancelled ? .interrupted : .failed, detail: message ?? "Stopped by user; effects may be partial.")
+        }
+        run.outcome = wasCancelled ? .cancelled : .failed
+        run.failedStepID = activeID
+        run.failureMessage = message
+        run.finishedAt = Date()
+        currentRunRecord = run
+        lastRunResults = run.steps
+    }
+
     func cancelWorkflow() {
         guard isRunning, !isCanceling else { return }
         isCanceling = true
@@ -936,7 +1083,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func dryRun() {
-        guard !isRunning, !runGate.isActive else {
+        guard !isRunning, !isOperationGateActive else {
             appendLog("Another task is already running.")
             return
         }
@@ -1095,7 +1242,7 @@ final class AppViewModel: ObservableObject {
             let zoomRunning = (try? await self.runProcess(
                 stepName: "Check Zoom process",
                 executable: Constants.bashPath,
-                arguments: ["-c", "/usr/bin/pgrep -x \"zoom.us\" >/dev/null 2>&1 && echo running || echo stopped"]
+                arguments: ["-c", ShellCommands.makeZoomRunningCheckCommand()]
             ))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
             results.append("Zoom process: \(zoomRunning)")
             finishStep(
@@ -1144,21 +1291,10 @@ final class AppViewModel: ObservableObject {
                 var strategyDetail = "Active interface: \(portName) (\(device))"
                 if let kind = try? ShellCommands.classifySupportedInterface(hardwarePortName: portName) {
                     results.append("Interface type: \(kind.rawValue)")
-                    switch ShellCommands.networkIdentityStrategy(isWiFi: kind == .wifi) {
-                    case .rotatingPrivateWiFiAddress:
-                        let desc = "Rotating Private Wi-Fi Address (Apple Silicon + macOS 14+)"
-                        results.append("Network identity: \(desc)")
-                        strategyDetail += " — Read-only preview: would use \(desc)."
-                    case .unsupported:
-                        let desc = "UNAVAILABLE — MAC spoofing is disabled on macOS 14+"
-                        results.append("Network identity: \(desc)")
-                        strategyDetail += " — \(desc)."
-                        networkOutcome = .warning
-                    case .legacyMACSpoof:
-                        let desc = "MAC spoofing available"
-                        results.append("Network identity: \(desc)")
-                        strategyDetail += " — Read-only preview: \(desc)."
-                    }
+                    let capability = NetworkCapability.resolve(environment: self.networkEnvironment(), interface: kind)
+                    results.append("Network identity: \(capability.explanation)")
+                    strategyDetail += " — " + capability.explanation
+                    networkOutcome = capability.mechanism == .legacyAttempt ? .skipped : .warning
                 }
                 finishStep("network", outcome: networkOutcome, detail: strategyDetail)
             } catch {
@@ -1216,7 +1352,11 @@ final class AppViewModel: ObservableObject {
                 detail: "Read-only preview: would launch verified Zoom binary inside sandbox-exec."
             )
 
-            let hasAdvisories = completedResults.contains { $0.outcome == .warning || $0.outcome == .failed }
+            if let validateFailure {
+                syncRunRecord(outcome: .failed, failureMessage: validateFailure, failedStepID: "validate")
+                throw self.appError("Preview validation failed: \(validateFailure). No repair changes were made.")
+            }
+            let hasAdvisories = completedResults.contains { $0.outcome == .warning }
             syncRunRecord(outcome: hasAdvisories ? .completedWithWarnings : .succeeded)
 
             results.append("")
@@ -1384,14 +1524,9 @@ final class AppViewModel: ObservableObject {
             checks.append(.init(id: "admin", label: "Admin Prompts", value: "Expected", isWarning: false))
 
             if let activeInterfaceKind {
-                switch ShellCommands.networkIdentityStrategy(isWiFi: activeInterfaceKind == .wifi) {
-                case .rotatingPrivateWiFiAddress:
-                    checks.append(.init(id: "macspoof", label: "Network Identity", value: "Rotating Private Wi-Fi Address", isWarning: false))
-                case .unsupported:
-                    checks.append(.init(id: "macspoof", label: "Network Identity", value: "Unavailable on this macOS/interface", isWarning: true))
-                case .legacyMACSpoof:
-                    checks.append(.init(id: "macspoof", label: "Network Identity", value: "MAC spoofing available", isWarning: false))
-                }
+                let capability = NetworkCapability.resolve(environment: self.networkEnvironment(), interface: activeInterfaceKind)
+                checks.append(.init(id: "macspoof", label: "Network Identity", value: capability.explanation,
+                    isWarning: capability.mechanism != .legacyAttempt))
             } else {
                 checks.append(.init(id: "macspoof", label: "Network Identity", value: "Could not determine", isWarning: true))
             }
@@ -1400,6 +1535,10 @@ final class AppViewModel: ObservableObject {
             checks.append(.init(id: "camera", label: "Camera", value: camera.value, isWarning: camera.isWarning))
             let microphone = Self.mediaAccessPreflightValue(for: .audio)
             checks.append(.init(id: "microphone", label: "Microphone", value: microphone.value, isWarning: microphone.isWarning))
+
+            if self.hasUnsettledPrivilegedOperation {
+                checks.append(.init(id: "privileged-settlement", label: "Administrator operation", value: PrivilegedOperationGuard.recoveryMessage, isWarning: true, isBlocking: true))
+            }
 
             guard self.activePreflightID == preflightID, !Task.isCancelled else { return }
             self.preflight = PreflightInfo(status: .ready, checks: checks)
@@ -1476,8 +1615,8 @@ final class AppViewModel: ObservableObject {
         let osVersion = ProcessInfo.processInfo.operatingSystemVersionString
         let architecture = ShellCommands.machineArchitecture()
         let lastStatus = inferLastActionStatus()
-        let selectedPath = DiagnosticsCollector.redactingHomeDirectory(zoomAppPath)
-        let readinessText = "\(readinessSnapshot.state.badgeLabel) — \(DiagnosticsCollector.redactingHomeDirectory(readinessSnapshot.headline))"
+        let selectedPath = DiagnosticsCollector.sanitizedForSharing(zoomAppPath)
+        let readinessText = "\(readinessSnapshot.state.badgeLabel) — \(DiagnosticsCollector.sanitizedForSharing(readinessSnapshot.headline))"
         let runSummaryText: String
         if let record = currentRunRecord {
             let stepSummary = record.steps
@@ -1489,7 +1628,7 @@ final class AppViewModel: ObservableObject {
             runSummaryText = "No repair run in this session"
         }
 
-        let systemInfo = """
+        let rawSystemInfo = """
 App version: \(appVersion)
 OS: \(osVersion)
 Architecture: \(architecture)
@@ -1498,6 +1637,7 @@ Selected Zoom path: \(selectedPath)
 Readiness: \(readinessText)
 Last action status: \(lastStatus)
 """
+        let systemInfo = DiagnosticsCollector.sanitizedForSharing(rawSystemInfo)
         let diagnostics = await makeDiagnosticsExport(
             appVersion: appVersion,
             maxLogLines: Self.maxInMemoryLogEntries
@@ -1582,7 +1722,7 @@ Last action status: \(lastStatus)
         lines.append("--- Activity Log (\(capturedLogs.count) entries) ---")
         lines.append(contentsOf: capturedLogs)
 
-        let content = DiagnosticsCollector.redactingHomeDirectory(lines.joined(separator: "\n"))
+        let content = DiagnosticsCollector.sanitizedForSharing(lines.joined(separator: "\n"))
         return (Self.diagnosticsFileName, content)
     }
 
@@ -1590,12 +1730,30 @@ Last action status: \(lastStatus)
         _ title: String,
         action: @escaping () async throws -> String
     ) {
-        guard !isRunning else {
+        guard !isRunning, !privilegedGuard.requiresSettlement else {
+            privilegedOperationNeedsSettlement = privilegedGuard.requiresSettlement
             appendLog("Another task is already running.")
             return
         }
 
+        guard privilegedGuard.acquireWorkflowOwnership() else {
+            let message = "Another app instance owns the workflow, or the private workflow lock is unavailable."
+            workflowState = .failed(message)
+            finalizeProgressOnTermination(wasCancelled: false)
+            finalizeRunRecordOnTermination(wasCancelled: false, message: message)
+            appendLog(message)
+            return
+        }
+        guard !privilegedGuard.requiresSettlement else {
+            privilegedGuard.releaseWorkflowOwnership()
+            privilegedOperationNeedsSettlement = true
+            workflowState = .failed(PrivilegedOperationGuard.recoveryMessage)
+            finalizeRunRecordOnTermination(wasCancelled: false, message: PrivilegedOperationGuard.recoveryMessage)
+            return
+        }
+
         guard let runID = runGate.begin() else {
+            privilegedGuard.releaseWorkflowOwnership()
             appendLog("Another task still owns the workflow lock.")
             return
         }
@@ -1608,12 +1766,13 @@ Last action status: \(lastStatus)
         runningTask = Task {
             defer {
                 if runGate.finish(runID) {
+                    if !privilegedGuard.requiresSettlement { privilegedGuard.releaseWorkflowOwnership() }
                     appendLog("Timing: \(title) finished in \(Self.formatElapsed(startedAt.duration(to: clock.now))).")
                     isRunning = false
                     isCanceling = false
                     isExecutingPrivilegedStep = false
                     runningTask = nil
-                    if processExecutorOverride == nil && bundleVerifierOverride == nil {
+                    if refreshPreflightAfterRun {
                         runPreflight()
                     }
                 }
@@ -1625,21 +1784,25 @@ Last action status: \(lastStatus)
                 if !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     appendLog(output)
                 }
-                workflowState = .completed
-                appendLog("=== Completed ===")
+                let hasWarnings = currentRunRecord?.outcome == .completedWithWarnings
+                workflowState = hasWarnings ? .completedWithWarnings : .completed
+                appendLog(hasWarnings ? "=== Completed with warnings ===" : "=== Completed ===")
             } catch is CancellationError {
                 workflowState = .canceled
                 finalizeProgressOnTermination(wasCancelled: true)
-                appendLog("=== Canceled safely ===")
+                finalizeRunRecordOnTermination(wasCancelled: true, message: nil)
+                appendLog("=== Cancelled; earlier effects remain recorded ===")
             } catch {
-                if Task.isCancelled {
+                if Task.isCancelled && !privilegedOperationNeedsSettlement {
                     workflowState = .canceled
                     finalizeProgressOnTermination(wasCancelled: true)
-                    appendLog("=== Canceled safely ===")
+                    finalizeRunRecordOnTermination(wasCancelled: true, message: nil)
+                    appendLog("=== Cancelled; earlier effects remain recorded ===")
                     return
                 }
                 workflowState = .failed(error.localizedDescription)
                 finalizeProgressOnTermination(wasCancelled: false)
+                finalizeRunRecordOnTermination(wasCancelled: false, message: error.localizedDescription)
                 appendLog("Error: \(error.localizedDescription)")
                 appendLog("=== Failed ===")
             }
@@ -1721,18 +1884,13 @@ Last action status: \(lastStatus)
     ) async throws -> MACSpoofResult {
         let interface = try await resolveActiveSupportedInterface()
 
-        switch ShellCommands.networkIdentityStrategy(isWiFi: interface.kind == .wifi) {
-        case .rotatingPrivateWiFiAddress:
-            return try await resetPrivateWiFiAddressAndReconnect(networkService: interface.networkService, device: interface.device)
-        case .unsupported:
-            return MACSpoofResult(
-                summary: "MAC spoofing is disabled on macOS 14 and later because the old spoofing method no longer works reliably. Active network: \(interface.kind.rawValue) (\(interface.device), service: \(interface.networkService)).",
-                hasWarning: true,
-                wasSkipped: true
-            )
-        case .legacyMACSpoof:
-            break
+        let capability = NetworkCapability.resolve(environment: networkEnvironment(), interface: interface.kind == .wifi ? .wifi : .ethernet)
+        guard capability.mechanism == .legacyAttempt else {
+            return MACSpoofResult(summary: capability.explanation, hasWarning: true, wasSkipped: true)
         }
+        let previousOutput = (try? await runProcess(stepName: "Read current MAC address", executable: Constants.bashPath,
+            arguments: ["-c", ShellCommands.makeVerifyMACCommand(device: interface.device)])) ?? ""
+        let previousMAC = ShellCommands.normalizedMACAddress(previousOutput)
 
         let spoofedMAC = try ShellCommands.generateRandomMACAddress()
         let spoofScript = ShellCommands.makeSpoofAndDNSCommand(
@@ -1744,19 +1902,24 @@ Last action status: \(lastStatus)
 
         appendLog("Network recovery: commands to be attempted on \(interface.device) (service: \(interface.networkService))")
 
-        let appleScript = ShellCommands.appleScriptDoShellScript(
-            ShellCommands.makeTimeBoundedCommand(spoofScript, seconds: 85),
-            administratorPrivileges: true
-        )
+        let appleScript = ShellCommands.makePrivilegedCommand(spoofScript, policy: .network)
         let commandOutput: String
         do {
             commandOutput = try await runProcess(
                 stepName: "Spoof MAC and reconnect \(interface.kind.rawValue)",
                 executable: Constants.osascriptPath,
                 arguments: ["-e", appleScript],
-                timeout: 90
+                timeout: PrivilegedTimeoutPolicy.network.processTimeout
             )
         } catch {
+            if error is CancellationError { throw error }
+            if privilegedOperationNeedsSettlement {
+                let dnsSucceeded = lastPrivilegedOutput.flatMap { OperationStatus.value(in: $0, marker: "__1132_DNS_STATUS__") } == 0
+                onPrivilegedDNSResult?(PrivilegedDNSResult(succeeded: dnsSucceeded,
+                    detail: dnsSucceeded ? "DNS reported success during the combined administrator step; overall privileged lifecycle remains indeterminate."
+                        : "DNS may have run during the combined administrator step; its completion is unverified."))
+                throw error
+            }
             try Task.checkCancellation()
             onPrivilegedDNSResult?(PrivilegedDNSResult(succeeded: false, detail: error.localizedDescription))
             appendLog("Network recovery: MAC spoof command failed. Commands attempted:")
@@ -1772,7 +1935,7 @@ Network recovery: Your network interface may be in an inconsistent state. To res
         }
 
         let outputLines = commandOutput.components(separatedBy: .newlines)
-        let dnsSucceeded = outputLines.contains("__1132_DNS_STATUS__=0")
+        let dnsSucceeded = OperationStatus.value(in: commandOutput, marker: "__1132_DNS_STATUS__") == 0
         let spoofSentinelIndex = outputLines.firstIndex(where: { $0.hasPrefix("__1132_SPOOF_STATUS__=") })
         let nonSentinelCommandOutput: String
         let dnsOutput: String
@@ -1796,23 +1959,8 @@ Network recovery: Your network interface may be in an inconsistent state. To res
         let dnsResult = PrivilegedDNSResult(succeeded: dnsSucceeded, detail: dnsOutput)
         onPrivilegedDNSResult?(dnsResult)
 
-        if let spoofSentinelIndex,
-           outputLines[spoofSentinelIndex] != "__1132_SPOOF_STATUS__=0" {
-            appendLog("Network recovery: MAC spoof command failed. Commands attempted:")
-            appendLog("  \(spoofScript)")
-            appendLog("""
-Network recovery: Your network interface may be in an inconsistent state. To restore manually:
-  1. Open System Settings > Network
-  2. Find '\(interface.networkService)' and turn it off, then on again
-  3. Or run in Terminal: sudo /sbin/ifconfig \(interface.device) up
-  4. If Wi-Fi is disconnected, click the Wi-Fi menu and reconnect to your network
-""")
-            let statusValue = outputLines[spoofSentinelIndex].replacingOccurrences(of: "__1132_SPOOF_STATUS__=", with: "")
-            let failureDetail = nonSentinelCommandOutput.isEmpty
-                ? "Spoof MAC and reconnect \(interface.kind.rawValue): Command exited with status \(statusValue)."
-                : "Spoof MAC and reconnect \(interface.kind.rawValue): \(nonSentinelCommandOutput)"
-            throw appError(failureDetail)
-        }
+        try OperationStatus.requireSuccess(in: commandOutput, marker: "__1132_SPOOF_STATUS__")
+        try Task.checkCancellation()
 
         let verifyScript = ShellCommands.makeVerifyMACCommand(device: interface.device)
         let actualMACOutput = (try? await runProcess(
@@ -1827,26 +1975,14 @@ Network recovery: Your network interface may be in an inconsistent state. To res
         var warnings: [String] = []
         let summary: String
         if macVerified {
-            summary = "MAC spoofed on \(interface.kind.rawValue) (\(interface.device), service: \(interface.networkService)) -> \(spoofedMAC); network service restarted"
+            summary = "Requested MAC observed on \(interface.kind.rawValue) (\(interface.device), service: \(interface.networkService)) -> \(spoofedMAC); network service restarted"
         } else {
             let detail = actualMAC.map {
                 "Current MAC (\($0)) does not match target (\(spoofedMAC))."
             } ?? "Could not read the current MAC address after spoofing."
             appendLog("Network recovery: MAC change was not applied. Commands attempted:")
             appendLog("  \(spoofScript)")
-            let warning = """
-Warning: MAC address was not changed on \(interface.kind.rawValue) (\(interface.device)). \(detail)
-This is a known macOS limitation on Apple Silicon Macs (macOS Sonoma 14 and later):
-the OS blocks Wi-Fi MAC spoofing at the driver level. Zoom will likely still show error 1132.
-What you can try:
-  1. Connect via Ethernet — MAC spoofing still works on Ethernet adapters.
-  2. Use your phone as a hotspot — this gives you a different network identity entirely.
-  3. Turn on Private Wi-Fi Address for your network in System Settings > Wi-Fi,
-disconnect, and reconnect before running Start Zoom again.
-If your network connection is disrupted after this step:
-  - Open System Settings > Network and toggle '\(interface.networkService)' off then on
-  - Or run in Terminal: sudo /sbin/ifconfig \(interface.device) up
-"""
+            let warning = "MAC address change was not verified on \(interface.kind.rawValue) (\(interface.device)). \(detail) Driver support varies; changing networks does not establish that error 1132 is resolved. If connectivity is disrupted, reconnect using System Settings > Network."
             warnings.append(warning)
             summary = warning
         }
@@ -1856,7 +1992,12 @@ If your network connection is disrupted after this step:
             warnings.append(recoveryWarning)
         }
 
-        var summaryParts = [summary]
+        let observation = NetworkIdentityObservation(reconnected: recoveryWarning == nil,
+            previousAddress: previousMAC, currentAddress: actualMAC, verifiedMode: nil)
+        if observation.addressChanged != true {
+            warnings.append(observation.addressChanged == false ? "The address did not change." : "The address change could not be established.")
+        }
+        var summaryParts = [summary, observation.summary]
 
         if !nonSentinelCommandOutput.isEmpty {
             summaryParts.append(nonSentinelCommandOutput)
@@ -1868,155 +2009,6 @@ If your network connection is disrupted after this step:
 
         return MACSpoofResult(
             summary: combinedSummary,
-            hasWarning: !warnings.isEmpty,
-            wasSkipped: false,
-            dnsResult: dnsResult
-        )
-    }
-
-    private func resetPrivateWiFiAddressAndReconnect(networkService: String, device: String) async throws -> MACSpoofResult {
-        let verifyScript = ShellCommands.makeVerifyMACCommand(device: device)
-        let previousMACOutput = (try? await runProcess(
-            stepName: "Read current MAC address",
-            executable: Constants.bashPath,
-            arguments: ["-c", verifyScript]
-        )) ?? ""
-        let previousMAC = ShellCommands.normalizedMACAddress(previousMACOutput)
-        try Task.checkCancellation()
-
-        let getModeCmd = ShellCommands.makeGetPrivateAddressModeCommand(networkService: networkService)
-        let currentModeOutput = (try? await runProcess(
-            stepName: "Check Private Wi-Fi Address mode",
-            executable: Constants.bashPath,
-            arguments: ["-c", getModeCmd]
-        )) ?? "unsupported"
-        try Task.checkCancellation()
-        let currentMode = ShellCommands.normalizePrivateAddressModeOutput(currentModeOutput)
-
-        appendLog("Private Wi-Fi Address mode: \(currentMode)")
-
-        var modeWasChanged = false
-        var warnings: [String] = []
-        let shouldEnableRotating = (currentMode != "unsupported" && currentMode != "rotating")
-
-        if currentMode == "unsupported" {
-            warnings.append("Warning: Private Wi-Fi Address controls are unsupported on this macOS/networksetup version.")
-        }
-
-        let resetAndDNSCmd = ShellCommands.makeRotatingMACAndDNSResetCommand(
-            device: device,
-            networkService: networkService,
-            enableRotatingMode: shouldEnableRotating,
-            includeDNSFlush: true
-        )
-        let resetScript = ShellCommands.appleScriptDoShellScript(
-            ShellCommands.makeTimeBoundedCommand(resetAndDNSCmd, seconds: 55),
-            administratorPrivileges: true
-        )
-        var dnsResult: PrivilegedDNSResult?
-        do {
-            let output = try await runProcess(
-                stepName: "Reset Wi-Fi to generate new rotating MAC",
-                executable: Constants.osascriptPath,
-                arguments: ["-e", resetScript],
-                timeout: 60
-            )
-            let lines = output.components(separatedBy: .newlines)
-            let wifiSentinelIndex = lines.firstIndex(where: { $0.hasPrefix("__1132_WIFI_RESET_STATUS__=") })
-            let dnsDetail: String
-            if let wifiSentinelIndex {
-                dnsDetail = lines[(wifiSentinelIndex + 1)...]
-                    .filter { !$0.hasPrefix("__1132_") }
-                    .joined(separator: "\n")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-            } else {
-                dnsDetail = lines
-                    .filter { !$0.hasPrefix("__1132_") }
-                    .joined(separator: "\n")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-
-            if shouldEnableRotating {
-                if lines.contains("__1132_PRIVATE_MODE_STATUS__=0")
-                    || !lines.contains(where: { $0.hasPrefix("__1132_PRIVATE_MODE_STATUS__=") }) {
-                    modeWasChanged = true
-                    appendLog("Private Wi-Fi Address set to rotating (was: \(currentMode))")
-                } else {
-                    let warning = "Warning: Could not set Private Wi-Fi Address to rotating."
-                    warnings.append(warning)
-                    appendLog(warning)
-                }
-            }
-
-            if let wifiStatusLine = lines.first(where: { $0.hasPrefix("__1132_WIFI_RESET_STATUS__=") }),
-               wifiStatusLine != "__1132_WIFI_RESET_STATUS__=0" {
-                let warning = "Warning: Wi-Fi cycle encountered an error."
-                warnings.append(warning)
-                appendLog(warning)
-            }
-
-            let dnsSucceeded = lines.contains("__1132_DNS_STATUS__=0")
-            dnsResult = PrivilegedDNSResult(succeeded: dnsSucceeded, detail: dnsDetail)
-        } catch {
-            try Task.checkCancellation()
-            if shouldEnableRotating {
-                let modeWarning = "Warning: Could not set Private Wi-Fi Address to rotating: \(error.localizedDescription)"
-                warnings.append(modeWarning)
-                appendLog(modeWarning)
-            }
-            let warning = "Warning: Wi-Fi cycle encountered an error: \(error.localizedDescription)"
-            warnings.append(warning)
-            appendLog(warning)
-            dnsResult = PrivilegedDNSResult(succeeded: false, detail: error.localizedDescription)
-        }
-
-        // 4. Read the new MAC for logging
-        let newMACOutput = (try? await runProcess(
-            stepName: "Read new MAC address",
-            executable: Constants.bashPath,
-            arguments: ["-c", verifyScript]
-        )) ?? ""
-        let newMAC = ShellCommands.normalizedMACAddress(newMACOutput)
-        try Task.checkCancellation()
-
-        let verifiedModeOutput = (try? await runProcess(
-            stepName: "Verify Private Wi-Fi Address mode",
-            executable: Constants.bashPath,
-            arguments: ["-c", getModeCmd]
-        )) ?? "unsupported"
-        try Task.checkCancellation()
-        let verifiedMode = ShellCommands.normalizePrivateAddressModeOutput(verifiedModeOutput)
-
-        if verifiedMode != "rotating" {
-            warnings.append("Warning: Private Wi-Fi Address mode is '\(verifiedMode)' after the change; rotating mode was not verified.")
-        }
-        if newMAC == nil {
-            warnings.append("Warning: The current MAC address could not be read after cycling Wi-Fi.")
-        } else if let previousMAC, newMAC == previousMAC {
-            warnings.append("Warning: Wi-Fi reconnected, but the MAC address did not change (\(previousMAC)).")
-        }
-        let recoveryWarning = try await verifyNetworkRecovered(expectedDevice: device)
-        if let recoveryWarning {
-            warnings.append(recoveryWarning)
-        }
-
-        let modeNote: String
-        if currentMode == "unsupported" {
-            modeNote = "Private Wi-Fi Address mode could not be verified on this system. "
-        } else if modeWasChanged {
-            modeNote = "Private Wi-Fi Address changed to rotating (was: \(currentMode)). "
-        } else if currentMode == "rotating" {
-            modeNote = "Private Wi-Fi Address was already set to rotating. "
-        } else {
-            modeNote = "Private Wi-Fi Address remained \(currentMode). "
-        }
-
-        let displayedMAC = newMAC ?? "(could not read)"
-        var summaryParts = ["\(modeNote)Wi-Fi cycled for a rotating MAC. Current MAC: \(displayedMAC)"]
-        summaryParts.append(contentsOf: warnings)
-
-        return MACSpoofResult(
-            summary: summaryParts.joined(separator: "\n"),
             hasWarning: !warnings.isEmpty,
             wasSkipped: false,
             dnsResult: dnsResult
@@ -2082,15 +2074,20 @@ If your network connection is disrupted after this step:
     // MARK: - Zoom Location
 
     private func verifiedZoomBinaryPath() async throws -> String {
+        let verified = try await verifiedZoomBundle()
+        return verified.binaryPath
+    }
+
+    private func verifiedZoomBundle() async throws -> ZoomBundleVerifier.VerifiedBundle {
         let appPath = zoomAppPath
         if let verifier = bundleVerifierOverride {
             let verified = try await Task.detached(priority: .userInitiated) {
                 try verifier(appPath)
             }.value
-            return verified.binaryPath
+            return verified
         }
         let verified = try await zoomVerifier(appPath)
-        return verified.binaryPath
+        return verified
     }
 
     func chooseZoomLocation() {
@@ -2229,10 +2226,6 @@ If your network connection is disrupted after this step:
         if let mediaAccessChecker {
             return try await mediaAccessChecker()
         }
-        if processExecutorOverride != nil {
-            return "Camera access already granted; Microphone access already granted"
-        }
-
         // macOS only presents a privacy prompt while the requesting app is
         // frontmost. The admin (SecurityAgent) prompts in the earlier steps leave
         // another process in front, so without this the prompt is deferred and
@@ -2356,6 +2349,12 @@ If your network connection is disrupted after this step:
 
         let isPrivileged = (executable == Constants.osascriptPath)
         if isPrivileged {
+            guard !privilegedGuard.requiresSettlement else { throw appError(PrivilegedOperationGuard.recoveryMessage) }
+            lastPrivilegedOutput = nil
+            guard privilegedGuard.begin() else {
+                privilegedOperationNeedsSettlement = true
+                throw appError("Cannot persist administrator-operation ownership. " + PrivilegedOperationGuard.recoveryMessage)
+            }
             isExecutingPrivilegedStep = true
         }
         let clock = ContinuousClock()
@@ -2363,26 +2362,30 @@ If your network connection is disrupted after this step:
         defer {
             if isPrivileged {
                 isExecutingPrivilegedStep = false
+                privilegedOperationNeedsSettlement = privilegedGuard.requiresSettlement
             }
             appendLog("Timing: \(stepName) took \(Self.formatElapsed(startedAt.duration(to: clock.now))).")
-        }
-
-        if let override = processExecutorOverride {
-            return try await override(stepName, executable, arguments, timeout)
         }
 
         do {
             let result: ProcessExecutionResult
             if isPrivileged {
                 let executor = processExecutor
+                let override = processExecutorOverride
                 result = try await Task.detached(priority: .userInitiated) {
-                    try await executor.run(
+                    if let override {
+                        let output = try await override(stepName, executable, arguments, timeout)
+                        return ProcessExecutionResult(exitCode: 0, standardOutput: output, standardError: "", outputWasTruncated: false)
+                    }
+                    return try await executor.run(
                         executable: executable,
                         arguments: arguments,
                         timeout: timeout,
                         maxOutputBytes: BoundedProcessExecutor.defaultMaxOutputBytes
                     )
                 }.value
+            } else if let override = processExecutorOverride {
+                return try await override(stepName, executable, arguments, timeout)
             } else {
                 result = try await processExecutor.run(
                     executable: executable,
@@ -2391,16 +2394,26 @@ If your network connection is disrupted after this step:
                     maxOutputBytes: BoundedProcessExecutor.defaultMaxOutputBytes
                 )
             }
-            try Task.checkCancellation()
-
             let output = result.combinedOutput
+            if isPrivileged {
+                lastPrivilegedOutput = output
+                if OperationStatus.value(in: output, marker: "__1132_PRIVILEGED_COMPLETE__") != nil {
+                    privilegedGuard.settle(.completed)
+                } else if result.exitCode == 0 && output.trimmingCharacters(in: .whitespacesAndNewlines) == "__1132_AUTH_CANCELLED__=0" {
+                    privilegedGuard.settle(.cancelled)
+                    throw CancellationError()
+                } else {
+                    throw appError(PrivilegedOperationGuard.recoveryMessage)
+                }
+                // Let the caller record completed network/DNS effects before honoring UI cancellation.
+            } else {
+                try Task.checkCancellation()
+            }
             guard result.exitCode == 0 else {
                 let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
                 let message: String
                 if !trimmedOutput.isEmpty {
                     message = "\(stepName): \(trimmedOutput)"
-                } else if executable == Constants.osascriptPath {
-                    message = "\(stepName): Admin authorization was canceled or failed. This step requires your macOS password to run with elevated privileges. Click Start Zoom again and enter your password when prompted."
                 } else {
                     message = "\(stepName): Command failed with exit code \(result.exitCode)."
                 }
@@ -2408,9 +2421,21 @@ If your network connection is disrupted after this step:
             }
             return output
         } catch let error as ProcessExecutionError {
+            if isPrivileged {
+                if case .launchFailed = error {
+                    privilegedGuard.settle(.cancelled)
+                } else {
+                    throw appError(PrivilegedOperationGuard.recoveryMessage)
+                }
+            }
             if case .timedOut = error {
-                appendLog("Timeout: '\(stepName)' did not complete within \(Int(timeout))s — terminated.")
+                appendLog("Timeout: '\(stepName)' did not complete within \(Int(timeout))s.")
                 throw AppError.processTimeout("\(stepName): Timed out after \(Int(timeout)) seconds.")
+            }
+            throw error
+        } catch {
+            if isPrivileged && privilegedGuard.requiresSettlement {
+                throw appError(PrivilegedOperationGuard.recoveryMessage)
             }
             throw error
         }
@@ -2427,7 +2452,7 @@ If your network connection is disrupted after this step:
         applyUIFixture(named: fixtureName, appVersion: appVersion)
     }
 
-    func applyUIFixture(named fixtureName: String, appVersion: String = "1.8.4") {
+    func applyUIFixture(named fixtureName: String, appVersion: String = AppConfiguration.appVersion) {
         preflightTask?.cancel()
         activePreflightID = UUID()
 
@@ -2440,7 +2465,7 @@ If your network connection is disrupted after this step:
             .init(id: "iface", label: "Active Interface", value: "Wi-Fi (en0)", isWarning: false),
             .init(id: "vpn", label: "VPN", value: "No VPN default route detected", isWarning: false),
             .init(id: "admin", label: "Admin Prompts", value: "Expected", isWarning: false),
-            .init(id: "macspoof", label: "Network Identity", value: "Rotating Private Wi-Fi Address", isWarning: false),
+            .init(id: "macspoof", label: "Network Identity", value: "Manual Private Wi-Fi Address settings; automatic mode control unverified", isWarning: true),
             .init(id: "camera", label: "Camera", value: "Allowed", isWarning: false),
             .init(id: "microphone", label: "Microphone", value: "Allowed", isWarning: false),
         ]
@@ -2529,7 +2554,7 @@ If your network connection is disrupted after this step:
                 case 3:
                     return StepResult(id: spec.id, name: spec.name, outcome: .success, detail: "Saved to \(backupDir)")
                 case 4:
-                    return StepResult(id: spec.id, name: spec.name, outcome: .warning, detail: "Private Wi-Fi Address cycled; MAC rotation warning noted.")
+                    return StepResult(id: spec.id, name: spec.name, outcome: .warning, detail: "Automatic address change unavailable; network settings unchanged.")
                 default:
                     return StepResult(id: spec.id, name: spec.name, outcome: .failed, detail: failureMsg)
                 }

@@ -1,118 +1,5 @@
 import SwiftUI
 
-struct WorkflowResultCard: View {
-    let results: [AppViewModel.StepResult]
-    let workflowState: AppViewModel.WorkflowState
-    let latestBackupPath: String?
-    let onRevealBackup: () -> Void
-
-    private var headline: String {
-        if workflowState == .canceled || workflowState == .canceling {
-            return "Stopped before completion"
-        }
-        if isFailedState || results.contains(where: { $0.outcome == .failed }) {
-            return "Repair stopped safely"
-        }
-        if results.contains(where: { $0.outcome != .success }) {
-            return "Repair completed with notes"
-        }
-        return "Repair completed"
-    }
-
-    private var headlineColor: Color {
-        if workflowState == .canceled || workflowState == .canceling { return Theme.Colors.warning }
-        if isFailedState || results.contains(where: { $0.outcome == .failed }) { return Theme.Colors.error }
-        if results.contains(where: { $0.outcome != .success }) { return Theme.Colors.warning }
-        return Theme.Colors.success
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.medium) {
-            HStack {
-                Label(headline, systemImage: headlineIcon)
-                    .font(Theme.Typography.heading)
-                    .foregroundStyle(headlineColor)
-                Spacer()
-                if latestBackupPath != nil {
-                    Button(action: onRevealBackup) {
-                        Label("Reveal Backup", systemImage: "folder")
-                    }
-                    .buttonStyle(ThemedButtonStyle(variant: .secondary))
-                }
-            }
-
-            ForEach(results) { result in
-                HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.small) {
-                    Image(systemName: icon(for: result.outcome))
-                        .foregroundStyle(color(for: result.outcome))
-                        .accessibilityHidden(true)
-                    Text(result.outcome.label)
-                        .font(Theme.Typography.label)
-                        .foregroundStyle(color(for: result.outcome))
-                        .frame(width: Theme.Spacing.section * 2.5, alignment: .leading)
-                    Text(result.name)
-                        .font(Theme.Typography.label)
-                        .foregroundStyle(Theme.Colors.textPrimary)
-                    if let detail = result.detail, !detail.isEmpty {
-                        Text(detail)
-                            .font(Theme.Typography.caption)
-                            .foregroundStyle(Theme.Colors.textSecondary)
-                            .lineLimit(2)
-                    }
-                }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("\(result.outcome.accessibilityLabel): \(result.name). \(result.detail ?? "")")
-            }
-
-            if let latestBackupPath {
-                Text("Recovery backup: \(latestBackupPath)")
-                    .font(Theme.Typography.mono)
-                    .foregroundStyle(Theme.Colors.textSecondary)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-            }
-        }
-        .padding(Theme.Spacing.large)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .themedPanel()
-    }
-
-    private var headlineIcon: String {
-        if workflowState == .canceled || workflowState == .canceling { return "stop.circle.fill" }
-        if isFailedState || results.contains(where: { $0.outcome == .failed }) { return "xmark.circle.fill" }
-        if results.contains(where: { $0.outcome != .success }) { return "exclamationmark.triangle.fill" }
-        return "checkmark.circle.fill"
-    }
-
-    private func icon(for outcome: AppViewModel.StepResult.Outcome) -> String {
-        switch outcome {
-        case .success: return "checkmark.circle.fill"
-        case .warning: return "exclamationmark.triangle.fill"
-        case .skipped: return "minus.circle.fill"
-        case .failed: return "xmark.circle.fill"
-        case .interrupted: return "stop.circle.fill"
-        case .unstarted: return "circle"
-        case .running: return "clock.fill"
-        }
-    }
-
-    private func color(for outcome: AppViewModel.StepResult.Outcome) -> Color {
-        switch outcome {
-        case .success: return Theme.Colors.success
-        case .warning, .skipped, .interrupted: return Theme.Colors.warning
-        case .failed: return Theme.Colors.error
-        case .unstarted: return Theme.Colors.textMuted
-        case .running: return Theme.Colors.primary
-        }
-    }
-
-    private var isFailedState: Bool {
-        if case .failed = workflowState { return true }
-        return false
-    }
-}
-
 struct RepairRecordLedgerView: View {
     struct LedgerStepItem: Identifiable {
         let spec: RepairStepSpec
@@ -149,7 +36,8 @@ struct RepairRecordLedgerView: View {
     }
 
     private var ledgerSteps: [LedgerStepItem] {
-        let canonical = RepairStepSpec.canonicalSteps()
+        let quickLaunch = runRecord?.title == "Sandbox-only Zoom launch"
+        let canonical = RepairStepSpec.canonicalSteps().filter { !quickLaunch || ["validate", "closeZoom", "mediaAccess", "launch"].contains($0.id) }
         let resultsByID = Dictionary(uniqueKeysWithValues: effectiveResults.map { ($0.id, $0) })
         let progressByID = Dictionary(uniqueKeysWithValues: steps.map { ($0.id, $0.state) })
 
@@ -299,14 +187,14 @@ struct RepairRecordLedgerView: View {
             .checkingMediaAccess,
             .launchingZoom:
             let title = isPreviewRun ? "Running read-only preview…" : "Executing repair sequence…"
-            return (title, "bolt.horizontal.circle.fill", Theme.Colors.primary)
+            return (runRecord?.title == "Sandbox-only Zoom launch" ? "Launching Zoom in sandbox…" : title, "bolt.horizontal.circle.fill", Theme.Colors.primary)
         case .canceling:
-            return ("Stopping repair safely…", "hand.raised.fill", Theme.Colors.warning)
+            return ("Stopping the current run…", "hand.raised.fill", Theme.Colors.warning)
         case .canceled:
             return ("Stopped before completion", "stop.circle.fill", Theme.Colors.warning)
         case .failed(let message):
-            return ("Repair stopped safely — \(message)", "xmark.circle.fill", Theme.Colors.error)
-        case .completed:
+            return ("Run failed — \(message)", "xmark.circle.fill", Theme.Colors.error)
+        case .completed, .completedWithWarnings:
             if isPreviewRun {
                 let hasAdvisories = ledgerSteps.contains { $0.state == .warning || $0.state == .failed }
                 return (
@@ -314,6 +202,11 @@ struct RepairRecordLedgerView: View {
                     hasAdvisories ? "exclamationmark.triangle.fill" : "checkmark.circle.fill",
                     hasAdvisories ? Theme.Colors.warning : Theme.Colors.success
                 )
+            }
+            if runRecord?.title == "Sandbox-only Zoom launch" {
+                let warning = workflowState == .completedWithWarnings
+                return (warning ? "Sandbox launch finished with warnings" : "Sandbox launch finished — inspect Zoom sign-in and media access",
+                    warning ? "exclamationmark.triangle.fill" : "checkmark.circle.fill", warning ? Theme.Colors.warning : Theme.Colors.success)
             }
             let hasNotes = ledgerSteps.contains { $0.state == .warning || $0.state == .skipped }
             return (
@@ -338,18 +231,20 @@ struct RepairRecordLedgerView: View {
             .stoppingUpdaters,
             .checkingMediaAccess,
             .launchingZoom:
-            return (isPreviewRun ? "Previewing" : "Live Repair", Theme.Colors.primary)
+            return (isPreviewRun ? "Previewing" : (runRecord?.title == "Sandbox-only Zoom launch" ? "Sandbox Launch" : "Live Repair"), Theme.Colors.primary)
         case .canceling:
             return ("Stopping", Theme.Colors.warning)
         case .canceled:
             return ("Interrupted", Theme.Colors.warning)
         case .failed:
-            return ("Stopped Safely", Theme.Colors.error)
+            return ("Failed", Theme.Colors.error)
         case .completed:
             if isPreviewRun {
                 return ("Preview Record", Theme.Colors.primary)
             }
             return ("Completed", Theme.Colors.success)
+        case .completedWithWarnings:
+            return ("Completed with Warnings", Theme.Colors.warning)
         }
     }
 }

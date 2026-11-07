@@ -15,6 +15,7 @@ concurrency:
 jobs:
   publish:
     name: Sign, notarize, and publish universal DMG
+    if: github.repository == 'SeanPVera/1132-fixer'
     runs-on: macos-15
     timeout-minutes: 90
     # Signing credentials must live in this environment. Restrict deployments to
@@ -27,6 +28,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          submodules: recursive
 
       - name: Validate release trust boundary
         shell: bash
@@ -50,6 +52,16 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Test exact release commit
+        id: tested
+        run: |
+          set -euo pipefail
+          test -s design-system/tokens/macos.json
+          swift build
+          swift test
+          swift build -c release
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Require distribution credentials
         env:
@@ -100,7 +112,8 @@ jobs:
       - name: Smoke check release DMG
         env:
           APP_BUILD: ${{ github.run_number }}
-        run: ./scripts/check-dmg.sh "${{ steps.asset.outputs.path }}" developer-id 1
+          ASSET_PATH: ${{ steps.asset.outputs.path }}
+        run: ./scripts/check-dmg.sh "$ASSET_PATH" developer-id 1
 
       - name: Publish GitHub release
         env:
@@ -108,8 +121,11 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
           ASSET_PATH: ${{ steps.asset.outputs.path }}
           CHECKSUM_PATH: ${{ steps.asset.outputs.checksum }}
+          TESTED_SHA: ${{ steps.tested.outputs.sha }}
         run: |
           set -euo pipefail
+          test "$TESTED_SHA" = "$(git rev-parse HEAD)"
+          test -z "$(git status --porcelain --untracked-files=no)"
           if is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' 2>/dev/null)"; then
             gh release upload "$RELEASE_TAG" "$ASSET_PATH" "$CHECKSUM_PATH" --clobber
             if [[ "$is_draft" == "true" ]]; then
