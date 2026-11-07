@@ -1,8 +1,13 @@
-/design-system @patricktobias86 @high-texas
-/.brand-assets.tsv @patricktobias86 @high-texas
-/Sources/1132Fixer/Resources/ @patricktobias86 @high-texas
-/Sources/1132Fixer/*.swift @patricktobias86 @high-texas
-/.github/CODEOWNERS @patricktobias86 @high-texas
-/.github/workflows/brand.yml @patricktobias86 @high-texas
-/.github/workflows/ci.yml @patricktobias86 @high-texas
-/.github/workflows/build-dmg.yml @patricktobias86 @high-texas
+# Canonical release repository: SeanPVera/1132-fixer (owner confirmed).
+* @SeanPVera
+/design-system @patricktobias86 @high-texas @SeanPVera
+/.brand-assets.tsv @patricktobias86 @high-texas @SeanPVera
+/Sources/1132Fixer/Resources/ @patricktobias86 @high-texas @SeanPVera
+/Sources/1132Fixer/*.swift @patricktobias86 @high-texas @SeanPVera
+/.github/CODEOWNERS @patricktobias86 @high-texas @SeanPVera
+/.github/workflows/brand.yml @patricktobias86 @high-texas @SeanPVera
+/.github/workflows/ci.yml @patricktobias86 @high-texas @SeanPVera
+/.github/workflows/build-dmg.yml @patricktobias86 @high-texas @SeanPVera
+/.github/workflows/release.yml @SeanPVera @patricktobias86 @high-texas
+/scripts/ @SeanPVera @patricktobias86 @high-texas
+/Tests/ @SeanPVera @patricktobias86 @high-texas

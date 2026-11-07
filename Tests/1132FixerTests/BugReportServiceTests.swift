@@ -45,7 +45,7 @@ struct BugReportServiceTests {
         let result = BugReportService.truncatedAttachment(data, limit: 400)
         #expect(result.count <= 400)
         let resultText = String(decoding: result, as: UTF8.self)
-        #expect(resultText.hasPrefix("[truncated"))
+        #expect(resultText.contains("Truncated"))
         #expect(resultText.hasSuffix("NEWEST LINE\n"))
     }
 

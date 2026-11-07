@@ -198,6 +198,11 @@ if [[ -n "$FIXER_BUG_REPORT_TOKEN" ]]; then
   echo "==> Embedding FIXER_BUG_REPORT_TOKEN into app resources for this build"
   printf '%s\n' "$FIXER_BUG_REPORT_TOKEN" > "$BUG_REPORT_TOKEN_RESOURCE_FILE"
 fi
+resource_args=()
+if [[ "$SIGN_IDENTITY" != "-" ]]; then
+  resource_args+=(--require-bug-report)
+fi
+python3 "$ROOT_DIR/scripts/validate-resources.py" "$ROOT_DIR/Sources/1132Fixer/Resources" "${resource_args[@]}"
 
 rm -rf "$DIST_DIR" "$TEMP_BUILD_ROOT"
 mkdir -p "$DIST_DIR" "$UNIVERSAL_DIR"
@@ -311,6 +316,9 @@ if [[ -d "$ARM64_RELEASE_DIR/$EXPECTED_RESOURCE_BUNDLE" ]]; then
   fi
   cp -R "$ARM64_RELEASE_DIR/$EXPECTED_RESOURCE_BUNDLE" "$APP_BUNDLE_DIR/Contents/Resources/"
 fi
+for resource_bundle in "$ARM64_RELEASE_DIR/$EXPECTED_RESOURCE_BUNDLE" "$X64_RELEASE_DIR/$EXPECTED_RESOURCE_BUNDLE" "$APP_BUNDLE_DIR/Contents/Resources/$EXPECTED_RESOURCE_BUNDLE"; do
+  python3 "$ROOT_DIR/scripts/validate-resources.py" "$resource_bundle" "${resource_args[@]}"
+done
 
 # Use the project's Info.plist as the authoritative source, then patch in
 # build-time values (version, bundle ID, executable name, etc.).

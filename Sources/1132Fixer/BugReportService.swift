@@ -42,42 +42,9 @@ enum BugReportService {
             return envValue
         }
 
-        // Avoid Bundle.module: the SPM-generated accessor calls Swift.fatalError() when the
-        // resource bundle is not found at the expected path, crashing the app for packaged builds
-        // where Bundle.main.bundleURL does not point to Contents/Resources/.
-        let resourceBundleName = "1132 Fixer_1132Fixer.bundle"
-        var bundlesToSearch: [Bundle] = []
-
-        // CLI / debug builds: the resource bundle sits beside the executable.
-        if let execURL = Bundle.main.executableURL {
-            let siblingURL = execURL.deletingLastPathComponent().appendingPathComponent(resourceBundleName)
-            if let b = Bundle(url: siblingURL) { bundlesToSearch.append(b) }
-        }
-
-        // Packaged .app builds: the resource bundle is in Contents/Resources/.
-        if let url = Bundle.main.url(forResource: "1132 Fixer_1132Fixer", withExtension: "bundle"),
-           let b = Bundle(url: url) {
-            bundlesToSearch.append(b)
-        }
-
-        bundlesToSearch.append(Bundle.main)
-
-        for bundle in bundlesToSearch {
-            guard let resourceURL = bundle.url(forResource: envVar, withExtension: nil) else { continue }
-
-            // Offload synchronous I/O to avoid blocking the Swift concurrency thread pool
-            let data = await Task.detached {
-                try? Data(contentsOf: resourceURL)
-            }.value
-
-            guard let data,
-                  let bundledValue = String(data: data, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines),
-                  !bundledValue.isEmpty else {
-                continue
-            }
-            return bundledValue
-        }
+        // Shared lookup supports both flat and structured SwiftPM bundles.
+        let bundledValue = await Task.detached { PackagedResources.configurationValue(named: envVar) }.value
+        if let bundledValue, !bundledValue.isEmpty { return bundledValue }
 
         return fallback
     }
@@ -134,7 +101,7 @@ enum BugReportService {
             title: boundedUTF8String(title, maxBytes: 512),
             email: email.map { boundedUTF8String($0, maxBytes: 512) },
             message: boundedUTF8String(message, maxBytes: maxUserMessageBytes),
-            systemInfo: boundedUTF8String(systemInfo, maxBytes: 64 * 1_024),
+            systemInfo: boundedUTF8String(DiagnosticsCollector.sanitizedForSharing(systemInfo), maxBytes: 64 * 1_024),
             diagnosticsFileName: boundedUTF8String(diagnosticsFileName, maxBytes: 255),
             diagnosticsData: truncatedAttachment(diagnosticsData)
         )
@@ -195,16 +162,8 @@ enum BugReportService {
     /// Keeps the most recent part of an oversized attachment (the end of a log is the most
     /// useful), prefixed with a note, so the result never exceeds `limit` bytes.
     static func truncatedAttachment(_ data: Data, limit: Int = BugReportService.maxAttachmentBytes) -> Data {
-        guard data.count > limit else { return data }
-
-        let note = Data("[truncated: showing the last part of \(data.count) bytes]\n".utf8)
-        let keep = max(limit - note.count, 0)
-        var tail = data.suffix(keep)
-        // Do not start in the middle of a multi-byte UTF-8 character.
-        while let first = tail.first, first & 0xC0 == 0x80 {
-            tail = tail.dropFirst()
-        }
-        return note + tail
+        let safeText = DiagnosticsCollector.sanitizedForSharing(String(decoding: data, as: UTF8.self))
+        return ReportDraft.truncateDiagnosticsUTF8(safeText, maxBytes: limit).data
     }
 
     /// At most `maxServerDetailCharacters` characters of a server response, on one line, so a

@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Resolves the Zoom application location, allowing the user to select a custom
 /// path when Zoom is not installed in the default `/Applications` location.
@@ -56,6 +57,15 @@ enum ShellCommands {
     static let bashPath = "/bin/bash"
     static let osascriptPath = "/usr/bin/osascript"
     static let defaultZoomAppPath = "/Applications/zoom.us.app"
+
+    static func currentUserProcessArguments(name: String) -> [String] {
+        ["-u", String(getuid()), "-x", NSRegularExpression.escapedPattern(for: name)]
+    }
+
+    static func makeZoomRunningCheckCommand() -> String {
+        "/usr/bin/pgrep " + currentUserProcessArguments(name: "zoom.us").map(shellSingleQuote).joined(separator: " ")
+            + " >/dev/null 2>&1 && echo running || echo stopped"
+    }
 
     /// Derives the Zoom executable path from a `zoom.us.app` bundle path.
     static func zoomBinaryPath(forAppPath appPath: String) -> String {
@@ -115,28 +125,48 @@ enum ShellCommands {
 
     // MARK: - Command Strings
 
+    static func makePrivilegedCommand(_ command: String, policy: PrivilegedTimeoutPolicy) -> String {
+        let authorizedScript = appleScriptDoShellScript(makeTimeBoundedCommand("""
+        \(command)
+        __1132_completion_status=$?
+        printf '\\n__1132_PRIVILEGED_COMPLETE__=%s\\n' "$__1132_completion_status"
+        exit "$__1132_completion_status"
+        """, seconds: policy.watchdogSeconds), administratorPrivileges: true)
+        return """
+        try
+            \(authorizedScript)
+        on error __1132_message number __1132_number
+            if __1132_number is -128 then
+                return "__1132_AUTH_CANCELLED__=0"
+            end if
+            error __1132_message number __1132_number
+        end try
+        """
+    }
+
     static let stopZoom = #"""
-    zoom_processes="zoom.us caphost CptHost"
-    if /usr/bin/pgrep -x "zoom.us" >/dev/null 2>&1 || /usr/bin/pgrep -x "caphost" >/dev/null 2>&1 || /usr/bin/pgrep -x "CptHost" >/dev/null 2>&1; then
-      for proc in $zoom_processes; do
-        /usr/bin/killall "$proc" 2>/dev/null || true
+    uid="$(/usr/bin/id -u)"
+    zoom_processes=("zoom[.]us" "caphost" "CptHost")
+    if /usr/bin/pgrep -u "$uid" -x "zoom[.]us" >/dev/null 2>&1 || /usr/bin/pgrep -u "$uid" -x "caphost" >/dev/null 2>&1 || /usr/bin/pgrep -u "$uid" -x "CptHost" >/dev/null 2>&1; then
+      for proc in "${zoom_processes[@]}"; do
+        /usr/bin/pkill -u "$uid" -x "$proc" 2>/dev/null || true
       done
       echo "Zoom was running and has been closed."
       for i in {1..10}; do
-        if ! /usr/bin/pgrep -x "zoom.us" >/dev/null 2>&1 && ! /usr/bin/pgrep -x "caphost" >/dev/null 2>&1 && ! /usr/bin/pgrep -x "CptHost" >/dev/null 2>&1; then
+        if ! /usr/bin/pgrep -u "$uid" -x "zoom[.]us" >/dev/null 2>&1 && ! /usr/bin/pgrep -u "$uid" -x "caphost" >/dev/null 2>&1 && ! /usr/bin/pgrep -u "$uid" -x "CptHost" >/dev/null 2>&1; then
           break
         fi
         /bin/sleep 0.5
       done
-      if /usr/bin/pgrep -x "zoom.us" >/dev/null 2>&1 || /usr/bin/pgrep -x "caphost" >/dev/null 2>&1 || /usr/bin/pgrep -x "CptHost" >/dev/null 2>&1; then
-        for proc in $zoom_processes; do
-          /usr/bin/killall -9 "$proc" 2>/dev/null || true
+      if /usr/bin/pgrep -u "$uid" -x "zoom[.]us" >/dev/null 2>&1 || /usr/bin/pgrep -u "$uid" -x "caphost" >/dev/null 2>&1 || /usr/bin/pgrep -u "$uid" -x "CptHost" >/dev/null 2>&1; then
+        for proc in "${zoom_processes[@]}"; do
+          /usr/bin/pkill -KILL -u "$uid" -x "$proc" 2>/dev/null || true
         done
         /bin/sleep 1
       fi
     fi
 
-    if /usr/bin/pgrep -x "zoom.us" >/dev/null 2>&1 || /usr/bin/pgrep -x "caphost" >/dev/null 2>&1 || /usr/bin/pgrep -x "CptHost" >/dev/null 2>&1; then
+    if /usr/bin/pgrep -u "$uid" -x "zoom[.]us" >/dev/null 2>&1 || /usr/bin/pgrep -u "$uid" -x "caphost" >/dev/null 2>&1 || /usr/bin/pgrep -u "$uid" -x "CptHost" >/dev/null 2>&1; then
       echo "Zoom or one of its capture helpers is still running; refusing to modify Zoom data." >&2
       exit 1
     fi
@@ -157,7 +187,7 @@ enum ShellCommands {
     stopped=""
 
     for proc in zAutoUpdate zPTUpdaterUI ZoomUpdater; do
-      if /usr/bin/pkill -x "$proc" 2>/dev/null; then
+      if /usr/bin/pkill -u "$uid" -x "$proc" 2>/dev/null; then
         stopped="$stopped $proc"
       fi
     done
@@ -259,17 +289,18 @@ enum ShellCommands {
           fi
         done
 
-        zoom_data="$home_physical/Library/Application Support/zoom.us"
-        zoom_cache="$home_physical/Library/Caches/us.zoom.xos"
-        zoom_prefs="$home_physical/Library/Preferences/us.zoom.xos.plist"
+        zoom_data="$home_physical/\(ZoomStateScope.backedUpPaths[0])"
+        zoom_cache="$home_physical/\(ZoomStateScope.backedUpPaths[1])"
+        zoom_prefs="$home_physical/\(ZoomStateScope.backedUpPaths[2])"
         zoom_logs="$home_physical/Library/Logs/zoom.us.log"
-        zoom_saved_state="$home_physical/Library/Saved Application State/us.zoom.xos.savedState"
+        zoom_saved_state="$home_physical/\(ZoomStateScope.backedUpPaths[3])"
 
-        /bin/rm -rf "$zoom_data" "$zoom_cache" "$zoom_prefs" "$zoom_saved_state"
-        /bin/rm -f "$zoom_logs"*
+        reset_failed=0
+        /bin/rm -rf "$zoom_data" "$zoom_cache" "$zoom_prefs" "$zoom_saved_state" || reset_failed=1
+        /bin/rm -f "$zoom_logs"* || reset_failed=1
         HOME="$home" /usr/bin/defaults delete us.zoom.xos >/dev/null 2>&1 || true
 
-        remaining=0
+        remaining="$reset_failed"
         for path in "$zoom_data" "$zoom_cache" "$zoom_prefs" "$zoom_saved_state"; do
           if [ -e "$path" ]; then
             echo "Warning: Could not remove $path" >&2
@@ -332,7 +363,7 @@ enum ShellCommands {
           fi
         done
 
-        backup_root="$home_physical/Library/Application Support/1132Fixer/Backups"
+        backup_root="$home_physical/\(ZoomStateScope.backupRelativeRoot)"
         if ! /bin/mkdir -p "$backup_root" || ! /bin/chmod 700 "$backup_root"; then
           printf 'Could not create the private backup folder at %s\\n' "$backup_root" >&2
           exit 1
@@ -359,11 +390,7 @@ enum ShellCommands {
 
         backup_started="$(/bin/date +%s)"
         backup_failed=0
-        for src in \
-          "$home_physical/Library/Application Support/zoom.us" \
-          "$home_physical/Library/Caches/us.zoom.xos" \
-          "$home_physical/Library/Preferences/us.zoom.xos.plist" \
-          "$home_physical/Library/Saved Application State/us.zoom.xos.savedState"; do
+        for src in \(ZoomStateScope.backedUpPaths.map { "\"$home_physical/\($0)\"" }.joined(separator: " ")); do
           [ -e "$src" ] || continue
           if ! /bin/cp -a "$src" "$staging_dir/" 2>/dev/null; then
             printf 'Could not back up %s\\n' "$src" >&2
@@ -410,14 +437,16 @@ enum ShellCommands {
             esac
             [ ! -L "$stale" ] || continue
             [ -d "$stale" ] || continue
-            snapshot_index=$((snapshot_index + 1))
             size_kb="$(/usr/bin/du -sk "$stale" 2>/dev/null | /usr/bin/awk '{print $1}')"
             case "$size_kb" in
               ''|*[!0-9]*) size_kb=0 ;;
             esac
-            total_kb=$((total_kb + size_kb))
-            if [ "$snapshot_index" -ge \(firstStaleEntry) ] || { [ "$snapshot_index" -gt 1 ] && [ "$total_kb" -gt \(maximumKilobytes) ]; }; then
+            candidate_kb=$((total_kb + size_kb))
+            if [ "$snapshot_index" -ge \(firstStaleEntry - 1) ] || [ "$candidate_kb" -gt \(maximumKilobytes) ]; then
               /bin/rm -rf "$backup_root/$stale"
+            else
+              snapshot_index=$((snapshot_index + 1))
+              total_kb="$candidate_kb"
             fi
           done
         )
@@ -617,157 +646,8 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         return String(bytes: values, encoding: .ascii) ?? "unknown"
     }
 
-    static func isMacSpoofingBlockedOnWiFi() -> Bool {
-        let isAppleSilicon = machineArchitecture() == "arm64"
-        let isMacOS14OrLater = ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 14
-        return isAppleSilicon && isMacOS14OrLater
-    }
-
     static func isMacSpoofingDisabledForCurrentOS() -> Bool {
         ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 14
-    }
-
-    // MARK: - Network Identity Strategy
-
-    /// How the workflow can change the machine's network identity on this OS and interface.
-    enum NetworkIdentityStrategy: Equatable {
-        /// `ifconfig lladdr` spoofing, which only works reliably before macOS 14.
-        case legacyMACSpoof
-        /// macOS 14+ replacement on Apple Silicon Wi-Fi: cycle the rotating Private Wi-Fi Address.
-        case rotatingPrivateWiFiAddress
-        /// No usable mechanism on this OS/interface combination.
-        case unsupported
-    }
-
-    /// Decides the strategy. The Wi-Fi case is checked *first*: it only ever applies on
-    /// macOS 14+, so testing `isMacSpoofingDisabledForCurrentOS` before it would make the
-    /// rotating-address path unreachable.
-    static func networkIdentityStrategy(
-        isWiFi: Bool,
-        isMacSpoofingBlockedOnWiFi: Bool,
-        isMacSpoofingDisabledForCurrentOS: Bool
-    ) -> NetworkIdentityStrategy {
-        if isWiFi && isMacSpoofingBlockedOnWiFi {
-            return .rotatingPrivateWiFiAddress
-        }
-        if isMacSpoofingDisabledForCurrentOS {
-            return .unsupported
-        }
-        return .legacyMACSpoof
-    }
-
-    /// Strategy for the running system.
-    static func networkIdentityStrategy(isWiFi: Bool) -> NetworkIdentityStrategy {
-        networkIdentityStrategy(
-            isWiFi: isWiFi,
-            isMacSpoofingBlockedOnWiFi: isMacSpoofingBlockedOnWiFi(),
-            isMacSpoofingDisabledForCurrentOS: isMacSpoofingDisabledForCurrentOS()
-        )
-    }
-
-    // MARK: - Private Wi-Fi Address (Rotating MAC)
-
-    static func makeGetPrivateAddressModeCommand(networkService: String) -> String {
-        "/usr/sbin/networksetup -getPrivateNetworkAddress \(shellSingleQuote(networkService)) 2>/dev/null || echo 'unsupported'"
-    }
-
-    static func makeSetPrivateAddressModeCommand(networkService: String, mode: String) -> String {
-        "/usr/sbin/networksetup -setPrivateNetworkAddress \(shellSingleQuote(networkService)) \(shellSingleQuote(mode))"
-    }
-
-    static func normalizePrivateAddressModeOutput(_ output: String) -> String {
-        var normalizedLines: [String] = []
-        var containsNotRecognizedOrUnsupported = false
-
-        output.enumerateLines { rawLine, _ in
-            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if !line.isEmpty {
-                normalizedLines.append(line)
-                if line.contains("not recognized") || line.contains("unsupported") || line.contains("networksetup -printcommands") {
-                    containsNotRecognizedOrUnsupported = true
-                }
-            }
-        }
-
-        for mode in ["rotating", "fixed", "static", "off"] {
-            if normalizedLines.contains(mode) {
-                return mode
-            }
-        }
-
-        if containsNotRecognizedOrUnsupported {
-            return "unsupported"
-        }
-
-        let normalizedOutput = normalizedLines.joined(separator: "\n")
-        for mode in ["rotating", "fixed", "static", "off"] {
-            if normalizedOutput.contains(mode) {
-                return mode
-            }
-        }
-
-        return normalizedOutput.isEmpty ? "unsupported" : normalizedOutput
-    }
-
-    /// Cycles the Wi-Fi interface off then on to generate a new rotating MAC address.
-    /// The interface is always brought back up, even if the down step fails.
-    static func makeRotatingMACResetCommand(device: String) -> String {
-        let off = "/usr/sbin/networksetup -setairportpower \(shellSingleQuote(device)) off"
-        let sleep1 = "/bin/sleep 1"
-        let on = "/usr/sbin/networksetup -setairportpower \(shellSingleQuote(device)) on"
-        // Keep the recovery trap in a subshell so it does not replace the watchdog
-        // EXIT trap installed by `makeTimeBoundedCommand` around privileged scripts.
-        return """
-        (
-          __1132_step_pid=""
-          run_step() { "$@" & __1132_step_pid=$!; wait "$__1132_step_pid"; }
-          restore_wifi() {
-            [ -n "${__1132_step_pid:-}" ] && /bin/kill -TERM "$__1132_step_pid" 2>/dev/null || true
-            \(on) >/dev/null 2>&1 || true
-          }
-          trap restore_wifi EXIT
-          trap 'exit 1' HUP INT TERM
-          { run_step \(off); run_step \(sleep1); } 2>/dev/null || true
-          if ! run_step \(on); then
-            echo "Could not turn Wi-Fi back on after cycling the active interface." >&2
-            exit 1
-          fi
-          trap - EXIT HUP INT TERM
-        ) &
-        __1132_subshell_pid=$!
-        wait "$__1132_subshell_pid"
-        """
-    }
-
-    /// Combines Private Wi-Fi Address rotation setup, Wi-Fi power cycling, and DNS cache
-    /// flushing into a single privileged script so the user is prompted for an administrator
-    /// password only once during the workflow.
-    static func makeRotatingMACAndDNSResetCommand(
-        device: String,
-        networkService: String,
-        enableRotatingMode: Bool,
-        includeDNSFlush: Bool = true
-    ) -> String {
-        var sections: [String] = []
-        if enableRotatingMode {
-            sections.append("""
-            (
-            \(makeSetPrivateAddressModeCommand(networkService: networkService, mode: "rotating"))
-            )
-            private_mode_status=$?
-            printf '\n__1132_PRIVATE_MODE_STATUS__=%s\n' "$private_mode_status"
-            """)
-        }
-        sections.append("""
-        \(makeRotatingMACResetCommand(device: device))
-        wifi_reset_status=$?
-        __1132_subshell_pid=""
-        printf '\n__1132_WIFI_RESET_STATUS__=%s\n' "$wifi_reset_status"
-        """)
-        if includeDNSFlush {
-            sections.append(makeRefreshDNSCommand())
-        }
-        return sections.joined(separator: "\n")
     }
 
     // MARK: - MAC Spoof Command
@@ -874,7 +754,7 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
 
     /// Sandbox profile for the running user.
     static var zoomSandboxProfile: String {
-        makeZoomSandboxProfile(homeDirectory: NSHomeDirectory())
+        get throws { try makeZoomSandboxProfile(homeDirectory: NSHomeDirectory()) }
     }
 
     /// Home-relative directories Zoom is denied read access to. Zoom needs none of
@@ -945,7 +825,7 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
     /// value cannot anchor a `subpath` rule. `/` is rejected on purpose: anchoring
     /// these rules at the filesystem root would deny Zoom most of the disk.
     static func normalizedSandboxHome(_ homeDirectory: String) -> String? {
-        var path = homeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        var path = homeDirectory
         while path.count > 1 && path.hasSuffix("/") {
             path.removeLast()
         }
@@ -978,11 +858,12 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
     /// SBPL resolves the *last* matching rule, so the denies below override the blanket
     /// allows above them, and the home allow-back overrides the `/Users` deny. Rule
     /// order in this profile is load-bearing.
-    static func makeZoomSandboxProfile(homeDirectory: String) -> String {
+    static func makeZoomSandboxProfile(homeDirectory: String) throws -> String {
         var profile = zoomSandboxProfilePrefix
 
-        guard let home = normalizedSandboxHome(homeDirectory) else {
-            return profile
+        guard let home = normalizedSandboxHome(homeDirectory), !home.contains("\0"),
+              home.rangeOfCharacter(from: .newlines) == nil else {
+            throw AppError.general("A safe absolute home directory is required; refusing to omit sandbox privacy restrictions.")
         }
 
         let homeLiteral = sandboxStringLiteral(home)
@@ -1170,12 +1051,14 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
 
     static func makeLaunchZoomCommand(
         zoomBinaryPath: String,
-        homeDirectory: String = NSHomeDirectory()
+        homeDirectory: String = NSHomeDirectory(),
+        verifiedAppPath: String? = nil
     ) -> String {
         makeLaunchZoomCommand(
             zoomBinaryPath: zoomBinaryPath,
             zoomBinaryExists: FileManager.default.fileExists(atPath: zoomBinaryPath),
-            homeDirectory: homeDirectory
+            homeDirectory: homeDirectory,
+            verifiedAppPath: verifiedAppPath
         )
     }
 
@@ -1192,7 +1075,10 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
     static func makeSandboxProfileValidationCommand(
         homeDirectory: String = NSHomeDirectory()
     ) -> String {
-        let encodedProfile = Data(makeZoomSandboxProfile(homeDirectory: homeDirectory).utf8).base64EncodedString()
+        guard let profile = try? makeZoomSandboxProfile(homeDirectory: homeDirectory) else {
+            return "echo 'Invalid home directory; required sandbox profile cannot be constructed.' >&2; exit 1"
+        }
+        let encodedProfile = Data(profile.utf8).base64EncodedString()
         return """
         set -u
         if [ ! -x /usr/bin/sandbox-exec ]; then
@@ -1223,9 +1109,12 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
     static func makeLaunchZoomCommand(
         zoomBinaryPath: String,
         zoomBinaryExists: Bool,
-        homeDirectory: String = NSHomeDirectory()
+        homeDirectory: String = NSHomeDirectory(),
+        verifiedAppPath: String? = nil
     ) -> String {
         let quotedBinaryPath = shellSingleQuote(zoomBinaryPath)
+        let appPath = verifiedAppPath ?? (zoomBinaryPath as NSString).deletingLastPathComponent.components(separatedBy: "/Contents/").first ?? ""
+        let quotedAppPath = shellSingleQuote(appPath)
 
         guard zoomBinaryExists else {
             return """
@@ -1236,7 +1125,10 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
             """
         }
 
-        let encodedProfile = Data(makeZoomSandboxProfile(homeDirectory: homeDirectory).utf8).base64EncodedString()
+        guard let profile = try? makeZoomSandboxProfile(homeDirectory: homeDirectory) else {
+            return "echo 'Invalid home directory; required sandbox profile cannot be constructed.' >&2; exit 1"
+        }
+        let encodedProfile = Data(profile.utf8).base64EncodedString()
         return """
         set -u
 
@@ -1257,45 +1149,19 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
           /bin/rm -f "$profile_path"
         }
 
-        wait_for_sandboxed_zoom_stability() {
-          required_consecutive="$1"
-          max_attempts="$2"
-          i=0
-          stable=0
-          while [ "$i" -lt "$max_attempts" ]; do
-            if /usr/bin/pgrep -x "zoom.us" >/dev/null 2>&1; then
-              stable=$((stable + 1))
-              if [ "$stable" -ge "$required_consecutive" ]; then
-                return 0
-              fi
-            else
-              stable=0
-            fi
-            /bin/sleep 1
-            i=$((i + 1))
-          done
-          return 1
+        tracked_sandbox_child_is_running() {
+          # jobs tracks this shell's live child, so a reused numeric PID or another
+          # user's/same-name Zoom cannot satisfy launch success.
+          /bin/kill -0 "$sandbox_pid" 2>/dev/null || return 1
+          /usr/bin/grep -qx "$sandbox_pid" < <(jobs -pr) || return 1
+          child_uid="$(/bin/ps -p "$sandbox_pid" -o uid= | /usr/bin/tr -d ' ')"
+          [ "$child_uid" = "$uid" ] || return 1
+          child_command="$(/bin/ps -ww -p "$sandbox_pid" -o comm=)"
+          [ "$child_command" = "$zoom_binary" ] || return 1
         }
 
         stop_zoom_processes() {
-          zoom_processes="zoom.us caphost CptHost"
-          if /usr/bin/pgrep -x "zoom.us" >/dev/null 2>&1 || /usr/bin/pgrep -x "caphost" >/dev/null 2>&1 || /usr/bin/pgrep -x "CptHost" >/dev/null 2>&1; then
-            for proc in $zoom_processes; do
-              /usr/bin/killall "$proc" 2>/dev/null || true
-            done
-            for i in {1..6}; do
-              if ! /usr/bin/pgrep -x "zoom.us" >/dev/null 2>&1 && ! /usr/bin/pgrep -x "caphost" >/dev/null 2>&1 && ! /usr/bin/pgrep -x "CptHost" >/dev/null 2>&1; then
-                break
-              fi
-              /bin/sleep 0.5
-            done
-            if /usr/bin/pgrep -x "zoom.us" >/dev/null 2>&1 || /usr/bin/pgrep -x "caphost" >/dev/null 2>&1 || /usr/bin/pgrep -x "CptHost" >/dev/null 2>&1; then
-              for proc in $zoom_processes; do
-                /usr/bin/killall -9 "$proc" 2>/dev/null || true
-              done
-              /bin/sleep 1
-            fi
-          fi
+        \(stopZoom)
         }
 
         trap cleanup EXIT
@@ -1315,36 +1181,24 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         # fallback here.
         echo "Launch mode: persistentSandbox"
         stop_zoom_processes
-        zoom_app="${zoom_binary%/Contents/MacOS/*}"
-        if [ "$zoom_app" != "$zoom_binary" ] && [ -x /usr/bin/codesign ]; then
-          if ! /usr/bin/codesign --verify --strict -R='anchor apple generic and certificate leaf[subject.OU] = "BJ4HAAB9B3"' "$zoom_app" >/dev/null 2>&1; then
-            echo "Error: Zoom code signature verification failed after stopping existing processes; refusing to launch $zoom_binary." >&2
-            exit 1
-          fi
+        zoom_app=\(quotedAppPath)
+        if [ ! -x /usr/bin/codesign ] || ! /usr/bin/codesign --verify --strict -R='anchor apple generic and certificate leaf[subject.OU] = "BJ4HAAB9B3"' "$zoom_app" >/dev/null 2>&1; then
+          echo "Error: Fresh Zoom Team-ID-pinned signature verification failed; refusing to launch $zoom_binary." >&2
+          exit 1
         fi
         /usr/bin/sandbox-exec -f "$profile_path" "$zoom_binary" >/dev/null 2>&1 &
         sandbox_pid=$!
-        /bin/sleep 1
-
-        if /bin/kill -0 "$sandbox_pid" 2>/dev/null || /usr/bin/pgrep -x "zoom.us" >/dev/null 2>&1; then
-          echo "Heuristic: sandbox launch started"
-        else
-          echo "Heuristic: sandbox launch started = no"
-          exit 1
-        fi
-
-        if wait_for_sandboxed_zoom_stability 4 15; then
-          echo "Heuristic: sandbox launch stabilized"
-          exit 0
-        fi
-
-        if /bin/kill -0 "$sandbox_pid" 2>/dev/null; then
-          echo "Heuristic: sandbox process still running without process-name stability confirmation"
-          exit 0
-        fi
-
-        echo "Heuristic: sandbox launch stabilized = no"
-        exit 1
+        stable=0
+        while [ "$stable" -lt 4 ]; do
+          /bin/sleep 1
+          if ! tracked_sandbox_child_is_running; then
+            echo "Launch provenance: unknown. The tracked sandbox child exited or changed identity; another Zoom process is not accepted as proof." >&2
+            exit 1
+          fi
+          stable=$((stable + 1))
+        done
+        echo "Tracked sandbox-exec child remained active. Independently starting normal Zoom bypasses this launcher's protection."
+        exit 0
         """
     }
 }

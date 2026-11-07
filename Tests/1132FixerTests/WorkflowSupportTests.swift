@@ -18,9 +18,7 @@ struct ThemeTokenParityTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let tokenURL = repoRoot.appendingPathComponent("design-system/tokens/macos.json")
-        guard FileManager.default.fileExists(atPath: tokenURL.path) else {
-            return
-        }
+        try #require(FileManager.default.fileExists(atPath: tokenURL.path), "Missing canonical design-system/tokens/macos.json; initialize the pinned submodule")
         let data = try Data(contentsOf: tokenURL)
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
@@ -163,7 +161,7 @@ struct WorkflowResultFormatterTests {
         #expect(steps[0].requiresAdmin == false)
         #expect(steps[1].requiresAdmin == false)
         #expect(steps[2].requiresAdmin == false)
-        #expect(steps[3].requiresAdmin == true)
+        #expect(steps[3].requiresAdmin == !ShellCommands.isMacSpoofingDisabledForCurrentOS())
         #expect(steps[4].requiresAdmin == false)
         #expect(steps[5].requiresAdmin == true)
     }
@@ -193,7 +191,7 @@ struct WorkflowExecutionSemanticsTests {
                 .init(id: "os", label: "macOS", value: "14.5 (Supported)", isWarning: false),
                 .init(id: "zoom", label: "Zoom App", value: "Verified at /Applications/zoom.us.app", isWarning: false),
                 .init(id: "network", label: "Network", value: "Wi-Fi (en0)", isWarning: false),
-                .init(id: "mac", label: "Network Identity", value: "Private Wi-Fi address rotation", isWarning: false),
+                .init(id: "mac", label: "Network Identity", value: "Automatic identity unavailable; manual settings only", isWarning: false),
                 .init(id: "disk", label: "Backup Space", value: "42 GB available", isWarning: false),
                 .init(id: "sandbox", label: "Sandbox", value: "sandbox-exec ready", isWarning: false),
             ]
@@ -221,7 +219,7 @@ struct WorkflowExecutionSemanticsTests {
         }
 
         let olderBackup = "/Users/tester/Library/Application Support/1132Fixer/Backups/snapshot-older"
-        let viewModel = AppViewModel(initialDiskBackupPath: olderBackup)
+        let viewModel = AppViewModel(initialDiskBackupPath: olderBackup, mediaAccessChecker: { "Fixture grants" }, privilegedGuard: isolatedPrivilegedGuard(), networkEnvironment: { .init(osMajor: 13, hardware: .appleSilicon, executionArchitecture: "arm64") }, backupVerifier: { _, _ in true }, refreshPreflightAfterRun: false)
         viewModel.processExecutorOverride = runner
         viewModel.bundleVerifierOverride = verifier
         viewModel.preflight = Self.makeReadyPreflight()
@@ -268,7 +266,7 @@ struct WorkflowExecutionSemanticsTests {
         }
 
         let priorBackup = "/Users/tester/Library/Application Support/1132Fixer/Backups/snapshot-prior"
-        let viewModel = AppViewModel(initialDiskBackupPath: priorBackup)
+        let viewModel = AppViewModel(initialDiskBackupPath: priorBackup, mediaAccessChecker: { "Fixture grants" }, privilegedGuard: isolatedPrivilegedGuard(), networkEnvironment: { .init(osMajor: 13, hardware: .appleSilicon, executionArchitecture: "arm64") }, backupVerifier: { _, _ in true }, refreshPreflightAfterRun: false)
         viewModel.processExecutorOverride = runner
         viewModel.bundleVerifierOverride = verifier
         viewModel.preflight = Self.makeReadyPreflight()
@@ -310,12 +308,9 @@ struct WorkflowExecutionSemanticsTests {
             if stepName == "Read current MAC address" {
                 return "aa:bb:cc:dd:ee:01"
             }
-            if stepName == "Check Private Wi-Fi Address mode" {
-                return "static"
-            }
             if executable == "/usr/bin/osascript" {
                 await gateSignal.enterAndWait()
-                throw CancellationError()
+                return "__1132_SPOOF_STATUS__=0\n__1132_DNS_STATUS__=0\n__1132_PRIVILEGED_COMPLETE__=0"
             }
             return "ok"
         }
@@ -326,7 +321,7 @@ struct WorkflowExecutionSemanticsTests {
             )
         }
 
-        let viewModel = AppViewModel(initialDiskBackupPath: nil)
+        let viewModel = AppViewModel(initialDiskBackupPath: nil, mediaAccessChecker: { "Fixture grants" }, privilegedGuard: isolatedPrivilegedGuard(), networkEnvironment: { .init(osMajor: 13, hardware: .appleSilicon, executionArchitecture: "arm64") }, backupVerifier: { _, _ in true }, refreshPreflightAfterRun: false)
         viewModel.processExecutorOverride = runner
         viewModel.bundleVerifierOverride = verifier
         viewModel.preflight = Self.makeReadyPreflight()
@@ -371,7 +366,7 @@ struct WorkflowExecutionSemanticsTests {
         #expect(steps.first(where: { $0.id == "closeZoom" })?.state == AppViewModel.WorkflowProgress.StepState.succeeded)
         #expect(steps.first(where: { $0.id == "backup" })?.state == AppViewModel.WorkflowProgress.StepState.succeeded)
         #expect(steps.first(where: { $0.id == "network" })?.state == AppViewModel.WorkflowProgress.StepState.interrupted)
-        for unrunID in ["resetData", "dns", "updaters", "mediaAccess", "launch"] {
+        for unrunID in ["resetData", "updaters", "mediaAccess", "launch"] {
             #expect(steps.first(where: { $0.id == unrunID })?.state == AppViewModel.WorkflowProgress.StepState.unstarted)
         }
     }
@@ -396,7 +391,7 @@ struct WorkflowExecutionSemanticsTests {
             )
         }
 
-        let viewModel = AppViewModel(initialDiskBackupPath: nil)
+        let viewModel = AppViewModel(initialDiskBackupPath: nil, mediaAccessChecker: { "Fixture grants" }, privilegedGuard: isolatedPrivilegedGuard(), networkEnvironment: { .init(osMajor: 13, hardware: .appleSilicon, executionArchitecture: "arm64") }, backupVerifier: { _, _ in true }, refreshPreflightAfterRun: false)
         viewModel.processExecutorOverride = runner
         viewModel.bundleVerifierOverride = verifier
         viewModel.preflight = Self.makeReadyPreflight()
@@ -445,11 +440,10 @@ struct WorkflowExecutionSemanticsTests {
 
         let viewModel = AppViewModel(
             initialDiskBackupPath: nil,
-            homeDirectoryProvider: { tempHome.path }
+            homeDirectoryProvider: { tempHome.path }, privilegedGuard: isolatedPrivilegedGuard(), refreshPreflightAfterRun: false
         )
         viewModel.processExecutorOverride = runner
         viewModel.bundleVerifierOverride = verifier
-        viewModel.requireOnDiskBackupVerification = true
         viewModel.preflight = Self.makeReadyPreflight()
 
         viewModel.startZoom()
@@ -471,7 +465,7 @@ struct WorkflowExecutionSemanticsTests {
 @Suite("Activity log cap and monotonic sequence")
 @MainActor
 struct ActivityLogRetentionTests {
-    @Test func logEntriesCapAtFiveThousandWhileSequenceAndRevisionContinueIncrementing() {
+    @Test func logEntriesRespectConfiguredCapWhileSequenceAndRevisionContinueIncrementing() {
         let viewModel = AppViewModel()
         viewModel.clearLogs()
         let baseRevision = viewModel.logRevision
@@ -507,7 +501,7 @@ struct BugReportDraftTests {
         #expect(truncated.data.count <= ReportDraft.maxAttachmentBytes)
         #expect(truncated.text.utf8.count == truncated.data.count)
         #expect(String(data: truncated.data, encoding: .utf8) != nil)
-        #expect(truncated.text.contains("[Truncated to fit"))
+        #expect(truncated.text.contains("[Truncated from"))
     }
 
     @Test func reportDraftSnapshotRemainsFrozenWhenLogsChangeAfterSheetOpens() async throws {

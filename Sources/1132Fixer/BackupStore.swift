@@ -12,7 +12,7 @@ enum BackupStore {
 
     static func rootURL(forHomeDirectory homeDirectory: String) -> URL {
         URL(fileURLWithPath: homeDirectory, isDirectory: true)
-            .appendingPathComponent("Library/Application Support/1132Fixer/Backups", isDirectory: true)
+            .appendingPathComponent(ZoomStateScope.backupRelativeRoot, isDirectory: true)
     }
 
     static func latestBackupURL(
