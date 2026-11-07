@@ -269,6 +269,20 @@ Continuation source changes (unverified natively):
   now carry `@MainActor`, matching the existing `syncRunRecord`/`beginStep`/
   `finishStep` helpers. The same error and fix were reproduced in a minimal Swift
   6.1.2 model; the real fix awaits the next hosted run.
+- After that fix, `swift build` passed on macOS (debug, 25s), but `swift test`
+  hung: the PR run on `e9e8569` printed nothing after 22:19:19Z until it was
+  cancelled at 22:50Z, and main CI run 54 and Build DMG run 8 stalled at the same
+  step. The cancelled log shows ~20 workflow tests refused with "Another app
+  instance owns the workflow, or the private workflow lock is unavailable." Root
+  cause: the test lock directory used `temporaryDirectory.resolvingSymlinksInPath()`,
+  which on macOS strips `/private` and yields `/var/...`; `/var` is a symlink, so
+  `WorkflowOwnershipLock` correctly refused it (the same quirk `8d7ed42` fixed in
+  the keychain test). `cancellationRemainsSingleFlightUntilCommandUnwinds` then
+  waited without a deadline for a privileged step that never started. Fix (tests
+  only): `canonicalTemporaryDirectory()` uses `realpath`, and the gate wait plus
+  seven polling loops in WorkflowSupportTests now fail after 10s instead of
+  hanging. The production lock and its symlink refusal are unchanged; the
+  production path is under the home directory, not `/var`.
 
 Observed but not changed: `BackupStore.isManagedBackupURL` compares URLs with
 `==`, which is sensitive to trailing slashes. It fails closed (a backup is refused,
