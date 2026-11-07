@@ -65,6 +65,22 @@ struct RemediationContractTests {
         #expect(NetworkCapability.resolve(environment: .init(osMajor: 15, hardware: .appleSilicon, executionArchitecture: "arm64"), interface: nil).mechanism == .unavailable)
     }
 
+    @Test func hardwareClassificationTreatsOnlyAMissingArm64KeyAsNotAppleSilicon() {
+        let classify = NetworkEnvironment.classifyHardware
+        #expect(classify(0, 0, 1, "arm64") == .appleSilicon)
+        #expect(classify(0, 0, 1, "x86_64") == .appleSilicon) // Rosetta
+        #expect(classify(0, 0, 0, "x86_64") == .intel)
+        #expect(classify(-1, ENOENT, 0, "x86_64") == .intel) // key absent on an Intel kernel
+        #expect(classify(-1, ENOENT, 0, "arm64") == .unknown)
+        #expect(classify(-1, EPERM, 0, "x86_64") == .unknown)
+        #expect(classify(-1, ENOENT, 1, "x86_64") == .intel) // a failed read never proves Apple silicon
+    }
+
+    @Test func bootIdentifierIsAvailableAndStableWithinOneBoot() throws {
+        let first = try #require(PrivilegedOperationGuard.currentBootIdentifier())
+        #expect(PrivilegedOperationGuard.currentBootIdentifier() == first)
+    }
+
     @Test func reconnectionAddressChangeAndModeAreIndependentObservations() {
         let unchanged = NetworkIdentityObservation(reconnected: true, previousAddress: "02:11:22:33:44:55", currentAddress: "02:11:22:33:44:55", verifiedMode: nil)
         #expect(unchanged.addressChanged == false)

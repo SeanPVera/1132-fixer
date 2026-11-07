@@ -16,6 +16,10 @@ remediation is made.
   `f1f3bc5f68c7ec540b4d689a2a2d994e6b97ea0b`; no submodule revision change.
 - Host: Linux x86_64, kernel `6.18.57`; Bash and Python 3 available. Swift,
   Xcode, AppKit, sandbox-exec, hdiutil, codesign, and native Zoom unavailable.
+- Continuation host (Claude Code cloud session): Linux x86_64, kernel `6.18.44`,
+  Swift `6.1.2-RELEASE` (x86_64-unknown-linux-gnu) already installed, ShellCheck and
+  Python 3 available. SwiftUI, AppKit, Xcode, sandbox-exec, hdiutil, codesign and
+  native Zoom unavailable. Nothing was installed.
 - The Claude baseline `30dc9bbb78c4d74c04790b39053569689a6bfd7b` was absent
   locally. The read-only GitHub compare API verified that it is one commit ahead
   of `67067be`, changing only AGENTS.md (2 additions, 1 deletion). Runtime code
@@ -28,9 +32,12 @@ remediation is made.
   upload, real-user reset, live network mutation, privileged host command,
   commit, push, merge, publication, or deployment was performed.
 
-WIP delivery is now explicitly authorized by the owner. The verification snapshot
-below predates that commit/push; all native limitations and the BLOCKED release
-verdict remain in force.
+WIP delivery is now explicitly authorized by the owner. The owner pushed WIP commit
+`b3814f9` to `origin/remediation/final-plan-1.8.5` (parent `67067be`). The
+continuation session fetched it, found it merges cleanly with `origin/main`
+`1ee0bce` (AGENTS.md-only difference), and did not rebase it. Continuation changes
+are listed under "Continuation session" below. All native limitations and the
+BLOCKED release verdict remain in force.
 
 ## Requirements coverage
 
@@ -121,10 +128,10 @@ shared stage without supplying each original audit's detailed wording.
 | ID | Implementation / evidence | Remaining gate |
 |---|---|---|
 | F-01 | Sandbox-only quick launch added; fake command-boundary regressions authored. | Native launch/media/process compatibility. |
-| F-02 | Explicit 280s network / 250s DNS policy; typed auth cancellation; pending-boot latch, detached wait, dynamic settlement, cross-instance ownership lock; regressions authored. | Delayed actual auth, watchdog/restoration, process trees, lock persistence/reboot/crash evidence. Mitigation only. |
+| F-02 | Explicit 280s network / 250s DNS policy; typed auth cancellation; pending-boot latch, detached wait, dynamic settlement, cross-instance ownership lock; regressions authored. Continuation: boot identity prefers `kern.bootsessionuuid` and falls back to `kern.boottime`, so a calendar-clock adjustment within one boot cannot clear the pending marker; native stability test authored. | Delayed actual auth, watchdog/restoration, process trees, lock persistence/reboot/crash evidence; confirm `kern.bootsessionuuid` is readable and stable on each supported macOS. Mitigation only. |
 | F-03 | Strict reset contract; failed reset terminates before launch; removal errors propagate; terminal receipt preserved. | Swift regressions and native reset fixtures. |
 | F-04 | Shared operation paths, accurate cp/backup/home/privilege/log/media/network descriptions and launch-specific copy. | Native semantic and rendered UI check. |
-| F-05 | Explicit NetworkEnvironment/NetworkCapability and independent observed results. | Native hardware/interface/Rosetta evidence. |
+| F-05 | Explicit NetworkEnvironment/NetworkCapability and independent observed results. Continuation: a missing `hw.optional.arm64` key (ENOENT) now classifies native x86_64 as Intel instead of unknown, preserving the macOS 13 Intel legacy attempt; other read failures stay unknown. Pure classifier regression PASSES in the Linux approximation. | Native hardware/interface/Rosetta evidence, including whether Intel kernels define the key. |
 | F-06 | Existing sandbox/private-keychain canaries explicitly required and invoked in CI. | Actual macos-15 CI run; macOS 13/14 and other supported combinations. |
 | F-07 | Retention charges only retained snapshots. Extracted production shell fixtures PASS, including oversized candidate then older small candidate. Native fixture authored. | Native full generated backup command test. |
 | F-08 | Current-UID literal process selectors in shutdown, launch, updaters, preview, diagnostics. Scoped shutdown/refusal fixtures PASS. | Darwin pgrep/pkill and disposable zoomXus test. |
@@ -182,7 +189,7 @@ Final local checks (also see machine-readable `verification-receipt.json`):
 | `swift build -c release` | UNVERIFIED: exit 127, `swift: command not found`. |
 | `bash scripts/check-dmg.sh /tmp/1132-verification-not-created.dmg adhoc 0` | Native gate correctly refused execution: exit 2, requires macOS. No image created or mounted. |
 
-No Swift syntax/type check or Swift test execution is claimed. Python fixtures
+The original Codex session ran no Swift syntax/type check or Swift tests. Python fixtures
 extract actual production shell fragments but do not establish Darwin semantics,
 SBPL behavior, actual Zoom startup, or privileged termination. No DMG was built.
 
@@ -199,8 +206,11 @@ and release workflow outputs. No unrelated user changes existed or were removed.
 
 Material risks still preventing release:
 
-- All Swift changes and new tests remain uncompiled. Source review cannot rule
-  out Swift toolchain/API/concurrency problems.
+- No Darwin compile has run. On Linux, every Swift file parses and the 15
+  non-SwiftUI sources plus 12 of 14 test files type-check only with local shims;
+  AppViewModel, ContentView, the views, Theme, the app entry point and the two
+  AppViewModel/Theme test files remain unchecked. Darwin APIs, SwiftUI and Swift
+  6 test-toolchain behavior are not established.
 - Darwin flock, UserDefaults persistence, actual administrator cancellation,
   watchdog cleanup, delayed authorization and root descendants need observation.
   The larger timeouts and explicit latch do not prove safe termination.
@@ -219,6 +229,42 @@ The native acceptance procedure and exact deferred gates are in DEVELOPMENT.md.
 The next model can use CONTINUE_REMEDIATION.txt without restarting the audit or
 discarding this branch. All essential native gates must pass before changing the
 release-readiness verdict to VERIFIED.
+
+## Continuation session (Claude Code, Linux)
+
+Read AGENTS.md, this file, DEVELOPMENT.md, the receipt, CHANGED_FILES.txt and
+CONTINUE_REMEDIATION.txt; inspected `git diff 67067be HEAD`. Submodule remains
+`f1f3bc5f68c7ec540b4d689a2a2d994e6b97ea0b`; VERSION remains `1.8.5`.
+
+| Exact command/check | Observed outcome |
+|---|---|
+| `find Sources Tests -name '*.swift' -print0 \| xargs -0 swiftc -parse` (Swift 6.1.2) | PASS: exit 0, before and after continuation edits. Syntax only. |
+| `shellcheck scripts/*.sh` | PASS: exit 0. |
+| `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests` | PASS: 14 tests. |
+| `bash -n scripts/build-universal-dmg.sh scripts/check-dmg.sh`; brand check; `git diff --check`; token/plist/receipt JSON and workflow YAML parses | PASS. |
+| Linux approximate type-check (scratch copy outside the repo): 15 non-SwiftUI sources plus `AppViewModel`'s nested value types, with `Darwin`→`Glibc`, `FoundationNetworking`, and stubs for `sysctlbyname`, `URLSession.bytes`, `volumeAvailableCapacityForImportantUsage` | PASS: 0 errors, 0 warnings in Swift 5 mode. Every stubbed gap predates the remediation except `sysctlbyname` (new in NetworkCapabilities; exists on Darwin). |
+| Linux approximate test run: scratch SwiftPM package, the same shimmed sources, 12 of 14 test files, `TMPDIR`/`HOME` in scratch | 179 tests after continuation edits: 173 pass, 6 fail. `zoomSandboxProfileIsAcceptedBySandboxExec` and `sandboxedClientCanReadAndUpdateItsKeychain` need macOS tools (the canary is now required, not skipped). `timeBoundedCommandTriggersRecoveryTrapInSubshellOnTimeout` and `backupCommandPreservesNewestSnapshotEvenWhenFutureDatedSnapshotExists` predate the remediation, fail identically on `67067be` built the same way, and passed macOS CI run 49 on `67067be`. New `retentionSkipsOversizedCandidateWithoutChargingItsSizeOrCount` fails at the same `isManagedBackupURL` check: on Linux Foundation the root URL lacks the trailing slash that the parent URL gains (diagnosed directly); the script exits 0 and writes its marker. Inferred Linux-only, unproven on Darwin. `bootIdentifierIsAvailableAndStableWithinOneBoot` fails only because the Linux shim has no sysctl. |
+| `AppViewModelWorkflowTests`, `WorkflowSupportTests` | NOT RUN: require SwiftUI-backed `AppViewModel`/`Theme`. |
+
+The scratch shims are not part of this branch and are not evidence of Darwin
+compilation, Darwin Foundation semantics or Swift 6 test-toolchain behavior.
+
+Continuation source changes (unverified natively):
+
+- `NetworkCapabilities.swift`: `NetworkEnvironment.classifyHardware` treats ENOENT
+  for `hw.optional.arm64` on native x86_64 as Intel. Before, any failed read made
+  the hardware unknown, which would skip the macOS 13 Intel legacy MAC attempt
+  that 1.8.4 performed if an Intel kernel lacks the key. Whether Intel kernels
+  define the key is not established here; the classifier is correct either way.
+- `PrivilegedOperationGuard.swift`: `currentBootIdentifier()` prefers a validated
+  `kern.bootsessionuuid`. The premise that XNU shifts `kern.boottime` when the
+  calendar clock changes is inferred, not observed here; the change keeps the
+  previous identifier as the fallback, so it cannot weaken the latch.
+- `RemediationContractTests.swift`: classifier and boot-identity regressions.
+
+Observed but not changed: `BackupStore.isManagedBackupURL` compares URLs with
+`==`, which is sensitive to trailing slashes. It fails closed (a backup is refused,
+so the repair stops before reset) and passes macOS CI, so it was left unchanged.
 
 ## Changed-file reference index
 

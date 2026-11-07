@@ -34,7 +34,13 @@ Portable fixtures use Python 3's standard library and a disposable filesystem:
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -v
 bash -n scripts/build-universal-dmg.sh scripts/check-dmg.sh
 bash design-system/scripts/brand-assets.sh check . .brand-assets.tsv
+shellcheck scripts/*.sh
 ```
+
+When a Swift toolchain is already present on Linux, `find Sources Tests -name
+'*.swift' -print0 | xargs -0 swiftc -parse` checks syntax only. SwiftUI and AppKit
+do not exist there, so a Linux type-check or test run needs out-of-tree shims and
+is never a substitute for the macOS build and test gates.
 
 The application reports the packaged `CFBundleShortVersionString` centrally
 through `AppConfiguration.appVersion`. SwiftPM development runs without app

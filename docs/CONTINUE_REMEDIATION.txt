@@ -71,6 +71,10 @@ What is implemented:
 - Explicit backup/media/preflight test dependencies; production checks remain
   real. Central runtime app version, accurate log caps, toolchain/CLT guidance,
   and unused-view removal preserving EnvironmentSupport.supportMatrix.
+- Continuation: a missing hw.optional.arm64 key on native x86_64 classifies as
+  Intel (keeps the macOS 13 Intel legacy attempt); boot identity prefers
+  kern.bootsessionuuid with kern.boottime fallback. Both have regressions; neither
+  premise has native evidence.
 
 Verification already observed:
 - 14 isolated Python resource/shell fixtures PASS. These execute extracted
@@ -79,7 +83,15 @@ Verification already observed:
 - Bash syntax, brand asset guard, six token JSON files, two plists, four workflow
   YAML parses/output interpolation checks, and git diff --check PASS.
 - swift build, swift run, swift test, swift build -c release: all exit 127
-  (Swift absent on Linux). NO Swift source/type check or Swift tests have run.
+  in the original Codex session (Swift absent). NO Darwin build or test has run.
+- Continuation (Linux, Swift 6.1.2 already present): swiftc -parse of every Swift
+  file and shellcheck PASS. With out-of-tree shims only, the 15 non-SwiftUI
+  sources type-check cleanly and 12 of 14 test files run: 173 of 179 pass; the 6
+  failures are macOS-tool canaries, two pre-existing tests that fail identically
+  on 67067be under Linux and pass macOS CI, the new retention test at the same
+  Linux URL-equality check, and the boot-identity test against a missing sysctl.
+  AppViewModelWorkflowTests and WorkflowSupportTests need SwiftUI and did not run.
+  See REMEDIATION_STATUS.md "Continuation session".
 - check-dmg's native guard returned exit 2 on Linux. NO DMG was built or mounted.
 - One fresh read-only security investigation and one independent candidate
   review were completed. Confirmed second-instance and literal-pkill-regex gaps

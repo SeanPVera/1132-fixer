@@ -51,7 +51,19 @@ final class PrivilegedOperationGuard {
 
     static let recoveryMessage = "Administrator operation completion is unknown. Further repair and launch actions are blocked. Earlier changes may remain; no rollback was performed. Restart your Mac before reopening 1132 Fixer to establish that the old privileged processes have ended. If it remains blocked, the saved boot identity could not be verified; export diagnostics for support."
 
+    /// Prefer the per-boot session UUID: `kern.boottime` can be adjusted within one boot
+    /// when the calendar clock is changed, which would look like a reboot and clear the
+    /// pending marker too early. Boot time remains the fallback when the UUID is unreadable.
     nonisolated static func currentBootIdentifier() -> String? {
+        var length = 0
+        if sysctlbyname("kern.bootsessionuuid", nil, &length, nil, 0) == 0, length > 1, length <= 256 {
+            var buffer = [CChar](repeating: 0, count: length)
+            if sysctlbyname("kern.bootsessionuuid", &buffer, &length, nil, 0) == 0 {
+                let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+                let uuid = String(decoding: bytes, as: UTF8.self)
+                if UUID(uuidString: uuid) != nil { return "session:" + uuid }
+            }
+        }
         var boot = timeval()
         var size = MemoryLayout<timeval>.size
         guard sysctlbyname("kern.boottime", &boot, &size, nil, 0) == 0 else { return nil }

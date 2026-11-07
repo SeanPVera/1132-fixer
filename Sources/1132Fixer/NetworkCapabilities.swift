@@ -10,11 +10,22 @@ struct NetworkEnvironment: Equatable {
     static var current: Self {
         var arm64: Int32 = 0
         var size = MemoryLayout<Int32>.size
-        let known = sysctlbyname("hw.optional.arm64", &arm64, &size, nil, 0) == 0
+        let status = sysctlbyname("hw.optional.arm64", &arm64, &size, nil, 0)
+        let errorNumber = status == 0 ? 0 : errno
         let execution = ShellCommands.machineArchitecture()
-        let hardware: Hardware = arm64 == 1 ? .appleSilicon : (known && execution == "x86_64" ? .intel : .unknown)
+        let hardware = classifyHardware(sysctlStatus: status, errorNumber: errorNumber,
+                                        arm64Flag: arm64, executionArchitecture: execution)
         return Self(osMajor: ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
                     hardware: hardware, executionArchitecture: execution)
+    }
+
+    /// Apple silicon kernels always define `hw.optional.arm64` (also under Rosetta), so a
+    /// missing key (ENOENT) cannot be Apple silicon. Any other read failure stays unknown.
+    static func classifyHardware(sysctlStatus: Int32, errorNumber: Int32, arm64Flag: Int32,
+                                 executionArchitecture: String) -> Hardware {
+        if sysctlStatus == 0 && arm64Flag == 1 { return .appleSilicon }
+        let established = sysctlStatus == 0 || errorNumber == ENOENT
+        return established && executionArchitecture == "x86_64" ? .intel : .unknown
     }
 
     var isTranslated: Bool { hardware == .appleSilicon && executionArchitecture == "x86_64" }
