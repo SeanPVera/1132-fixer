@@ -466,6 +466,7 @@ final class AppViewModel: ObservableObject {
 
         runTask("Sandbox-only Zoom launch") {
             var activeID = "validate"
+            @MainActor
             func record(_ id: String, _ outcome: StepResult.Outcome, _ detail: String) {
                 guard var run = self.currentRunRecord,
                       let index = run.steps.firstIndex(where: { $0.id == id }) else { return }
@@ -739,6 +740,7 @@ final class AppViewModel: ObservableObject {
                     ? "Step: Check active network; legacy MAC spoofing is disabled on macOS 14+"
                     : "Step: Spoof MAC and reconnect active network (admin prompt expected)")
                 var precomputedDNSResult: PrivilegedDNSResult?
+                @MainActor
                 func recordDNS(_ dns: PrivilegedDNSResult) {
                     precomputedDNSResult = dns
                     if dns.succeeded { self.markStepDone("dns", succeeded: true) }

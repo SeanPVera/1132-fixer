@@ -261,6 +261,14 @@ Continuation source changes (unverified natively):
   calendar clock changes is inferred, not observed here; the change keeps the
   previous identifier as the fallback, so it cannot weaken the latch.
 - `RemediationContractTests.swift`: classifier and boot-identity regressions.
+- `AppViewModel.swift`: first hosted macOS CI (PR 25, CI run 52, `Build & Test
+  (macOS)`, head `5c2f86d`) failed to compile. The nested helpers `record` (quick
+  launch) and `recordDNS` (repair network/DNS step), both introduced in `b3814f9`,
+  were not `@MainActor` and called main-actor members, producing "call to main
+  actor-isolated instance method ... in a synchronous nonisolated context". Both
+  now carry `@MainActor`, matching the existing `syncRunRecord`/`beginStep`/
+  `finishStep` helpers. The same error and fix were reproduced in a minimal Swift
+  6.1.2 model; the real fix awaits the next hosted run.
 
 Observed but not changed: `BackupStore.isManagedBackupURL` compares URLs with
 `==`, which is sensitive to trailing slashes. It fails closed (a backup is refused,
