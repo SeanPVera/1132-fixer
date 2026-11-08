@@ -61,18 +61,48 @@ jobs:
       - name: Test
         run: swift test
 
-      - name: Require and execute native sandbox and keychain canaries
+      - name: Require and execute native sandbox, keychain and shutdown canaries
         run: |
           set -euo pipefail
           test -x /usr/bin/sandbox-exec
           swift test list > .build/canary-tests.txt
           grep -F 'ZoomSandboxKeychainTests.sandboxedClientCanReadAndUpdateItsKeychain' .build/canary-tests.txt || grep -F 'ZoomSandboxKeychainTests/sandboxedClientCanReadAndUpdateItsKeychain' .build/canary-tests.txt
           grep -F 'zoomSandboxProfileIsAcceptedBySandboxExec' .build/canary-tests.txt
+          grep -F 'stopZoomStopsOnlyTheLiteralZoomNameOnDarwin' .build/canary-tests.txt
           swift test --filter ZoomSandboxKeychainTests
           swift test --filter zoomSandboxProfileIsAcceptedBySandboxExec
+          swift test --filter stopZoomStopsOnlyTheLiteralZoomNameOnDarwin
 
       - name: Build (release)
         run: swift build -c release
+
+  package-adhoc:
+    # Builds and mounts a real universal DMG on every PR with no credentials, so
+    # packaging regressions (e.g. macOS bash 3.2 incompatibilities) fail before
+    # merge instead of in the main-only Build DMG or release workflows.
+    name: Package ad-hoc DMG (macOS)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+
+      - name: Build and smoke-check an ad-hoc universal DMG
+        env:
+          # /dev/null is not a regular file, so no developer settings file can
+          # switch this build to Developer ID signing or notarization.
+          APPLE_DEVELOPER_FILE: /dev/null
+          SIGN_IDENTITY: "-"
+          NOTARIZE: "0"
+          APP_BUILD: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          bash --version | head -1
+          ./scripts/build-universal-dmg.sh
+          version="$(tr -d '[:space:]' < VERSION)"
+          ./scripts/check-dmg.sh "dist/1132 Fixer-v$version-universal.dmg" adhoc 0
 
   isolated-fixtures:
     name: Packaging and shell fixtures (Linux)
