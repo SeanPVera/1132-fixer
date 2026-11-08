@@ -76,6 +76,15 @@ struct RemediationContractTests {
         #expect(classify(-1, ENOENT, 1, "x86_64") == .intel) // a failed read never proves Apple silicon
     }
 
+    /// Live check on the machine running the tests. Intel kernels do not define
+    /// hw.optional.arm64 (observed on the macos-15-intel and macos-26-intel runners), which
+    /// once made every Intel Mac classify as unknown and skip the macOS 13 MAC attempt.
+    @Test func currentEnvironmentClassifiesThisMacHardware() {
+        let environment = NetworkEnvironment.current
+        #expect(environment.hardware != .unknown, "hardware unknown for \(environment.executionArchitecture)")
+        if environment.executionArchitecture == "arm64" { #expect(environment.hardware == .appleSilicon) }
+    }
+
     @Test func bootIdentifierIsAvailableAndStableWithinOneBoot() throws {
         let first = try #require(PrivilegedOperationGuard.currentBootIdentifier())
         #expect(PrivilegedOperationGuard.currentBootIdentifier() == first)
