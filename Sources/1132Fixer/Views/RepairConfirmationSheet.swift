@@ -49,7 +49,7 @@ struct RepairConfirmationSheet: View {
                         .foregroundStyle(Theme.Colors.textSecondary)
                 }
 
-                Text("Inspect the exact files, services, and 9-step repair sequence before starting. Nothing is modified until you choose Start Repair.")
+                Text("Inspect the exact files, services, and 9-step repair sequence before starting. Nothing is modified until you choose Start repair.")
                     .font(Theme.Typography.body)
                     .foregroundStyle(Theme.Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
