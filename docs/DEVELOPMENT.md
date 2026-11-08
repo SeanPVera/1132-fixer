@@ -2,8 +2,11 @@
 
 The application targets Swift 5.9 syntax and macOS 13 APIs. Tests use the Swift
 Testing framework (`import Testing`) and require Swift 6 / Xcode 16 or newer.
-The configured CI image is `macos-15`. A passing build of the application alone
-does not establish test-toolchain compatibility or behavior on macOS 13.
+CI builds and tests on the GitHub-hosted `macos-15`, `macos-15-intel`, `macos-26`
+and `macos-26-intel` images (each job has a 30-minute limit); the `macos-15` job
+keeps the `Build & Test (macOS)` check name. Release and DMG builds use
+`macos-15`. GitHub retired its macOS 13 and 14 images, so a passing hosted build
+does not establish behavior on macOS 13 or 14.
 
 Initialize the pinned design-system submodule before building or testing:
 
@@ -16,8 +19,9 @@ swift build -c release
 
 CI requires the canonical token JSON and explicitly discovers and runs the real
 sandbox profile and disposable-keychain canaries. Missing `sandbox-exec` fails
-the canary. Additional macOS 13/14, Intel, Apple Silicon, and Rosetta runs remain
-required native evidence; no beta or unconfirmed runner label has been added.
+the canary. macOS 13/14 and Rosetta runs remain required native evidence on
+owner hardware or a VM; only labels listed as available in
+`actions/runner-images` are used.
 
 If a CLT installation reports a Swift Testing macro/plugin loading failure,
 record `xcode-select -p`, `xcrun --find swift`, `swift --version`, and

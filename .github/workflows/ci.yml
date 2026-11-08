@@ -14,10 +14,26 @@ concurrency:
 
 jobs:
   build-and-test:
-    name: Build & Test (macOS)
-    # macOS 15 images ship Xcode 16+, which is required for the swift-testing
-    # framework (`import Testing`) used by the test target.
-    runs-on: macos-15
+    # The macos-15 entry keeps the original check name so existing required
+    # status checks still match. macOS 15+ images ship Xcode 16+, which the
+    # swift-testing framework (`import Testing`) used by the test target needs.
+    # GitHub retired its macOS 13 and 14 images; those OS versions need
+    # owner-run native evidence (docs/DEVELOPMENT.md).
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Build & Test (macOS)
+            runner: macos-15
+          - name: Build & Test (macOS 15 Intel)
+            runner: macos-15-intel
+          - name: Build & Test (macOS 26)
+            runner: macos-26
+          - name: Build & Test (macOS 26 Intel)
+            runner: macos-26-intel
 
     steps:
       - name: Checkout
@@ -25,10 +41,16 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Toolchain versions
+      - name: Toolchain and platform
         run: |
           xcodebuild -version
           swift --version
+          sw_vers
+          echo "machine: $(uname -m)"
+          # Record the sysctl keys the app relies on (presence only for the boot UUID).
+          if arm64="$(sysctl -n hw.optional.arm64 2>&1)"; then echo "hw.optional.arm64=$arm64"; else echo "hw.optional.arm64 unavailable: $arm64"; fi
+          if translated="$(sysctl -n sysctl.proc_translated 2>&1)"; then echo "sysctl.proc_translated=$translated"; else echo "sysctl.proc_translated unavailable: $translated"; fi
+          if sysctl -n kern.bootsessionuuid >/dev/null 2>&1; then echo "kern.bootsessionuuid: readable"; else echo "kern.bootsessionuuid: unavailable"; fi
 
       - name: Require canonical design tokens
         run: test -s design-system/tokens/macos.json
@@ -55,6 +77,7 @@ jobs:
   isolated-fixtures:
     name: Packaging and shell fixtures (Linux)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Check shell syntax and isolated fixtures
