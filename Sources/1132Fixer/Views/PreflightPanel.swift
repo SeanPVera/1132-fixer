@@ -70,14 +70,14 @@ struct WorkspaceSummary: View {
                 VStack(alignment: .leading, spacing: Theme.Spacing.s4) {
                     Text(descriptor.heading)
                         .font(Theme.Typography.statusHeadline)
-                        .foregroundStyle(Theme.Signal.textPrimary)
+                        .foregroundStyle(Theme.Colors.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityAddTraits(.isHeader)
 
                     if let detail = descriptor.detail {
                         Text(detail)
                             .font(Theme.Typography.body)
-                            .foregroundStyle(Theme.Signal.textSecondary)
+                            .foregroundStyle(Theme.Colors.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                     }
@@ -86,7 +86,7 @@ struct WorkspaceSummary: View {
                         Text(metadata)
                             .font(Theme.Typography.metadata)
                             .monospacedDigit()
-                            .foregroundStyle(Theme.Signal.textSecondary)
+                            .foregroundStyle(Theme.Colors.textSecondary)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -109,7 +109,7 @@ struct WorkspaceSummary: View {
         .overlay(alignment: .leading) {
             // State-derived accent rule; decorative, the heading carries the meaning.
             Capsule()
-                .fill(descriptor.tone == .neutral ? Theme.Signal.primary : descriptor.tone.color)
+                .fill(descriptor.tone == .neutral ? Theme.Colors.primary : descriptor.tone.color)
                 .frame(width: 3)
                 .accessibilityHidden(true)
         }
@@ -158,7 +158,7 @@ struct WorkspaceSummary: View {
                 .foregroundStyle(notice.tone.color)
             Text(notice.value)
                 .font(Theme.Typography.body)
-                .foregroundStyle(Theme.Signal.textPrimary)
+                .foregroundStyle(Theme.Colors.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -372,11 +372,11 @@ struct SystemCheckDetailsSheet: View {
                 VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
                     Text("System check details")
                         .font(Theme.Typography.sectionHeading)
-                        .foregroundStyle(Theme.Signal.textPrimary)
+                        .foregroundStyle(Theme.Colors.textPrimary)
                         .accessibilityAddTraits(.isHeader)
                     Text("Preflight verification for macOS, Zoom code signature, network state, backup capacity, and sandbox-exec.")
                         .font(Theme.Typography.body)
-                        .foregroundStyle(Theme.Signal.textSecondary)
+                        .foregroundStyle(Theme.Colors.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -390,7 +390,7 @@ struct SystemCheckDetailsSheet: View {
             }
             .padding(Theme.Spacing.s24)
 
-            Divider().overlay(Theme.Signal.border)
+            Divider().overlay(Theme.Colors.border)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Spacing.s24) {
@@ -413,12 +413,12 @@ struct SystemCheckDetailsSheet: View {
 
                                     Text(check.label)
                                         .font(Theme.Typography.label)
-                                        .foregroundStyle(Theme.Signal.textPrimary)
+                                        .foregroundStyle(Theme.Colors.textPrimary)
                                         .frame(width: 136, alignment: .leading)
 
                                     Text(check.value)
                                         .font(Theme.Typography.body)
-                                        .foregroundStyle(Theme.Signal.textSecondary)
+                                        .foregroundStyle(Theme.Colors.textSecondary)
                                         .fixedSize(horizontal: false, vertical: true)
                                         .textSelection(.enabled)
                                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -429,11 +429,11 @@ struct SystemCheckDetailsSheet: View {
                                 .accessibilityElement(children: .combine)
 
                                 if index < preflight.checks.count - 1 {
-                                    Divider().overlay(Theme.Signal.border)
+                                    Divider().overlay(Theme.Colors.border)
                                 }
                             }
                         }
-                        .ledgerContainer(background: Theme.Signal.surfaceModal)
+                        .ledgerContainer(background: Theme.Colors.surfaceModal)
                     }
 
                     VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
@@ -441,12 +441,12 @@ struct SystemCheckDetailsSheet: View {
 
                         Text(zoomAppPath)
                             .font(Theme.Typography.mono)
-                            .foregroundStyle(Theme.Signal.textPrimary)
+                            .foregroundStyle(Theme.Colors.textPrimary)
                             .textSelection(.enabled)
                             .padding(.horizontal, Theme.Spacing.s16)
                             .padding(.vertical, Theme.Spacing.s12)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .ledgerContainer(background: Theme.Signal.surfaceModal)
+                            .ledgerContainer(background: Theme.Colors.surfaceModal)
                     }
 
                     VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
@@ -459,7 +459,7 @@ struct SystemCheckDetailsSheet: View {
                 .padding(Theme.Spacing.s24)
             }
 
-            Divider().overlay(Theme.Signal.border)
+            Divider().overlay(Theme.Colors.border)
 
             HStack {
                 Spacer()
@@ -471,7 +471,7 @@ struct SystemCheckDetailsSheet: View {
             .padding(.vertical, Theme.Spacing.s16)
         }
         .frame(minWidth: 640, idealWidth: 680, minHeight: 460, idealHeight: 560, alignment: .topLeading)
-        .background(Theme.Signal.surfaceModal)
+        .background(Theme.Colors.surfaceModal)
         .preferredColorScheme(.dark)
         .onExitCommand(perform: onClose)
     }
@@ -479,7 +479,7 @@ struct SystemCheckDetailsSheet: View {
     private func subsectionTitle(_ title: String) -> some View {
         Text(title)
             .font(Theme.Typography.label)
-            .foregroundStyle(Theme.Signal.textPrimary)
+            .foregroundStyle(Theme.Colors.textPrimary)
             .accessibilityAddTraits(.isHeader)
     }
 
@@ -491,10 +491,10 @@ struct SystemCheckDetailsSheet: View {
                 .accessibilityHidden(true)
             Text(title)
                 .font(Theme.Typography.label)
-                .foregroundStyle(Theme.Signal.textPrimary)
+                .foregroundStyle(Theme.Colors.textPrimary)
             Text(value)
                 .font(Theme.Typography.body)
-                .foregroundStyle(Theme.Signal.textSecondary)
+                .foregroundStyle(Theme.Colors.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .combine)

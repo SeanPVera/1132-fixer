@@ -13,7 +13,7 @@ struct ZoomLocationPanel: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.s12) {
             Text("Zoom installation")
                 .font(Theme.Typography.sectionHeading)
-                .foregroundStyle(Theme.Signal.textPrimary)
+                .foregroundStyle(Theme.Colors.textPrimary)
                 .accessibilityAddTraits(.isHeader)
 
             VStack(alignment: .leading, spacing: 0) {
@@ -26,18 +26,18 @@ struct ZoomLocationPanel: View {
                 .frame(minHeight: Theme.Window.rowMinHeight)
 
                 if let notice = installationNotice, !notice.isEmpty {
-                    Divider().overlay(Theme.Signal.border)
+                    Divider().overlay(Theme.Colors.border)
                     HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s8) {
                         Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(Theme.Signal.warning)
+                            .foregroundStyle(Theme.Colors.warning)
                             .font(.system(size: 12, weight: .semibold))
                             .accessibilityHidden(true)
                         Text("Selection rejected:")
                             .font(Theme.Typography.label)
-                            .foregroundStyle(Theme.Signal.warning)
+                            .foregroundStyle(Theme.Colors.warning)
                         Text(notice)
                             .font(Theme.Typography.body)
-                            .foregroundStyle(Theme.Signal.textPrimary)
+                            .foregroundStyle(Theme.Colors.textPrimary)
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -58,7 +58,7 @@ struct ZoomLocationPanel: View {
     private var pathText: some View {
         Text(appPath)
             .font(Theme.Typography.mono)
-            .foregroundStyle(Theme.Signal.textPrimary)
+            .foregroundStyle(Theme.Colors.textPrimary)
             .lineLimit(1)
             .truncationMode(.middle)
             .textSelection(.enabled)

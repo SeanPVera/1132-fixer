@@ -20,7 +20,7 @@ struct HeaderCard: View {
 
             Text("1132 Fixer")
                 .font(Theme.Typography.compactIdentity)
-                .foregroundStyle(Theme.Signal.textPrimary)
+                .foregroundStyle(Theme.Colors.textPrimary)
                 .accessibilityAddTraits(.isHeader)
 
             StatusTag(text: versionText)

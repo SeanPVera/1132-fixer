@@ -2,68 +2,31 @@ import SwiftUI
 
 enum Theme {
     enum Colors {
-        static let background = Color(red: 15 / 255, green: 23 / 255, blue: 36 / 255)      // #0F1724
-        static let surface = Color(red: 32 / 255, green: 43 / 255, blue: 61 / 255)         // #202B3D
-        static let surfaceModal = Color(red: 42 / 255, green: 37 / 255, blue: 48 / 255)    // #2A2530
-        static let surfaceHover = Color(red: 38 / 255, green: 52 / 255, blue: 74 / 255)    // #26344A
-        static let surfacePressed = Color(red: 27 / 255, green: 38 / 255, blue: 54 / 255)  // #1B2636
-        static let textPrimary = Color(red: 245 / 255, green: 247 / 255, blue: 250 / 255)  // #F5F7FA
-        static let textSecondary = Color(red: 154 / 255, green: 165 / 255, blue: 180 / 255)// #9AA5B4
-        static let border = Color(red: 51 / 255, green: 65 / 255, blue: 90 / 255)          // #33415A
-        static let borderControl = Color(red: 113 / 255, green: 131 / 255, blue: 153 / 255)// #718399
-        static let primary = Color(red: 35 / 255, green: 95 / 255, blue: 168 / 255)        // #235FA8
-        static let primaryHover = Color(red: 40 / 255, green: 106 / 255, blue: 181 / 255)  // #286AB5
-        static let primaryPressed = Color(red: 29 / 255, green: 80 / 255, blue: 141 / 255) // #1D508D
-        static let link = Color(red: 141 / 255, green: 188 / 255, blue: 242 / 255)         // #8DBCF2
-        static let focus = Color(red: 141 / 255, green: 188 / 255, blue: 242 / 255)        // #8DBCF2
-        static let success = Color(red: 60 / 255, green: 207 / 255, blue: 110 / 255)       // #3CCF6E
-        static let warning = Color(red: 255 / 255, green: 181 / 255, blue: 71 / 255)       // #FFB547
-        static let error = Color(red: 255 / 255, green: 120 / 255, blue: 117 / 255)        // #FF7875
-        static let overlay = Color(red: 15 / 255, green: 23 / 255, blue: 36 / 255).opacity(0.72)
+        static let background = Color(red: 18 / 255, green: 18 / 255, blue: 20 / 255) // #121214
+        static let surface = Color(red: 28 / 255, green: 27 / 255, blue: 32 / 255) // #1C1B20
+        static let surfaceModal = Color(red: 36 / 255, green: 35 / 255, blue: 42 / 255) // #24232A
+        static let surfaceHover = Color(red: 43 / 255, green: 42 / 255, blue: 49 / 255) // #2B2A31
+        static let surfacePressed = Color(red: 23 / 255, green: 22 / 255, blue: 26 / 255) // #17161A
+        static let textPrimary = Color(red: 244 / 255, green: 241 / 255, blue: 236 / 255) // #F4F1EC
+        static let textSecondary = Color(red: 169 / 255, green: 164 / 255, blue: 157 / 255) // #A9A49D
+        static let border = Color(red: 52 / 255, green: 50 / 255, blue: 58 / 255) // #34323A
+        static let borderControl = Color(red: 122 / 255, green: 116 / 255, blue: 109 / 255) // #7A746D
+        static let primary = Color(red: 255 / 255, green: 154 / 255, blue: 60 / 255) // #FF9A3C
+        static let primaryHover = Color(red: 255 / 255, green: 173 / 255, blue: 92 / 255) // #FFAD5C
+        static let primaryPressed = Color(red: 232 / 255, green: 132 / 255, blue: 44 / 255) // #E8842C
+        static let link = Color(red: 255 / 255, green: 178 / 255, blue: 92 / 255) // #FFB25C
+        static let focus = Color(red: 255 / 255, green: 178 / 255, blue: 92 / 255) // #FFB25C
+        static let success = Color(red: 61 / 255, green: 220 / 255, blue: 151 / 255) // #3DDC97
+        static let warning = Color(red: 255 / 255, green: 194 / 255, blue: 75 / 255) // #FFC24B
+        static let error = Color(red: 255 / 255, green: 122 / 255, blue: 133 / 255) // #FF7A85
+        static let overlay = Color(red: 18 / 255, green: 18 / 255, blue: 20 / 255).opacity(0.72)
         static let gradientBrandStart = Color(red: 255 / 255, green: 210 / 255, blue: 76 / 255) // #FFD24C
-        static let gradientBrandEnd = Color(red: 232 / 255, green: 85 / 255, blue: 42 / 255)    // #E8552A
+        static let surfaceRecessedToken = Color(red: 14 / 255, green: 14 / 255, blue: 16 / 255) // #0E0E10
+        static let onPrimary = Color(red: 26 / 255, green: 18 / 255, blue: 6 / 255)           // #1A1206
+        static let accentGlow = Color(red: 255 / 255, green: 154 / 255, blue: 60 / 255).opacity(0.28)
+        static let gradientBrandEnd = Color(red: 232 / 255, green: 85 / 255, blue: 42 / 255) // #E8552A
 
         // Canonical token map matching design-system/tokens/macos.json for automated verification.
-        static let hexTokens: [String: String] = [
-            "background": "#0F1724",
-            "surface": "#202B3D",
-            "surface-modal": "#2A2530",
-            "surface-hover": "#26344A",
-            "surface-pressed": "#1B2636",
-            "text-primary": "#F5F7FA",
-            "text-secondary": "#9AA5B4",
-            "border": "#33415A",
-            "border-control": "#718399",
-            "primary": "#235FA8",
-            "primary-hover": "#286AB5",
-            "primary-pressed": "#1D508D",
-            "link": "#8DBCF2",
-            "focus": "#8DBCF2",
-            "success": "#3CCF6E",
-            "warning": "#FFB547",
-            "error": "#FF7875",
-            "overlay": "rgba(15,23,36,0.72)",
-            "gradient-brand-start": "#FFD24C",
-            "gradient-brand-end": "#E8552A",
-        ]
-
-        // Compatibility aliases for views that reference semantic roles.
-        static let accent = primary
-        static let panelBackground = surface
-        static let surfaceRecessed = background
-        static let surfaceElevated = surfaceHover
-        static let borderSubtle = border
-        static let text = textPrimary
-        static let textMuted = textSecondary
-        static let cardHover = surfaceHover
-    }
-
-    /// "Signal" app skin: warm graphite surfaces with a restrained amber accent.
-    /// Member names mirror `Colors` so views can switch skins without changing roles.
-    /// `Colors` above remains the canonical mirror of `design-system/tokens/macos.json`
-    /// (verified by `ThemeTokenParityTests`); these values are app-scoped until the
-    /// design-system repository adopts them.
-    enum Signal {
         static let hexTokens: [String: String] = [
             "background": "#121214",
             "surface": "#1C1B20",
@@ -84,36 +47,20 @@ enum Theme {
             "success": "#3DDC97",
             "warning": "#FFC24B",
             "error": "#FF7A85",
+            "overlay": "rgba(18,18,20,0.72)",
+            "gradient-brand-start": "#FFD24C",
+            "gradient-brand-end": "#E8552A",
         ]
 
-        static let background = hex(0x121214)
-        static let surface = hex(0x1C1B20)
-        static let surfaceModal = hex(0x24232A)
-        static let surfaceHover = hex(0x2B2A31)
-        static let surfacePressed = hex(0x17161A)
-        static let surfaceRecessed = hex(0x0E0E10)
-        static let textPrimary = hex(0xF4F1EC)
-        static let textSecondary = hex(0xA9A49D)
-        static let border = hex(0x34323A)
-        static let borderControl = hex(0x7A746D)
-        static let primary = hex(0xFF9A3C)
-        static let primaryHover = hex(0xFFAD5C)
-        static let primaryPressed = hex(0xE8842C)
-        static let onPrimary = hex(0x1A1206)
-        static let link = hex(0xFFB25C)
-        static let focus = hex(0xFFB25C)
-        static let success = hex(0x3DDC97)
-        static let warning = hex(0xFFC24B)
-        static let error = hex(0xFF7A85)
-        static let accentGlow = hex(0xFF9A3C).opacity(0.28)
-
-        private static func hex(_ value: UInt32) -> Color {
-            Color(
-                red: Double((value >> 16) & 0xFF) / 255,
-                green: Double((value >> 8) & 0xFF) / 255,
-                blue: Double(value & 0xFF) / 255
-            )
-        }
+        // Compatibility aliases for views that reference semantic roles.
+        static let accent = primary
+        static let panelBackground = surface
+        static let surfaceRecessed = surfaceRecessedToken
+        static let surfaceElevated = surfaceHover
+        static let borderSubtle = border
+        static let text = textPrimary
+        static let textMuted = textSecondary
+        static let cardHover = surfaceHover
     }
 
     enum Spacing {
@@ -193,6 +140,7 @@ enum Theme {
     enum Typography {
         static let fontFamilySans = "SF Pro"
         static let fontFamilyMono = "SF Mono"
+        static let fontFamilySerif = "New York"
 
         static let mainOutcome = Font.system(size: 24, weight: .semibold)
         static let compactIdentity = Font.system(size: 16, weight: .semibold)
@@ -203,8 +151,7 @@ enum Theme {
         static let metadata = Font.system(size: 12, weight: .regular)
         static let mono = Font.system(size: 13, weight: .regular, design: .monospaced)
 
-        /// Expressive status headline (system serif, New York). Not a design-system role yet,
-        /// so it is intentionally absent from `roleSpecs`.
+        /// Expressive status headline: the one serif role (system New York), used once per window.
         static let statusHeadline = Font.system(size: 26, weight: .semibold, design: .serif)
 
         static let roleSpecs: [String: TypographyRoleSpec] = [
@@ -216,6 +163,7 @@ enum Theme {
             "label": TypographyRoleSpec(size: 13, lineHeight: 18, weight: 600, family: "sans"),
             "metadata": TypographyRoleSpec(size: 12, lineHeight: 16, weight: 400, family: "sans"),
             "mono": TypographyRoleSpec(size: 13, lineHeight: 20, weight: 400, family: "mono"),
+            "status-headline": TypographyRoleSpec(size: 26, lineHeight: 32, weight: 600, family: "serif"),
         ]
 
         // Compatibility aliases
@@ -230,9 +178,9 @@ enum Theme {
     }
 
     struct Panel: ViewModifier {
-        var background = Signal.surface
+        var background = Colors.surface
         var radius = Radius.control
-        var borderColor = Signal.border
+        var borderColor = Colors.border
 
         func body(content: Content) -> some View {
             content
@@ -246,8 +194,8 @@ enum Theme {
     }
 
     struct LedgerContainer: ViewModifier {
-        var background = Signal.surface
-        var borderColor = Signal.border
+        var background = Colors.surface
+        var borderColor = Colors.border
 
         func body(content: Content) -> some View {
             content
@@ -266,7 +214,7 @@ enum Theme {
         func body(content: Content) -> some View {
             content
                 .font(.system(size: size, weight: weight, design: .monospaced))
-                .foregroundStyle(Signal.textPrimary)
+                .foregroundStyle(Colors.textPrimary)
         }
     }
 }
@@ -321,7 +269,7 @@ private struct ThemedButtonBody: View {
     /// because only the hover change is animated.
     private var glowColor: Color {
         guard isEnabled, variant == .primary else { return .clear }
-        return Theme.Signal.accentGlow
+        return Theme.Colors.accentGlow
     }
 
     private var feedbackAnimation: Animation? {
@@ -329,14 +277,14 @@ private struct ThemedButtonBody: View {
     }
 
     private var foregroundColor: Color {
-        guard isEnabled else { return Theme.Signal.textSecondary }
+        guard isEnabled else { return Theme.Colors.textSecondary }
         switch variant {
         case .primary:
-            return Theme.Signal.onPrimary
+            return Theme.Colors.onPrimary
         case .secondary:
-            return Theme.Signal.textPrimary
+            return Theme.Colors.textPrimary
         case .destructive:
-            return Theme.Signal.error
+            return Theme.Colors.error
         }
     }
 
@@ -344,31 +292,31 @@ private struct ThemedButtonBody: View {
         guard isEnabled else { return .clear }
         switch variant {
         case .primary:
-            if configuration.isPressed { return Theme.Signal.primaryPressed }
-            return isHovering ? Theme.Signal.primaryHover : Theme.Signal.primary
+            if configuration.isPressed { return Theme.Colors.primaryPressed }
+            return isHovering ? Theme.Colors.primaryHover : Theme.Colors.primary
         case .secondary, .destructive:
-            if configuration.isPressed { return Theme.Signal.surfacePressed }
-            return isHovering ? Theme.Signal.surfaceHover : Theme.Signal.surface
+            if configuration.isPressed { return Theme.Colors.surfacePressed }
+            return isHovering ? Theme.Colors.surfaceHover : Theme.Colors.surface
         }
     }
 
     private var strokeColor: Color {
-        guard isEnabled else { return Theme.Signal.border }
+        guard isEnabled else { return Theme.Colors.border }
         switch variant {
         case .primary:
             // The amber fill carries its own boundary contrast against graphite.
-            return Theme.Signal.primaryPressed
+            return Theme.Colors.primaryPressed
         case .secondary:
-            return Theme.Signal.borderControl
+            return Theme.Colors.borderControl
         case .destructive:
-            return Theme.Signal.error
+            return Theme.Colors.error
         }
     }
 }
 
 /// Borderless text button for inline and utility actions (Recheck, Help, support access).
 struct QuietLinkButtonStyle: ButtonStyle {
-    var color: Color = Theme.Signal.link
+    var color: Color = Theme.Colors.link
 
     func makeBody(configuration: Configuration) -> some View {
         QuietLinkButtonBody(configuration: configuration, color: color)
@@ -388,7 +336,7 @@ private struct QuietLinkButtonBody: View {
 
         configuration.label
             .font(Theme.Typography.label)
-            .foregroundStyle(isEnabled ? color : Theme.Signal.textSecondary)
+            .foregroundStyle(isEnabled ? color : Theme.Colors.textSecondary)
             .padding(.vertical, Theme.Spacing.s4)
             .padding(.horizontal, Theme.Spacing.s8)
             .background(fillColor)
@@ -400,8 +348,8 @@ private struct QuietLinkButtonBody: View {
 
     private var fillColor: Color {
         guard isEnabled else { return .clear }
-        if configuration.isPressed { return Theme.Signal.surfacePressed }
-        return isHovering ? Theme.Signal.surfaceHover : .clear
+        if configuration.isPressed { return Theme.Colors.surfacePressed }
+        return isHovering ? Theme.Colors.surfaceHover : .clear
     }
 }
 
@@ -416,12 +364,12 @@ enum StatusTone: Equatable {
 
     var color: Color {
         switch self {
-        case .neutral: return Theme.Signal.textSecondary
+        case .neutral: return Theme.Colors.textSecondary
         // `primary` is a fill colour; its accessible text tint on dark surfaces is `link`.
-        case .active: return Theme.Signal.link
-        case .success: return Theme.Signal.success
-        case .warning: return Theme.Signal.warning
-        case .error: return Theme.Signal.error
+        case .active: return Theme.Colors.link
+        case .success: return Theme.Colors.success
+        case .warning: return Theme.Colors.warning
+        case .error: return Theme.Colors.error
         }
     }
 }
@@ -443,7 +391,7 @@ struct StatusTag: View {
             .background(fillColor)
             .clipShape(Capsule())
             .overlay {
-                Capsule().stroke(tone == .neutral ? Theme.Signal.border : .clear, lineWidth: 1)
+                Capsule().stroke(tone == .neutral ? Theme.Colors.border : .clear, lineWidth: 1)
             }
     }
 
@@ -454,23 +402,23 @@ struct StatusTag: View {
 
 extension View {
     func themedPanel(
-        background: Color = Theme.Signal.surface,
+        background: Color = Theme.Colors.surface,
         radius: CGFloat = Theme.Radius.control,
-        borderColor: Color = Theme.Signal.border
+        borderColor: Color = Theme.Colors.border
     ) -> some View {
         modifier(Theme.Panel(background: background, radius: radius, borderColor: borderColor))
     }
 
     func ledgerContainer(
-        background: Color = Theme.Signal.surface,
-        borderColor: Color = Theme.Signal.border
+        background: Color = Theme.Colors.surface,
+        borderColor: Color = Theme.Colors.border
     ) -> some View {
         modifier(Theme.LedgerContainer(background: background, borderColor: borderColor))
     }
 
     func themedLedger(
-        background: Color = Theme.Signal.surface,
-        borderColor: Color = Theme.Signal.border
+        background: Color = Theme.Colors.surface,
+        borderColor: Color = Theme.Colors.border
     ) -> some View {
         ledgerContainer(background: background, borderColor: borderColor)
     }

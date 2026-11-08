@@ -5,9 +5,9 @@ import Testing
 @Suite("Design system token parity")
 struct ThemeTokenParityTests {
     @Test func swiftThemeMatchesCanonicalMacOSTokensJSON() throws {
-        #expect(Theme.Colors.hexTokens["primary"] == "#235FA8")
-        #expect(Theme.Colors.hexTokens["border-control"] == "#718399")
-        #expect(Theme.Colors.hexTokens["focus"] == "#8DBCF2")
+        #expect(Theme.Colors.hexTokens["primary"] == "#FF9A3C")
+        #expect(Theme.Colors.hexTokens["border-control"] == "#7A746D")
+        #expect(Theme.Colors.hexTokens["focus"] == "#FFB25C")
         #expect(Theme.Window.defaultWidth == 900)
         #expect(Theme.Window.defaultHeight == 760)
         #expect(Theme.Window.minimumWidth == 720)
@@ -31,6 +31,7 @@ struct ThemeTokenParityTests {
         let typographySection = try #require(json["typography"] as? [String: Any])
         #expect(typographySection["font-family-sans"] as? String == Theme.Typography.fontFamilySans)
         #expect(typographySection["font-family-mono"] as? String == Theme.Typography.fontFamilyMono)
+        #expect(typographySection["font-family-serif"] as? String == Theme.Typography.fontFamilySerif)
         let rolesSection = try #require(typographySection["roles"] as? [String: [String: Any]])
         for (roleName, spec) in Theme.Typography.roleSpecs {
             let entry = try #require(rolesSection[roleName], "Missing typography role \(roleName) in macos.json")

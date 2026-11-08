@@ -106,22 +106,22 @@ struct BugReportFormSheet: View {
                 HStack(alignment: .firstTextBaseline) {
                     Text("Report a bug")
                         .font(Theme.Typography.sectionHeading)
-                        .foregroundStyle(Theme.Signal.textPrimary)
+                        .foregroundStyle(Theme.Colors.textPrimary)
                         .accessibilityAddTraits(.isHeader)
                     Spacer()
                     Text("Snapshot captured at sheet open")
                         .font(Theme.Typography.metadata)
-                        .foregroundStyle(Theme.Signal.textSecondary)
+                        .foregroundStyle(Theme.Colors.textSecondary)
                 }
 
                 Text("Describe what happened. Home-folder paths are redacted with ~. Inspect or save the exact diagnostic attachment below before sending.")
                     .font(Theme.Typography.body)
-                    .foregroundStyle(Theme.Signal.textSecondary)
+                    .foregroundStyle(Theme.Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(Theme.Spacing.s24)
 
-            Divider().overlay(Theme.Signal.border)
+            Divider().overlay(Theme.Colors.border)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Spacing.s16) {
@@ -132,17 +132,17 @@ struct BugReportFormSheet: View {
                                 HStack(spacing: Theme.Spacing.s8) {
                                     Label(draft.diagnosticsFileName, systemImage: "doc.text")
                                         .font(Theme.Typography.label)
-                                        .foregroundStyle(Theme.Signal.textPrimary)
+                                        .foregroundStyle(Theme.Colors.textPrimary)
                                     Text(formattedAttachmentSize)
                                         .font(Theme.Typography.mono)
-                                        .foregroundStyle(Theme.Signal.textSecondary)
+                                        .foregroundStyle(Theme.Colors.textSecondary)
                                     if draft.wasTruncated {
                                         StatusTag(text: "Truncated to 1 MiB limit", tone: .warning)
                                     }
                                 }
                                 Text("Target: \(draft.selectedAppPath) · \(draft.runSummary)")
                                     .font(Theme.Typography.metadata)
-                                    .foregroundStyle(Theme.Signal.textSecondary)
+                                    .foregroundStyle(Theme.Colors.textSecondary)
                                     .lineLimit(1)
                             }
 
@@ -165,37 +165,37 @@ struct BugReportFormSheet: View {
                         .padding(Theme.Spacing.s12)
 
                         if isAttachmentPreviewExpanded {
-                            Divider().overlay(Theme.Signal.border)
+                            Divider().overlay(Theme.Colors.border)
 
                             ScrollView {
                                 Text(draft.attachmentContent)
                                     .font(Theme.Typography.mono)
-                                    .foregroundStyle(Theme.Signal.textSecondary)
+                                    .foregroundStyle(Theme.Colors.textSecondary)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .textSelection(.enabled)
                                     .padding(Theme.Spacing.s12)
                             }
                             .frame(height: 150)
-                            .background(Theme.Signal.background)
+                            .background(Theme.Colors.background)
                         }
                     }
-                    .ledgerContainer(background: Theme.Signal.surfaceModal)
+                    .ledgerContainer(background: Theme.Colors.surfaceModal)
 
                     // Optional Contact Field
                     VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
                         Text("E-mail or Telegram (optional)")
                             .font(Theme.Typography.label)
-                            .foregroundStyle(Theme.Signal.textPrimary)
+                            .foregroundStyle(Theme.Colors.textPrimary)
                         TextField("user@example.com", text: $email)
                             .textFieldStyle(.plain)
                             .font(Theme.Typography.body)
-                            .foregroundStyle(Theme.Signal.textPrimary)
+                            .foregroundStyle(Theme.Colors.textPrimary)
                             .padding(Theme.Spacing.s12)
-                            .background(Theme.Signal.surfaceModal)
+                            .background(Theme.Colors.surfaceModal)
                             .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                             .overlay {
                                 RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                                    .stroke(Theme.Signal.borderControl, lineWidth: 1)
+                                    .stroke(Theme.Colors.borderControl, lineWidth: 1)
                             }
                             .disabled(isSubmitting)
                     }
@@ -205,34 +205,34 @@ struct BugReportFormSheet: View {
                         HStack(alignment: .firstTextBaseline) {
                             Text("What happened?")
                                 .font(Theme.Typography.label)
-                                .foregroundStyle(Theme.Signal.textPrimary)
+                                .foregroundStyle(Theme.Colors.textPrimary)
                             Text("Required")
                                 .font(Theme.Typography.metadata)
-                                .foregroundStyle(Theme.Signal.textSecondary)
+                                .foregroundStyle(Theme.Colors.textSecondary)
                             Spacer()
                             if isMessageOverLimit {
                                 Text("Exceeds limit by \(excessCharacterCount) (\(message.count)/\(Self.maximumMessageLength))")
                                     .font(Theme.Typography.metadata)
-                                    .foregroundStyle(Theme.Signal.error)
+                                    .foregroundStyle(Theme.Colors.error)
                             } else {
                                 Text("\(message.count)/\(Self.maximumMessageLength)")
                                     .font(Theme.Typography.metadata)
-                                    .foregroundStyle(Theme.Signal.textSecondary)
+                                    .foregroundStyle(Theme.Colors.textSecondary)
                             }
                         }
 
                         TextEditor(text: $message)
                             .font(Theme.Typography.body)
-                            .foregroundStyle(Theme.Signal.textPrimary)
+                            .foregroundStyle(Theme.Colors.textPrimary)
                             .scrollContentBackground(.hidden)
                             .frame(minHeight: 120)
                             .padding(Theme.Spacing.s8)
-                            .background(Theme.Signal.surfaceModal)
+                            .background(Theme.Colors.surfaceModal)
                             .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                             .overlay {
                                 RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
                                     .stroke(
-                                        isMessageOverLimit ? Theme.Signal.error : Theme.Signal.borderControl,
+                                        isMessageOverLimit ? Theme.Colors.error : Theme.Colors.borderControl,
                                         lineWidth: 1
                                     )
                             }
@@ -247,14 +247,14 @@ struct BugReportFormSheet: View {
                                 systemImage: "exclamationmark.circle.fill"
                             )
                             .font(Theme.Typography.metadata)
-                            .foregroundStyle(Theme.Signal.error)
+                            .foregroundStyle(Theme.Colors.error)
                         }
                     }
 
                     if let submissionError {
                         Label(submissionError, systemImage: "exclamationmark.triangle.fill")
                             .font(Theme.Typography.body)
-                            .foregroundStyle(Theme.Signal.error)
+                            .foregroundStyle(Theme.Colors.error)
                             .fixedSize(horizontal: false, vertical: true)
                             .accessibilityLabel("Bug report error: \(submissionError)")
                     }
@@ -262,7 +262,7 @@ struct BugReportFormSheet: View {
                 .padding(Theme.Spacing.s24)
             }
 
-            Divider().overlay(Theme.Signal.border)
+            Divider().overlay(Theme.Colors.border)
 
             // Action Footer
             HStack(spacing: Theme.Spacing.s12) {
@@ -290,7 +290,7 @@ struct BugReportFormSheet: View {
             .padding(.vertical, Theme.Spacing.s16)
         }
         .frame(width: 640, height: 620)
-        .background(Theme.Signal.surfaceModal)
+        .background(Theme.Colors.surfaceModal)
         .preferredColorScheme(.dark)
         .interactiveDismissDisabled(isSubmitting)
         .onExitCommand {

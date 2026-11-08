@@ -2,7 +2,8 @@ import Foundation
 import Testing
 @testable import _132Fixer
 
-/// WCAG 2.x contrast checks for the app-scoped "Signal" skin (`Theme.Signal`).
+/// WCAG 2.x contrast checks for the Signal macOS palette (`Theme.Colors`, mirrored from
+/// `design-system/tokens/macos.json`).
 @Suite("Signal palette contrast")
 struct SignalPaletteTests {
     private static func luminance(_ hex: String) throws -> Double {
@@ -22,7 +23,7 @@ struct SignalPaletteTests {
     }
 
     private func token(_ name: String) throws -> String {
-        try #require(Theme.Signal.hexTokens[name], "Missing Signal token \(name)")
+        try #require(Theme.Colors.hexTokens[name], "Missing token \(name)")
     }
 
     @Test func textAndStatusColorsMeetAAOnEverySurface() throws {
@@ -50,8 +51,9 @@ struct SignalPaletteTests {
         }
     }
 
-    @Test func canonicalDesignSystemMirrorIsUnchanged() {
-        #expect(Theme.Colors.hexTokens["primary"] == "#235FA8")
-        #expect(Theme.Signal.hexTokens["primary"] != Theme.Colors.hexTokens["primary"])
+    @Test func statusHeadlineIsTheOnlySerifRole() {
+        let serifRoles = Theme.Typography.roleSpecs.filter { $0.value.family == "serif" }.map(\.key)
+        #expect(serifRoles == ["status-headline"])
+        #expect(Theme.Typography.fontFamilySerif == "New York")
     }
 }
