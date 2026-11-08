@@ -132,7 +132,7 @@ shared stage without supplying each original audit's detailed wording.
 | F-03 | Strict reset contract; failed reset terminates before launch; removal errors propagate; terminal receipt preserved. | Swift regressions and native reset fixtures. |
 | F-04 | Shared operation paths, accurate cp/backup/home/privilege/log/media/network descriptions and launch-specific copy. | Native semantic and rendered UI check. |
 | F-05 | Explicit NetworkEnvironment/NetworkCapability and independent observed results. Continuation: a missing `hw.optional.arm64` key (ENOENT) now classifies native x86_64 as Intel instead of unknown, preserving the macOS 13 Intel legacy attempt; other read failures stay unknown. Pure classifier regression PASSES in the Linux approximation. | Native hardware/interface/Rosetta evidence, including whether Intel kernels define the key. |
-| F-06 | Existing sandbox/private-keychain canaries explicitly required and invoked in CI. | Actual macos-15 CI run; macOS 13/14 and other supported combinations. |
+| F-06 | Existing sandbox/private-keychain canaries explicitly required and invoked in CI. Both PASS on hosted `macos-15` (CI run 42422840660). | Hosted macos-15 run done; macOS 13/14 and other supported combinations. |
 | F-07 | Retention charges only retained snapshots. Extracted production shell fixtures PASS, including oversized candidate then older small candidate. Native fixture authored. | Native full generated backup command test. |
 | F-08 | Current-UID literal process selectors in shutdown, launch, updaters, preview, diagnostics. Scoped shutdown/refusal fixtures PASS. | Darwin pgrep/pkill and disposable zoomXus test. |
 | F-09 | Release configuration validation, exact-commit tests, tested-SHA publication guard. Portable resource fixtures PASS. | Native artifact/config/signing/notarization and actual workflow run. |
@@ -206,11 +206,10 @@ and release workflow outputs. No unrelated user changes existed or were removed.
 
 Material risks still preventing release:
 
-- No Darwin compile has run. On Linux, every Swift file parses and the 15
-  non-SwiftUI sources plus 12 of 14 test files type-check only with local shims;
-  AppViewModel, ContentView, the views, Theme, the app entry point and the two
-  AppViewModel/Theme test files remain unchecked. Darwin APIs, SwiftUI and Swift
-  6 test-toolchain behavior are not established.
+- Hosted macOS evidence is limited to one GitHub `macos-15` runner (Xcode 16.4,
+  Swift 6.1.2): debug and release builds, 211 tests, and both native canaries pass
+  (CI run 42422840660, head `25f4a1c`). macOS 13/14, Intel and Rosetta runs,
+  rendered UI, and every privileged, real-Zoom and DMG gate remain unverified.
 - Darwin flock, UserDefaults persistence, actual administrator cancellation,
   watchdog cleanup, delayed authorization and root descendants need observation.
   The larger timeouts and explicit latch do not prove safe termination.
@@ -268,7 +267,29 @@ Continuation source changes (unverified natively):
   actor-isolated instance method ... in a synchronous nonisolated context". Both
   now carry `@MainActor`, matching the existing `syncRunRecord`/`beginStep`/
   `finishStep` helpers. The same error and fix were reproduced in a minimal Swift
-  6.1.2 model; the real fix awaits the next hosted run.
+  6.1.2 model; the next hosted run then built successfully.
+- After that fix, `swift build` passed on macOS (debug, 25s), but `swift test`
+  hung: the PR run on `e9e8569` printed nothing after 22:19:19Z until it was
+  cancelled at 22:50Z, and main CI run 54 and Build DMG run 8 stalled at the same
+  step. The cancelled log shows ~20 workflow tests refused with "Another app
+  instance owns the workflow, or the private workflow lock is unavailable." Root
+  cause: the test lock directory used `temporaryDirectory.resolvingSymlinksInPath()`,
+  which on macOS strips `/private` and yields `/var/...`; `/var` is a symlink, so
+  `WorkflowOwnershipLock` correctly refused it (the same quirk `8d7ed42` fixed in
+  the keychain test). `cancellationRemainsSingleFlightUntilCommandUnwinds` then
+  waited without a deadline for a privileged step that never started. Fix (tests
+  only): `canonicalTemporaryDirectory()` uses `realpath`, and the gate wait plus
+  seven polling loops in WorkflowSupportTests now fail after 10s instead of
+  hanging. The production lock and its symlink refusal are unchanged; the
+  production path is under the home directory, not `/var`.
+- Hosted macOS result after both fixes (PR 26, CI run 42422840660, head
+  `25f4a1c`, `macos-15`, Xcode 16.4, Swift 6.1.2): `swift build` PASS, `swift test`
+  PASS (211 tests, 0 failures, 3.6s), sandbox and keychain canaries PASS when run
+  separately, `swift build -c release` PASS. This includes the new boot-identity,
+  hardware-classifier, retention, literal-name probe, ownership-lock and
+  settlement tests, and confirms the Linux-only retention-test inference. It is
+  one OS version on GitHub's hardware with fakes for privileged and Zoom work; it
+  does not change the BLOCKED release verdict.
 
 Observed but not changed: `BackupStore.isManagedBackupURL` compares URLs with
 `==`, which is sensitive to trailing slashes. It fails closed (a backup is refused,

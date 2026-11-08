@@ -129,16 +129,16 @@
   },
   "native_checks": {
     "swift build": {
-      "status": "NOT RUN",
-      "reason": "SwiftUI/AppKit unavailable on Linux (AGENTS.md cloud guidance)"
+      "status": "PASS on hosted macos-15 only",
+      "evidence": "CI run 42422840660"
     },
     "swift test": {
-      "status": "NOT RUN",
-      "reason": "SwiftUI/AppKit unavailable on Linux"
+      "status": "PASS on hosted macos-15 only",
+      "evidence": "CI run 42422840660"
     },
     "swift build -c release": {
-      "status": "NOT RUN",
-      "reason": "SwiftUI/AppKit unavailable on Linux"
+      "status": "PASS on hosted macos-15 only",
+      "evidence": "CI run 42422840660"
     },
     "swift run": {
       "status": "NOT RUN",
@@ -151,13 +151,13 @@
   },
   "prior_session": "Original Codex receipt (Swift absent, exit 127 for all swift commands) is preserved in git at b3814f9.",
   "essential_unverified": [
-    "Swift compile and test execution",
     "native startup and rendered UI",
     "Darwin cross-instance lock and durable settlement",
     "actual administrator authorization, watchdog/restoration and root process lifecycle",
     "real signed sandboxed Zoom startup, SSO, media, keychain, helper/TCC and PID continuity",
     "complete mounted universal DMG, runtime resources, signatures, entitlements, notarization, cleanup",
-    "hosted CI and repository/tag/release-signing protections"
+    "hosted CI and repository/tag/release-signing protections",
+    "Swift build/test on macOS 13/14, Intel and Rosetta"
   ],
   "core_candidate_sha256": {
     ".github/CODEOWNERS": "b9c394c3dc0cd3871af06213ab67fe35134ec57def6c6d46873ef0ef864e0064",
@@ -184,13 +184,13 @@
     "Sources/1132Fixer/Views/WorkflowResultCard.swift": "4bbd284954192b209a1d1787beed4f006ddce6d8a5140fe5207c219087adfb94",
     "Sources/1132Fixer/WorkflowOwnershipLock.swift": "f2edaeea72be7adf8d2eaece7ffd031cc18e4206836f708d211e03fb6495c1fe",
     "Sources/1132Fixer/WorkflowSupport.swift": "8ea552a28bd4868e139c4dbab5e1e62dd717434f9a1daa11747f41f3eeca0227",
-    "Tests/1132FixerTests/AppViewModelWorkflowTests.swift": "764ae028bcc07e2ef69ceb700929e9cb32fc832cede61ea20ab71ba1d053e61f",
+    "Tests/1132FixerTests/AppViewModelWorkflowTests.swift": "eeb337ef362f7dd11723f9f576a473fd9dc7c3283be1afc1393f148076ad14d4",
     "Tests/1132FixerTests/BugReportServiceTests.swift": "2dc14b28dfcef46c92bde131a65a582076c19dcd44221f8c442106a59b04fa71",
     "Tests/1132FixerTests/PackagedResourcesTests.swift": "1228a3236e9f67a2dc904ecb5efa4c47662b0ac2da5f5a63da77da79d54b51f7",
     "Tests/1132FixerTests/RemediationContractTests.swift": "388c12f25b60ab52c3903cd200ea6739cf90ea31419e562cec235999941f62ca",
     "Tests/1132FixerTests/ShellCommandsTests.swift": "b6b4a5f20d43f390498c5a4ae6f413877b05654ae997a2250e5a6e7ed688bc22",
     "Tests/1132FixerTests/UpdateCheckerTests.swift": "d00c4a01deac8d1649366a40e5d0d4d12ad8cdf66831d88cda0ca480934a78b9",
-    "Tests/1132FixerTests/WorkflowSupportTests.swift": "97597a2765616168c3bc18573c737afa8755e1f2465cc7596ce63df8335ea865",
+    "Tests/1132FixerTests/WorkflowSupportTests.swift": "4bab7896065a0345cab6d193e31c530091a0c6395496777d8608717c5a9ba5d7",
     "VERSION": "6fa53c88aa961145d6a5e470dc2bf4e56f5e9b893e29e3c24a203c4c5759e7ee",
     "scripts/build-universal-dmg.sh": "cd10064fdc3814e100941b424a4ceed7b0b4d4a25e4d17f4f2f9277ea983af37",
     "scripts/check-dmg.sh": "c461d19aa94a4e82688b5fba66d39664e6161b59c07f50e10551b40089bcd2cb",
@@ -269,6 +269,34 @@
       "run_id": 42419734007,
       "head_sha": "5c2f86d0c4f9473b581e827d91675e76bed25d8d",
       "conclusion": "success"
+    },
+    {
+      "pr": "SeanPVera/1132-fixer#25",
+      "workflow": "CI",
+      "run_id": 42419977661,
+      "job": "Build & Test (macOS)",
+      "head_sha": "e9e85693e6976599c1f96117f7f3f10468a102ca",
+      "conclusion": "cancelled",
+      "observed": "swift build passed; swift test hung after 22:19:19Z; ~20 workflow tests failed with the ownership-lock refusal before the hang",
+      "cause": "test lock directory under /var (resolvingSymlinksInPath strips /private) refused by WorkflowOwnershipLock; unbounded AsyncGate wait",
+      "follow_up": "realpath-based canonicalTemporaryDirectory() and bounded test waits"
+    },
+    {
+      "pr": "SeanPVera/1132-fixer#26",
+      "workflow": "CI",
+      "run_id": 42422840660,
+      "job": "Build & Test (macOS)",
+      "head_sha": "25f4a1c618e3914bee93ee64e751f02287967e5d",
+      "conclusion": "success",
+      "runner": "macos-15",
+      "xcode": "16.4",
+      "swift": "6.1.2",
+      "results": {
+        "swift build": "PASS",
+        "swift test": "PASS (211 tests, 0 failures)",
+        "sandbox and keychain canaries": "PASS",
+        "swift build -c release": "PASS"
+      }
     }
   ]
 }

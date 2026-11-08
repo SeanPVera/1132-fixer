@@ -2,10 +2,20 @@ import Foundation
 import Testing
 @testable import _132Fixer
 
+/// Canonical temp directory for fixtures that WorkflowOwnershipLock checks for symlinked
+/// ancestors. On macOS, `resolvingSymlinksInPath()` strips `/private`, leaving `/var/...`,
+/// whose `/var` component is a symlink the lock correctly refuses; `realpath` keeps it.
+func canonicalTemporaryDirectory() -> URL {
+    let fallback = FileManager.default.temporaryDirectory
+    guard let resolved = realpath(fallback.path, nil) else { return fallback }
+    defer { free(resolved) }
+    return URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
+}
+
 @MainActor
 func isolatedPrivilegedGuard() -> PrivilegedOperationGuard {
     PrivilegedOperationGuard(defaults: UserDefaults(suiteName: "1132-tests-" + UUID().uuidString)!, bootIdentifier: "test-boot",
-        ownershipLock: WorkflowOwnershipLock(directory: FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("1132-lock-tests-" + UUID().uuidString)))
+        ownershipLock: WorkflowOwnershipLock(directory: canonicalTemporaryDirectory().appendingPathComponent("1132-lock-tests-" + UUID().uuidString)))
 }
 
 @Suite("AppViewModel workflow")
@@ -181,7 +191,7 @@ struct AppViewModelWorkflowTests {
         let name = "1132-shared-settlement-" + UUID().uuidString
         let defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
-        let directory = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(name)
+        let directory = canonicalTemporaryDirectory().appendingPathComponent(name)
         defer { try? FileManager.default.removeItem(at: directory) }
         let firstGuard = PrivilegedOperationGuard(defaults: defaults, bootIdentifier: "same-boot", ownershipLock: WorkflowOwnershipLock(directory: directory))
         let secondGuard = PrivilegedOperationGuard(defaults: defaults, bootIdentifier: "same-boot", ownershipLock: WorkflowOwnershipLock(directory: directory))
@@ -199,7 +209,7 @@ struct AppViewModelWorkflowTests {
 
     @Test func separateModelsCannotOverlapBeforeAdministratorWork() async throws {
         let name = "1132-shared-lock-" + UUID().uuidString
-        let directory = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(name)
+        let directory = canonicalTemporaryDirectory().appendingPathComponent(name)
         let defaults = UserDefaults(suiteName: name)!
         defer {
             defaults.removePersistentDomain(forName: name)

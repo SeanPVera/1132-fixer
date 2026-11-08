@@ -225,9 +225,7 @@ struct WorkflowExecutionSemanticsTests {
         viewModel.preflight = Self.makeReadyPreflight()
 
         viewModel.startZoom()
-        while viewModel.isRunning {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        try await waitUntil("the workflow to finish") { !viewModel.isRunning }
 
         // Fail-closed: Backup, MAC spoof, data reset, DNS flush, updater unload, and launch must not run.
         #expect(commandLog.values == ["Validate Zoom sandbox profile", "Close Zoom"])
@@ -272,9 +270,7 @@ struct WorkflowExecutionSemanticsTests {
         viewModel.preflight = Self.makeReadyPreflight()
 
         viewModel.startZoom()
-        while viewModel.isRunning {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        try await waitUntil("the workflow to finish") { !viewModel.isRunning }
 
         #expect(commandLog.values == [
             "Validate Zoom sandbox profile",
@@ -327,7 +323,7 @@ struct WorkflowExecutionSemanticsTests {
         viewModel.preflight = Self.makeReadyPreflight()
 
         viewModel.startZoom()
-        await gateSignal.waitUntilEntered()
+        try await gateSignal.waitUntilEntered()
 
         #expect(viewModel.isRunning)
         #expect(viewModel.isExecutingPrivilegedStep)
@@ -347,9 +343,7 @@ struct WorkflowExecutionSemanticsTests {
 
         // Now release the privileged helper subprocess.
         await gateSignal.release()
-        while viewModel.isRunning {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        try await waitUntil("the workflow to finish") { !viewModel.isRunning }
 
         #expect(!viewModel.isRunning)
         #expect(!viewModel.isCanceling)
@@ -400,9 +394,7 @@ struct WorkflowExecutionSemanticsTests {
         #expect(viewModel.currentRunRecord?.outcome == RunRecord.Outcome.failed)
 
         viewModel.dryRun()
-        while viewModel.isRunning {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        try await waitUntil("the workflow to finish") { !viewModel.isRunning }
 
         let record = try #require(viewModel.currentRunRecord)
         #expect(record.title == "Preview Steps (Dry Run)")
@@ -447,9 +439,7 @@ struct WorkflowExecutionSemanticsTests {
         viewModel.preflight = Self.makeReadyPreflight()
 
         viewModel.startZoom()
-        while viewModel.isRunning {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        try await waitUntil("the workflow to finish") { !viewModel.isRunning }
 
         #expect(commandLog.values == [
             "Validate Zoom sandbox profile",
@@ -510,9 +500,7 @@ struct BugReportDraftTests {
         viewModel.logMessage("Initial diagnostic entry before opening bug report")
 
         viewModel.openBugReportSheet(appVersion: "1.8.2")
-        while viewModel.isPreparingReportDraft {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        try await waitUntil("the report draft") { !viewModel.isPreparingReportDraft }
         let capturedDraft = viewModel.activeReportDraft
         #expect(capturedDraft != nil)
         let initialAttachment = capturedDraft?.attachmentContent ?? ""
@@ -527,9 +515,7 @@ struct BugReportDraftTests {
     @Test func overLimitDescriptionPreservesUserTextAndBlocksSubmissionWithExactCount() async throws {
         let viewModel = AppViewModel()
         viewModel.openBugReportSheet(appVersion: "1.8.2")
-        while viewModel.isPreparingReportDraft {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        try await waitUntil("the report draft") { !viewModel.isPreparingReportDraft }
 
         let overLimitText = String(repeating: "a", count: ReportDraft.maxDescriptionCharacters + 17)
         viewModel.bugReportMessage = overLimitText
@@ -560,26 +546,34 @@ private final class LockedArray<Element>: @unchecked Sendable {
     }
 }
 
+/// Polls with a deadline so a workflow that never starts or never finishes fails the test
+/// instead of hanging `swift test` until the CI job limit.
+@MainActor
+private func waitUntil(_ description: String, timeoutSeconds: Double = 10, _ condition: @MainActor () -> Bool) async throws {
+    let deadline = Date().addingTimeInterval(timeoutSeconds)
+    while !condition() {
+        guard Date() < deadline else { throw AppError.general("Timed out waiting for \(description)") }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+}
+
 private actor AsyncGate {
     private var hasEntered = false
-    private var enterWaiters: [CheckedContinuation<Void, Never>] = []
     private var releaseWaiter: CheckedContinuation<Void, Never>?
 
     func enterAndWait() async {
         hasEntered = true
-        for waiter in enterWaiters {
-            waiter.resume()
-        }
-        enterWaiters.removeAll()
         await withCheckedContinuation { continuation in
             releaseWaiter = continuation
         }
     }
 
-    func waitUntilEntered() async {
-        if hasEntered { return }
-        await withCheckedContinuation { continuation in
-            enterWaiters.append(continuation)
+    /// Bounded so a workflow that never reaches the gated step fails instead of hanging `swift test`.
+    func waitUntilEntered(timeoutSeconds: Double = 10) async throws {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while !hasEntered {
+            guard Date() < deadline else { throw AppError.general("Timed out waiting for the gated step to start") }
+            try await Task.sleep(nanoseconds: 10_000_000)
         }
     }
 
