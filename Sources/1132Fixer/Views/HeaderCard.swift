@@ -10,12 +10,18 @@ struct HeaderCard: View {
         appVersion.first?.isNumber == true ? "v\(appVersion)" : appVersion
     }
 
+    /// The shipped AppIcon.png, so `swift run` shows the real mark instead of AppKit's
+    /// generic executable icon; falls back to the bundle icon.
+    private static let identityIcon: NSImage =
+        PackagedResources.resourceURL(named: "AppIcon.png").flatMap(NSImage.init(contentsOf:))
+            ?? NSApplication.shared.applicationIconImage
+
     var body: some View {
         HStack(alignment: .center, spacing: Theme.Spacing.s12) {
-            Image(nsImage: NSApplication.shared.applicationIconImage)
+            Image(nsImage: Self.identityIcon)
                 .resizable()
                 .interpolation(.high)
-                .frame(width: 28, height: 28)
+                .frame(width: Theme.Identity.iconSize, height: Theme.Identity.iconSize)
                 .accessibilityHidden(true)
 
             Text("1132 Fixer")

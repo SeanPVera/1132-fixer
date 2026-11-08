@@ -358,6 +358,15 @@ if [[ -f "$SOURCE_APP_ICON" ]]; then
   sips -z 512 512 "$SOURCE_APP_ICON" --out "$ICONSET_DIR/icon_256x256@2x.png" >/dev/null
   sips -z 512 512 "$SOURCE_APP_ICON" --out "$ICONSET_DIR/icon_512x512.png" >/dev/null
   sips -z 1024 1024 "$SOURCE_APP_ICON" --out "$ICONSET_DIR/icon_512x512@2x.png" >/dev/null
+  # Small sizes use the heavier-stroke optical drawings from the design system
+  # (mapped in .brand-assets.tsv) instead of downscaling the 1024px master.
+  OPTICAL_ICON_DIR="$ROOT_DIR/packaging/icon"
+  for slot in 16x16 16x16@2x 32x32; do
+    optical_icon="$OPTICAL_ICON_DIR/AppIcon-small-optical-$slot.png"
+    if [[ -f "$optical_icon" ]]; then
+      cp "$optical_icon" "$ICONSET_DIR/icon_$slot.png"
+    fi
+  done
   iconutil -c icns "$ICONSET_DIR" -o "$APP_BUNDLE_DIR/Contents/Resources/AppIcon.icns"
 fi
 

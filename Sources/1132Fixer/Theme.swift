@@ -17,13 +17,13 @@ enum Theme {
         static let link = Color(red: 255 / 255, green: 178 / 255, blue: 92 / 255) // #FFB25C
         static let focus = Color(red: 255 / 255, green: 178 / 255, blue: 92 / 255) // #FFB25C
         static let success = Color(red: 61 / 255, green: 220 / 255, blue: 151 / 255) // #3DDC97
-        static let warning = Color(red: 255 / 255, green: 194 / 255, blue: 75 / 255) // #FFC24B
+        static let warning = Color(red: 255 / 255, green: 225 / 255, blue: 77 / 255) // #FFE14D
         static let error = Color(red: 255 / 255, green: 122 / 255, blue: 133 / 255) // #FF7A85
         static let overlay = Color(red: 18 / 255, green: 18 / 255, blue: 20 / 255).opacity(0.72)
         static let gradientBrandStart = Color(red: 255 / 255, green: 210 / 255, blue: 76 / 255) // #FFD24C
-        static let surfaceRecessedToken = Color(red: 14 / 255, green: 14 / 255, blue: 16 / 255) // #0E0E10
+        static let surfaceRecessed = Color(red: 14 / 255, green: 14 / 255, blue: 16 / 255) // #0E0E10
         static let onPrimary = Color(red: 26 / 255, green: 18 / 255, blue: 6 / 255)           // #1A1206
-        static let accentGlow = Color(red: 255 / 255, green: 154 / 255, blue: 60 / 255).opacity(0.28)
+        static let primaryGlow = Color(red: 255 / 255, green: 154 / 255, blue: 60 / 255).opacity(0.28) // rgba(255,154,60,0.28)
         static let gradientBrandEnd = Color(red: 232 / 255, green: 85 / 255, blue: 42 / 255) // #E8552A
 
         // Canonical token map matching design-system/tokens/macos.json for automated verification.
@@ -45,9 +45,10 @@ enum Theme {
             "link": "#FFB25C",
             "focus": "#FFB25C",
             "success": "#3DDC97",
-            "warning": "#FFC24B",
+            "warning": "#FFE14D",
             "error": "#FF7A85",
             "overlay": "rgba(18,18,20,0.72)",
+            "primary-glow": "rgba(255,154,60,0.28)",
             "gradient-brand-start": "#FFD24C",
             "gradient-brand-end": "#E8552A",
         ]
@@ -55,7 +56,6 @@ enum Theme {
         // Compatibility aliases for views that reference semantic roles.
         static let accent = primary
         static let panelBackground = surface
-        static let surfaceRecessed = surfaceRecessedToken
         static let surfaceElevated = surfaceHover
         static let borderSubtle = border
         static let text = textPrimary
@@ -107,6 +107,20 @@ enum Theme {
         static let ringGap: CGFloat = 2
     }
 
+    /// Mirrors `elevation`, `status` and `identity` in design-system/tokens/macos.json.
+    enum Elevation {
+        static let primaryGlowRadius: CGFloat = 6
+        static let primaryGlowRadiusHover: CGFloat = 10
+    }
+
+    enum Status {
+        static let accentRuleWidth: CGFloat = 3
+    }
+
+    enum Identity {
+        static let iconSize: CGFloat = 28
+    }
+
     enum Motion {
         static let controlFeedbackMs: Int = 150
         static let disclosureMs: Int = 200
@@ -142,7 +156,6 @@ enum Theme {
         static let fontFamilyMono = "SF Mono"
         static let fontFamilySerif = "New York"
 
-        static let mainOutcome = Font.system(size: 24, weight: .semibold)
         static let compactIdentity = Font.system(size: 16, weight: .semibold)
         static let sectionHeading = Font.system(size: 16, weight: .semibold)
         static let body = Font.system(size: 14, weight: .regular)
@@ -155,7 +168,6 @@ enum Theme {
         static let statusHeadline = Font.system(size: 26, weight: .semibold, design: .serif)
 
         static let roleSpecs: [String: TypographyRoleSpec] = [
-            "main-outcome": TypographyRoleSpec(size: 24, lineHeight: 30, weight: 600, family: "sans"),
             "compact-identity": TypographyRoleSpec(size: 16, lineHeight: 22, weight: 600, family: "sans"),
             "section-heading": TypographyRoleSpec(size: 16, lineHeight: 22, weight: 600, family: "sans"),
             "body": TypographyRoleSpec(size: 14, lineHeight: 20, weight: 400, family: "sans"),
@@ -167,7 +179,6 @@ enum Theme {
         ]
 
         // Compatibility aliases
-        static let display = mainOutcome
         static let title = compactIdentity
         static let heading = sectionHeading
         static let subheading = compactIdentity
@@ -258,7 +269,7 @@ private struct ThemedButtonBody: View {
             .overlay {
                 shape.stroke(strokeColor, lineWidth: 1)
             }
-            .shadow(color: glowColor, radius: isHovering ? 10 : 6, y: 0)
+            .shadow(color: glowColor, radius: isHovering ? Theme.Elevation.primaryGlowRadiusHover : Theme.Elevation.primaryGlowRadius, y: 0)
             .contentShape(shape)
             .onHover { isHovering = $0 }
             .animation(feedbackAnimation, value: isHovering)
@@ -269,7 +280,7 @@ private struct ThemedButtonBody: View {
     /// because only the hover change is animated.
     private var glowColor: Color {
         guard isEnabled, variant == .primary else { return .clear }
-        return Theme.Colors.accentGlow
+        return Theme.Colors.primaryGlow
     }
 
     private var feedbackAnimation: Animation? {

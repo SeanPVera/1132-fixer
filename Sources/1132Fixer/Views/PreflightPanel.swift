@@ -108,12 +108,13 @@ struct WorkspaceSummary: View {
         .padding(.leading, Theme.Spacing.s16)
         .overlay(alignment: .leading) {
             // State-derived accent rule; decorative, the heading carries the meaning.
+            // Only the rule's colour animates; text and layout update immediately (07-motion.md).
             Capsule()
-                .fill(descriptor.tone == .neutral ? Theme.Colors.primary : descriptor.tone.color)
-                .frame(width: 3)
+                .fill(descriptor.tone.color)
+                .frame(width: Theme.Status.accentRuleWidth)
+                .animation(reduceMotion ? nil : .easeOut(duration: Theme.Motion.controlFeedbackDuration), value: descriptor.tone)
                 .accessibilityHidden(true)
         }
-        .animation(reduceMotion ? nil : .easeOut(duration: Theme.Motion.disclosureDuration), value: descriptor.tone)
         .accessibilityElement(children: .contain)
     }
 
