@@ -10,7 +10,8 @@ remediation is made.
   committed HEAD `67067beff3fd7b7313488b9578b1c6303f99cf2b`.
 - Working branch: `remediation/final-plan-1.8.5`. Initial tracked/untracked tree
   was clean. A follow-up owner request authorizes committing and pushing this WIP branch; consult Git for its current delivery state.
-- Initial VERSION: `1.8.4`; changed once to `1.8.5`. Minimum macOS: `13.0`, with
+- Initial VERSION: `1.8.4`; changed once to `1.8.5`. PR 28 (a separate UI rework)
+  later moved it to `1.8.6`, so the release candidate and tag are `v1.8.6`. Minimum macOS: `13.0`, with
   `.macOS(.v13)` and Swift tools version `5.9` in the unchanged Package.swift.
 - Design-system submodule already initialized at
   `f1f3bc5f68c7ec540b4d689a2a2d994e6b97ea0b`; no submodule revision change.
@@ -131,11 +132,11 @@ shared stage without supplying each original audit's detailed wording.
 | F-02 | Explicit 280s network / 250s DNS policy; typed auth cancellation; pending-boot latch, detached wait, dynamic settlement, cross-instance ownership lock; regressions authored. Continuation: boot identity prefers `kern.bootsessionuuid` and falls back to `kern.boottime`, so a calendar-clock adjustment within one boot cannot clear the pending marker; native stability test authored. | Delayed actual auth, watchdog/restoration, process trees, lock persistence/reboot/crash evidence; confirm `kern.bootsessionuuid` is readable and stable on each supported macOS. Mitigation only. |
 | F-03 | Strict reset contract; failed reset terminates before launch; removal errors propagate; terminal receipt preserved. | Swift regressions and native reset fixtures. |
 | F-04 | Shared operation paths, accurate cp/backup/home/privilege/log/media/network descriptions and launch-specific copy. | Native semantic and rendered UI check. |
-| F-05 | Explicit NetworkEnvironment/NetworkCapability and independent observed results. Continuation: a missing `hw.optional.arm64` key (ENOENT) now classifies native x86_64 as Intel instead of unknown, preserving the macOS 13 Intel legacy attempt; other read failures stay unknown. Pure classifier regression PASSES in the Linux approximation. | Native hardware/interface/Rosetta evidence, including whether Intel kernels define the key. |
-| F-06 | Existing sandbox/private-keychain canaries explicitly required and invoked in CI. Both PASS on hosted `macos-15` (CI run 42422840660). | Hosted macos-15 run done; macOS 13/14 and other supported combinations. |
+| F-05 | Explicit NetworkEnvironment/NetworkCapability and independent observed results. Continuation: a missing `hw.optional.arm64` key (ENOENT) now classifies native x86_64 as Intel instead of unknown, preserving the macOS 13 Intel legacy attempt; other read failures stay unknown. Pure classifier regression PASSES in the Linux approximation. Hosted evidence (PR 27): the `macos-15-intel` (15.7.9) and `macos-26-intel` (26.6.1) kernels report `unknown oid 'hw.optional.arm64'`, confirming the original classifier would have made every Intel Mac unknown; the live `currentEnvironmentClassifiesThisMacHardware` test PASSES on all four runners. | macOS 13 Intel legacy MAC attempt and Rosetta on owner hardware; interface/driver behavior. |
+| F-06 | Existing sandbox/private-keychain canaries explicitly required and invoked in CI. Both PASS on hosted `macos-15` (CI run 42422840660). Also PASS on `macos-15-intel`, `macos-26` and `macos-26-intel` (CI run 42430252625). | macOS 13/14 on owner hardware. |
 | F-07 | Retention charges only retained snapshots. Extracted production shell fixtures PASS, including oversized candidate then older small candidate. Native fixture authored. | Native full generated backup command test. |
-| F-08 | Current-UID literal process selectors in shutdown, launch, updaters, preview, diagnostics. Scoped shutdown/refusal fixtures PASS. | Darwin pgrep/pkill and disposable zoomXus test. |
-| F-09 | Release configuration validation, exact-commit tests, tested-SHA publication guard. Portable resource fixtures PASS. | Native artifact/config/signing/notarization and actual workflow run. |
+| F-08 | Current-UID literal process selectors in shutdown, launch, updaters, preview, diagnostics. Scoped shutdown/refusal fixtures PASS. Darwin canary `stopZoomStopsOnlyTheLiteralZoomNameOnDarwin` PASSES on all four hosted runners: the real script and BSD pkill stop a detached process named exactly `zoom.us` and spare a `zoomXus` lookalike. | Another user's Zoom cannot satisfy success; launch provenance and replacement-PID behavior with real Zoom. |
+| F-09 | Release configuration validation, exact-commit tests, tested-SHA publication guard. Portable resource fixtures PASS. Hosted ad-hoc packaging found and fixed a release-path defect: under macOS `/bin/bash` 3.2.57, `build-universal-dmg.sh` died on an empty `resource_args` array yet exited 0 through its EXIT trap (Build DMG run 9). Fixed, and a credential-free `Package ad-hoc DMG (macOS)` PR job now builds, mounts and smoke-checks the universal DMG. | Developer ID signing, notarization/stapling, downloaded-DMG check and an actual release run. |
 | F-10 | Pinned submodule initialization and explicit missing-token failures. Token JSON and brand checks PASS. | Native parity test execution and hosted CI. |
 | F-11 | Owner confirmed canonical SeanPVera/1132-fixer; update URLs, release restriction, README, and CODEOWNERS aligned; existing reviewers retained. | Repository/tag/environment settings unavailable. |
 | F-12 | Home redaction composes independently with report-local MAC aliases. | Swift privacy regressions and export inspection. |
@@ -148,7 +149,7 @@ shared stage without supplying each original audit's detailed wording.
 | F-19 | Stage 10 runtime metadata/log/cleanup/toolchain work implemented. | Swift build/tests and UI startup. |
 | NEW-01 | Unverified Private Network Address commands removed; manual capability explanation replaces automatic rotation. | Native capability behavior and UI review. |
 | NEW-02 | Additional Zoom storage deletion deferred. | Ownership, relative backup/restore manifest/hash and real Zoom gates. |
-| NEW-03 | Flat/structured bundles validated at source, both arch outputs, staged app, and mounted DMG; shared packaged runtime lookup. Portable fixtures PASS. | Native mounted app lookup canary. |
+| NEW-03 | Flat/structured bundles validated at source, both arch outputs, staged app, and mounted DMG; shared packaged runtime lookup. Portable fixtures PASS. Mounted ad-hoc DMG resource validation PASS in PR CI (universal `x86_64 arm64`, camera and microphone entitlements only). | Developer ID mounted DMG with bug-report configuration resources. |
 | NEW-04 | Invalid-home profile construction throws; validation/launch command builders fail closed; permissive test replaced. | Swift tests and actual SBPL compilation. |
 | NEW-05 | Warning terminal state and failed preview validation; current-run record consistency and cancellation finalization. | Swift tests and rendered native states. |
 | NEW-06 | Stage 10 cleanup/runtime/toolchain cluster implemented; supportMatrix moved before unused PreflightPanel removal. | Swift compile/reference integration. |
@@ -206,10 +207,13 @@ and release workflow outputs. No unrelated user changes existed or were removed.
 
 Material risks still preventing release:
 
-- Hosted macOS evidence is limited to one GitHub `macos-15` runner (Xcode 16.4,
-  Swift 6.1.2): debug and release builds, 211 tests, and both native canaries pass
-  (CI run 42422840660, head `25f4a1c`). macOS 13/14, Intel and Rosetta runs,
-  rendered UI, and every privileged, real-Zoom and DMG gate remain unverified.
+- Hosted macOS evidence covers four GitHub runners (macOS 15.8.2 and 26.7.2 on
+  Apple silicon, 15.7.9 and 26.6.1 on Intel; Xcode 16.4/Swift 6.1.2 and Xcode
+  26.6/Swift 6.3.3): debug and release builds, 213 tests and the native sandbox,
+  keychain and shutdown canaries pass, and an ad-hoc universal DMG is built,
+  mounted and smoke-checked. GitHub retired its macOS 13/14 images. macOS 13/14,
+  Rosetta, rendered UI, every privileged and real-Zoom gate, Developer ID
+  signing and notarization remain unverified.
 - Darwin flock, UserDefaults persistence, actual administrator cancellation,
   watchdog cleanup, delayed authorization and root descendants need observation.
   The larger timeouts and explicit latch do not prove safe termination.
@@ -294,6 +298,20 @@ Continuation source changes (unverified natively):
 Observed but not changed: `BackupStore.isManagedBackupURL` compares URLs with
 `==`, which is sensitive to trailing slashes. It fails closed (a backup is refused,
 so the repair stops before reset) and passes macOS CI, so it was left unchanged.
+
+## Platform matrix, packaging and Darwin canaries (PR 27)
+
+| Exact check | Observed outcome |
+|---|---|
+| CI run 42429118203 on `e9bfd88`: `macos-15`, `macos-15-intel`, `macos-26`, `macos-26-intel` | All PASS: debug build, 211 tests, sandbox and keychain canaries, release build. `hw.optional.arm64=1` on Apple silicon and `unknown oid` on both Intel kernels; `sysctl.proc_translated=0` on Apple silicon and `unknown oid` on Intel; `kern.bootsessionuuid` readable on all four. |
+| Build DMG run 42429131607 (ad-hoc, untrusted ref, `macos-15`) | FAIL, reproducing a real defect: `build-universal-dmg.sh: line 205: resource_args[@]: unbound variable`; the step still reported success and no DMG existed. |
+| CI run 42430115231 on `92a8835`: `Package ad-hoc DMG (macOS)` | PASS under `GNU bash, version 3.2.57`: arm64 and x86_64 release builds, universal binary, resource validation (source, both arches, staged app), ad-hoc signature, DMG `hdiutil verify` VALID, read-only mount, mounted resource validation and `DMG smoke check passed`. |
+| CI run 42430252625 on `40d336f` (merged as PR 27) | All seven checks PASS: four macOS runners at 213 tests each, the new shutdown canary and live hardware test, the ad-hoc DMG job, Linux fixtures and brand. |
+
+Observed owner-setting signal: Build DMG run 9 started its `release-signing` job
+immediately with no approval wait, so that environment either has no required
+reviewers or the triggering admin bypasses them. Credentialed signing mode was not
+exercised because the run used an untrusted ref.
 
 ## Changed-file reference index
 

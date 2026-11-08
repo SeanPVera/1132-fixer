@@ -93,6 +93,11 @@ copy. Production signing/notarization credentials require separate authorization
 Use a disposable macOS VM/account and fixture data. Do not reset real Zoom data
 or mutate a live network interface under the current authorization.
 
+Hosted CI now covers parts of items 1, 3 and 5 on macOS 15 and 26 (Apple silicon
+and Intel): builds, the full suite, the sandbox, keychain and literal-name
+shutdown canaries, and an ad-hoc universal DMG that is mounted and smoke-checked.
+The remaining parts below need owner hardware, a VM or credentials.
+
 1. Build debug/release, run the full suite and both explicit canaries, then start
    `swift run` and check immediate startup. Inspect narrow/regular window layouts,
    warnings/failures, quick-launch wording, and accessibility with the existing
