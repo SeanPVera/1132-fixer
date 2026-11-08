@@ -12,9 +12,15 @@ struct HeaderCard: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: Theme.Spacing.s12) {
+            Image(nsImage: NSApplication.shared.applicationIconImage)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 28, height: 28)
+                .accessibilityHidden(true)
+
             Text("1132 Fixer")
                 .font(Theme.Typography.compactIdentity)
-                .foregroundStyle(Theme.Colors.textPrimary)
+                .foregroundStyle(Theme.Signal.textPrimary)
                 .accessibilityAddTraits(.isHeader)
 
             StatusTag(text: versionText)

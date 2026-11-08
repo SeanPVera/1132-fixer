@@ -23,6 +23,8 @@ struct WorkspaceSummary: View {
     let isRunning: Bool
     let onRecheck: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     private enum Glyph {
         case progress
         case symbol(String)
@@ -67,15 +69,15 @@ struct WorkspaceSummary: View {
 
                 VStack(alignment: .leading, spacing: Theme.Spacing.s4) {
                     Text(descriptor.heading)
-                        .font(Theme.Typography.mainOutcome)
-                        .foregroundStyle(Theme.Colors.textPrimary)
+                        .font(Theme.Typography.statusHeadline)
+                        .foregroundStyle(Theme.Signal.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityAddTraits(.isHeader)
 
                     if let detail = descriptor.detail {
                         Text(detail)
                             .font(Theme.Typography.body)
-                            .foregroundStyle(Theme.Colors.textSecondary)
+                            .foregroundStyle(Theme.Signal.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                     }
@@ -84,7 +86,7 @@ struct WorkspaceSummary: View {
                         Text(metadata)
                             .font(Theme.Typography.metadata)
                             .monospacedDigit()
-                            .foregroundStyle(Theme.Colors.textSecondary)
+                            .foregroundStyle(Theme.Signal.textSecondary)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -103,6 +105,15 @@ struct WorkspaceSummary: View {
                 noticeRow(notice)
             }
         }
+        .padding(.leading, Theme.Spacing.s16)
+        .overlay(alignment: .leading) {
+            // State-derived accent rule; decorative, the heading carries the meaning.
+            Capsule()
+                .fill(descriptor.tone == .neutral ? Theme.Signal.primary : descriptor.tone.color)
+                .frame(width: 3)
+                .accessibilityHidden(true)
+        }
+        .animation(reduceMotion ? nil : .easeOut(duration: Theme.Motion.disclosureDuration), value: descriptor.tone)
         .accessibilityElement(children: .contain)
     }
 
@@ -147,7 +158,7 @@ struct WorkspaceSummary: View {
                 .foregroundStyle(notice.tone.color)
             Text(notice.value)
                 .font(Theme.Typography.body)
-                .foregroundStyle(Theme.Colors.textPrimary)
+                .foregroundStyle(Theme.Signal.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -361,11 +372,11 @@ struct SystemCheckDetailsSheet: View {
                 VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
                     Text("System check details")
                         .font(Theme.Typography.sectionHeading)
-                        .foregroundStyle(Theme.Colors.textPrimary)
+                        .foregroundStyle(Theme.Signal.textPrimary)
                         .accessibilityAddTraits(.isHeader)
                     Text("Preflight verification for macOS, Zoom code signature, network state, backup capacity, and sandbox-exec.")
                         .font(Theme.Typography.body)
-                        .foregroundStyle(Theme.Colors.textSecondary)
+                        .foregroundStyle(Theme.Signal.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -379,7 +390,7 @@ struct SystemCheckDetailsSheet: View {
             }
             .padding(Theme.Spacing.s24)
 
-            Divider().overlay(Theme.Colors.border)
+            Divider().overlay(Theme.Signal.border)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Spacing.s24) {
@@ -402,12 +413,12 @@ struct SystemCheckDetailsSheet: View {
 
                                     Text(check.label)
                                         .font(Theme.Typography.label)
-                                        .foregroundStyle(Theme.Colors.textPrimary)
+                                        .foregroundStyle(Theme.Signal.textPrimary)
                                         .frame(width: 136, alignment: .leading)
 
                                     Text(check.value)
                                         .font(Theme.Typography.body)
-                                        .foregroundStyle(Theme.Colors.textSecondary)
+                                        .foregroundStyle(Theme.Signal.textSecondary)
                                         .fixedSize(horizontal: false, vertical: true)
                                         .textSelection(.enabled)
                                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -418,11 +429,11 @@ struct SystemCheckDetailsSheet: View {
                                 .accessibilityElement(children: .combine)
 
                                 if index < preflight.checks.count - 1 {
-                                    Divider().overlay(Theme.Colors.border)
+                                    Divider().overlay(Theme.Signal.border)
                                 }
                             }
                         }
-                        .ledgerContainer(background: Theme.Colors.surfaceModal)
+                        .ledgerContainer(background: Theme.Signal.surfaceModal)
                     }
 
                     VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
@@ -430,12 +441,12 @@ struct SystemCheckDetailsSheet: View {
 
                         Text(zoomAppPath)
                             .font(Theme.Typography.mono)
-                            .foregroundStyle(Theme.Colors.textPrimary)
+                            .foregroundStyle(Theme.Signal.textPrimary)
                             .textSelection(.enabled)
                             .padding(.horizontal, Theme.Spacing.s16)
                             .padding(.vertical, Theme.Spacing.s12)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .ledgerContainer(background: Theme.Colors.surfaceModal)
+                            .ledgerContainer(background: Theme.Signal.surfaceModal)
                     }
 
                     VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
@@ -448,7 +459,7 @@ struct SystemCheckDetailsSheet: View {
                 .padding(Theme.Spacing.s24)
             }
 
-            Divider().overlay(Theme.Colors.border)
+            Divider().overlay(Theme.Signal.border)
 
             HStack {
                 Spacer()
@@ -460,7 +471,7 @@ struct SystemCheckDetailsSheet: View {
             .padding(.vertical, Theme.Spacing.s16)
         }
         .frame(minWidth: 640, idealWidth: 680, minHeight: 460, idealHeight: 560, alignment: .topLeading)
-        .background(Theme.Colors.surfaceModal)
+        .background(Theme.Signal.surfaceModal)
         .preferredColorScheme(.dark)
         .onExitCommand(perform: onClose)
     }
@@ -468,7 +479,7 @@ struct SystemCheckDetailsSheet: View {
     private func subsectionTitle(_ title: String) -> some View {
         Text(title)
             .font(Theme.Typography.label)
-            .foregroundStyle(Theme.Colors.textPrimary)
+            .foregroundStyle(Theme.Signal.textPrimary)
             .accessibilityAddTraits(.isHeader)
     }
 
@@ -480,10 +491,10 @@ struct SystemCheckDetailsSheet: View {
                 .accessibilityHidden(true)
             Text(title)
                 .font(Theme.Typography.label)
-                .foregroundStyle(Theme.Colors.textPrimary)
+                .foregroundStyle(Theme.Signal.textPrimary)
             Text(value)
                 .font(Theme.Typography.body)
-                .foregroundStyle(Theme.Colors.textSecondary)
+                .foregroundStyle(Theme.Signal.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .combine)

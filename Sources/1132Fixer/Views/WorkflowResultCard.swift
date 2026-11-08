@@ -193,7 +193,7 @@ struct RepairRecordLedgerView: View {
             VStack(alignment: .leading, spacing: 0) {
                 if !isCompactLayout {
                     columnHeaders
-                    Divider().overlay(Theme.Colors.border)
+                    Divider().overlay(Theme.Signal.border)
                 }
 
                 ForEach(Array(items.enumerated()), id: \.element.id) { idx, step in
@@ -205,7 +205,7 @@ struct RepairRecordLedgerView: View {
                     )
 
                     if idx < items.count - 1 {
-                        Divider().overlay(Theme.Colors.border)
+                        Divider().overlay(Theme.Signal.border)
                     }
                 }
             }
@@ -218,13 +218,13 @@ struct RepairRecordLedgerView: View {
         HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s8) {
             Text("Repair record")
                 .font(Theme.Typography.sectionHeading)
-                .foregroundStyle(Theme.Colors.textPrimary)
+                .foregroundStyle(Theme.Signal.textPrimary)
                 .accessibilityAddTraits(.isHeader)
 
             Text("\(items.count) steps")
                 .font(Theme.Typography.metadata)
                 .monospacedDigit()
-                .foregroundStyle(Theme.Colors.textSecondary)
+                .foregroundStyle(Theme.Signal.textSecondary)
 
             Spacer(minLength: Theme.Spacing.s12)
 
@@ -232,7 +232,7 @@ struct RepairRecordLedgerView: View {
                 Text(duration)
                     .font(Theme.Typography.mono)
                     .monospacedDigit()
-                    .foregroundStyle(Theme.Colors.textSecondary)
+                    .foregroundStyle(Theme.Signal.textSecondary)
                     .accessibilityLabel("Duration \(duration)")
             }
 
@@ -262,7 +262,7 @@ struct RepairRecordLedgerView: View {
                 .frame(width: RecordColumns.outcome, alignment: .trailing)
         }
         .font(Theme.Typography.metadata)
-        .foregroundStyle(Theme.Colors.textSecondary)
+        .foregroundStyle(Theme.Signal.textSecondary)
         .padding(.horizontal, Theme.Spacing.s16)
         .padding(.vertical, Theme.Spacing.s8)
         .accessibilityHidden(true)
@@ -348,7 +348,7 @@ private struct RepairRecordStepRow: View {
                 operationTitle
                 Text(step.scope)
                     .font(Theme.Typography.metadata)
-                    .foregroundStyle(Theme.Colors.textSecondary)
+                    .foregroundStyle(Theme.Signal.textSecondary)
                     .lineLimit(1)
             }
             .frame(width: RecordColumns.operation, alignment: .leading)
@@ -390,12 +390,12 @@ private struct RepairRecordStepRow: View {
             if hasRecordedDetail {
                 Text(step.summary)
                     .font(Theme.Typography.metadata)
-                    .foregroundStyle(Theme.Colors.textSecondary)
+                    .foregroundStyle(Theme.Signal.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Text(step.commandSummary)
                 .font(Theme.Typography.mono)
-                .foregroundStyle(Theme.Colors.textSecondary)
+                .foregroundStyle(Theme.Signal.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
         }
@@ -410,7 +410,7 @@ private struct RepairRecordStepRow: View {
             Button(action: toggle) {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Theme.Colors.textSecondary)
+                    .foregroundStyle(Theme.Signal.textSecondary)
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
                     .frame(width: RecordColumns.disclosure)
             }
@@ -422,7 +422,7 @@ private struct RepairRecordStepRow: View {
             Text(indexLabel)
                 .font(Theme.Typography.mono)
                 .monospacedDigit()
-                .foregroundStyle(step.state == .running ? StatusTone.active.color : Theme.Colors.textSecondary)
+                .foregroundStyle(step.state == .running ? StatusTone.active.color : Theme.Signal.textSecondary)
                 .frame(width: RecordColumns.index, alignment: .leading)
         }
         .frame(width: RecordColumns.sequence, alignment: .leading)
@@ -432,13 +432,13 @@ private struct RepairRecordStepRow: View {
         HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s8) {
             Text(step.name)
                 .font(Theme.Typography.label)
-                .foregroundStyle(Theme.Colors.textPrimary)
+                .foregroundStyle(Theme.Signal.textPrimary)
                 .lineLimit(1)
 
             if step.requiresAdmin {
                 Label("Admin", systemImage: "lock.fill")
                     .font(Theme.Typography.metadata)
-                    .foregroundStyle(Theme.Colors.warning)
+                    .foregroundStyle(Theme.Signal.warning)
                     .help("Requires the administrator password prompt")
             }
         }
@@ -468,10 +468,10 @@ private struct RepairRecordStepRow: View {
 
     private var rowBackground: Color {
         if step.state == .running {
-            return Theme.Colors.surfaceHover
+            return Theme.Signal.surfaceHover
         }
         if isHovering && onToggleExpand != nil {
-            return Theme.Colors.surfaceHover
+            return Theme.Signal.surfaceHover
         }
         return .clear
     }
@@ -489,13 +489,13 @@ private struct RepairRecordStepRow: View {
     private var detailColor: Color {
         switch step.state {
         case .failed:
-            return Theme.Colors.error
+            return Theme.Signal.error
         case .warning, .interrupted, .running:
-            return Theme.Colors.textPrimary
+            return Theme.Signal.textPrimary
         case .unstarted:
-            return Theme.Colors.textSecondary
+            return Theme.Signal.textSecondary
         case .succeeded, .skipped:
-            return hasRecordedDetail ? Theme.Colors.textPrimary : Theme.Colors.textSecondary
+            return hasRecordedDetail ? Theme.Signal.textPrimary : Theme.Signal.textSecondary
         }
     }
 }
@@ -539,12 +539,12 @@ struct BackupProvenanceBar: View {
                 .accessibilityHidden(true)
             Text(label)
                 .font(Theme.Typography.label)
-                .foregroundStyle(Theme.Colors.textPrimary)
+                .foregroundStyle(Theme.Signal.textPrimary)
         }
 
         let pathText = Text(path)
             .font(Theme.Typography.mono)
-            .foregroundStyle(Theme.Colors.textSecondary)
+            .foregroundStyle(Theme.Signal.textSecondary)
             .lineLimit(1)
             .truncationMode(.middle)
             .textSelection(.enabled)

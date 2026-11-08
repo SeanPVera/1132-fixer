@@ -58,6 +58,64 @@ enum Theme {
         static let cardHover = surfaceHover
     }
 
+    /// "Signal" app skin: warm graphite surfaces with a restrained amber accent.
+    /// Member names mirror `Colors` so views can switch skins without changing roles.
+    /// `Colors` above remains the canonical mirror of `design-system/tokens/macos.json`
+    /// (verified by `ThemeTokenParityTests`); these values are app-scoped until the
+    /// design-system repository adopts them.
+    enum Signal {
+        static let hexTokens: [String: String] = [
+            "background": "#121214",
+            "surface": "#1C1B20",
+            "surface-modal": "#24232A",
+            "surface-hover": "#2B2A31",
+            "surface-pressed": "#17161A",
+            "surface-recessed": "#0E0E10",
+            "text-primary": "#F4F1EC",
+            "text-secondary": "#A9A49D",
+            "border": "#34323A",
+            "border-control": "#7A746D",
+            "primary": "#FF9A3C",
+            "primary-hover": "#FFAD5C",
+            "primary-pressed": "#E8842C",
+            "on-primary": "#1A1206",
+            "link": "#FFB25C",
+            "focus": "#FFB25C",
+            "success": "#3DDC97",
+            "warning": "#FFC24B",
+            "error": "#FF7A85",
+        ]
+
+        static let background = hex(0x121214)
+        static let surface = hex(0x1C1B20)
+        static let surfaceModal = hex(0x24232A)
+        static let surfaceHover = hex(0x2B2A31)
+        static let surfacePressed = hex(0x17161A)
+        static let surfaceRecessed = hex(0x0E0E10)
+        static let textPrimary = hex(0xF4F1EC)
+        static let textSecondary = hex(0xA9A49D)
+        static let border = hex(0x34323A)
+        static let borderControl = hex(0x7A746D)
+        static let primary = hex(0xFF9A3C)
+        static let primaryHover = hex(0xFFAD5C)
+        static let primaryPressed = hex(0xE8842C)
+        static let onPrimary = hex(0x1A1206)
+        static let link = hex(0xFFB25C)
+        static let focus = hex(0xFFB25C)
+        static let success = hex(0x3DDC97)
+        static let warning = hex(0xFFC24B)
+        static let error = hex(0xFF7A85)
+        static let accentGlow = hex(0xFF9A3C).opacity(0.28)
+
+        private static func hex(_ value: UInt32) -> Color {
+            Color(
+                red: Double((value >> 16) & 0xFF) / 255,
+                green: Double((value >> 8) & 0xFF) / 255,
+                blue: Double(value & 0xFF) / 255
+            )
+        }
+    }
+
     enum Spacing {
         static let s4: CGFloat = 4
         static let s8: CGFloat = 8
@@ -145,6 +203,10 @@ enum Theme {
         static let metadata = Font.system(size: 12, weight: .regular)
         static let mono = Font.system(size: 13, weight: .regular, design: .monospaced)
 
+        /// Expressive status headline (system serif, New York). Not a design-system role yet,
+        /// so it is intentionally absent from `roleSpecs`.
+        static let statusHeadline = Font.system(size: 26, weight: .semibold, design: .serif)
+
         static let roleSpecs: [String: TypographyRoleSpec] = [
             "main-outcome": TypographyRoleSpec(size: 24, lineHeight: 30, weight: 600, family: "sans"),
             "compact-identity": TypographyRoleSpec(size: 16, lineHeight: 22, weight: 600, family: "sans"),
@@ -168,9 +230,9 @@ enum Theme {
     }
 
     struct Panel: ViewModifier {
-        var background = Colors.surface
+        var background = Signal.surface
         var radius = Radius.control
-        var borderColor = Colors.border
+        var borderColor = Signal.border
 
         func body(content: Content) -> some View {
             content
@@ -184,8 +246,8 @@ enum Theme {
     }
 
     struct LedgerContainer: ViewModifier {
-        var background = Colors.surface
-        var borderColor = Colors.border
+        var background = Signal.surface
+        var borderColor = Signal.border
 
         func body(content: Content) -> some View {
             content
@@ -204,7 +266,7 @@ enum Theme {
         func body(content: Content) -> some View {
             content
                 .font(.system(size: size, weight: weight, design: .monospaced))
-                .foregroundStyle(Colors.textPrimary)
+                .foregroundStyle(Signal.textPrimary)
         }
     }
 }
@@ -248,10 +310,18 @@ private struct ThemedButtonBody: View {
             .overlay {
                 shape.stroke(strokeColor, lineWidth: 1)
             }
+            .shadow(color: glowColor, radius: isHovering ? 10 : 6, y: 0)
             .contentShape(shape)
             .onHover { isHovering = $0 }
             .animation(feedbackAnimation, value: isHovering)
             .animation(feedbackAnimation, value: configuration.isPressed)
+    }
+
+    /// Soft amber halo on the enabled primary action only; static under Reduce Motion
+    /// because only the hover change is animated.
+    private var glowColor: Color {
+        guard isEnabled, variant == .primary else { return .clear }
+        return Theme.Signal.accentGlow
     }
 
     private var feedbackAnimation: Animation? {
@@ -259,12 +329,14 @@ private struct ThemedButtonBody: View {
     }
 
     private var foregroundColor: Color {
-        guard isEnabled else { return Theme.Colors.textSecondary }
+        guard isEnabled else { return Theme.Signal.textSecondary }
         switch variant {
-        case .primary, .secondary:
-            return Theme.Colors.textPrimary
+        case .primary:
+            return Theme.Signal.onPrimary
+        case .secondary:
+            return Theme.Signal.textPrimary
         case .destructive:
-            return Theme.Colors.error
+            return Theme.Signal.error
         }
     }
 
@@ -272,29 +344,31 @@ private struct ThemedButtonBody: View {
         guard isEnabled else { return .clear }
         switch variant {
         case .primary:
-            if configuration.isPressed { return Theme.Colors.primaryPressed }
-            return isHovering ? Theme.Colors.primaryHover : Theme.Colors.primary
+            if configuration.isPressed { return Theme.Signal.primaryPressed }
+            return isHovering ? Theme.Signal.primaryHover : Theme.Signal.primary
         case .secondary, .destructive:
-            if configuration.isPressed { return Theme.Colors.surfacePressed }
-            return isHovering ? Theme.Colors.surfaceHover : Theme.Colors.surface
+            if configuration.isPressed { return Theme.Signal.surfacePressed }
+            return isHovering ? Theme.Signal.surfaceHover : Theme.Signal.surface
         }
     }
 
     private var strokeColor: Color {
-        guard isEnabled else { return Theme.Colors.border }
+        guard isEnabled else { return Theme.Signal.border }
         switch variant {
-        case .primary, .secondary:
-            // Dark `primary` fill alone lacks 3:1 boundary contrast; pair with `border-control`.
-            return Theme.Colors.borderControl
+        case .primary:
+            // The amber fill carries its own boundary contrast against graphite.
+            return Theme.Signal.primaryPressed
+        case .secondary:
+            return Theme.Signal.borderControl
         case .destructive:
-            return Theme.Colors.error
+            return Theme.Signal.error
         }
     }
 }
 
 /// Borderless text button for inline and utility actions (Recheck, Help, support access).
 struct QuietLinkButtonStyle: ButtonStyle {
-    var color: Color = Theme.Colors.link
+    var color: Color = Theme.Signal.link
 
     func makeBody(configuration: Configuration) -> some View {
         QuietLinkButtonBody(configuration: configuration, color: color)
@@ -314,7 +388,7 @@ private struct QuietLinkButtonBody: View {
 
         configuration.label
             .font(Theme.Typography.label)
-            .foregroundStyle(isEnabled ? color : Theme.Colors.textSecondary)
+            .foregroundStyle(isEnabled ? color : Theme.Signal.textSecondary)
             .padding(.vertical, Theme.Spacing.s4)
             .padding(.horizontal, Theme.Spacing.s8)
             .background(fillColor)
@@ -326,8 +400,8 @@ private struct QuietLinkButtonBody: View {
 
     private var fillColor: Color {
         guard isEnabled else { return .clear }
-        if configuration.isPressed { return Theme.Colors.surfacePressed }
-        return isHovering ? Theme.Colors.surfaceHover : .clear
+        if configuration.isPressed { return Theme.Signal.surfacePressed }
+        return isHovering ? Theme.Signal.surfaceHover : .clear
     }
 }
 
@@ -342,12 +416,12 @@ enum StatusTone: Equatable {
 
     var color: Color {
         switch self {
-        case .neutral: return Theme.Colors.textSecondary
+        case .neutral: return Theme.Signal.textSecondary
         // `primary` is a fill colour; its accessible text tint on dark surfaces is `link`.
-        case .active: return Theme.Colors.link
-        case .success: return Theme.Colors.success
-        case .warning: return Theme.Colors.warning
-        case .error: return Theme.Colors.error
+        case .active: return Theme.Signal.link
+        case .success: return Theme.Signal.success
+        case .warning: return Theme.Signal.warning
+        case .error: return Theme.Signal.error
         }
     }
 }
@@ -369,7 +443,7 @@ struct StatusTag: View {
             .background(fillColor)
             .clipShape(Capsule())
             .overlay {
-                Capsule().stroke(tone == .neutral ? Theme.Colors.border : .clear, lineWidth: 1)
+                Capsule().stroke(tone == .neutral ? Theme.Signal.border : .clear, lineWidth: 1)
             }
     }
 
@@ -380,23 +454,23 @@ struct StatusTag: View {
 
 extension View {
     func themedPanel(
-        background: Color = Theme.Colors.surface,
+        background: Color = Theme.Signal.surface,
         radius: CGFloat = Theme.Radius.control,
-        borderColor: Color = Theme.Colors.border
+        borderColor: Color = Theme.Signal.border
     ) -> some View {
         modifier(Theme.Panel(background: background, radius: radius, borderColor: borderColor))
     }
 
     func ledgerContainer(
-        background: Color = Theme.Colors.surface,
-        borderColor: Color = Theme.Colors.border
+        background: Color = Theme.Signal.surface,
+        borderColor: Color = Theme.Signal.border
     ) -> some View {
         modifier(Theme.LedgerContainer(background: background, borderColor: borderColor))
     }
 
     func themedLedger(
-        background: Color = Theme.Colors.surface,
-        borderColor: Color = Theme.Colors.border
+        background: Color = Theme.Signal.surface,
+        borderColor: Color = Theme.Signal.border
     ) -> some View {
         ledgerContainer(background: background, borderColor: borderColor)
     }

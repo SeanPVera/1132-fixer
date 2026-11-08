@@ -26,7 +26,7 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 masthead(ledgerItems: ledgerItems)
 
-                Divider().overlay(Theme.Colors.border)
+                Divider().overlay(Theme.Signal.border)
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: Theme.Spacing.majorSection) {
@@ -71,7 +71,7 @@ struct ContentView: View {
 
                 bottomBar
             }
-            .background(Theme.Colors.background)
+            .background(Theme.Signal.background)
         }
         .frame(
             minWidth: Theme.Window.minWidth,
@@ -80,6 +80,7 @@ struct ContentView: View {
             idealHeight: Theme.Window.idealHeight
         )
         .preferredColorScheme(.dark)
+        .tint(Theme.Signal.primary)
         .onAppear {
             if AppConfiguration.allowsDebugEnvironmentOverrides,
                ProcessInfo.processInfo.environment["FIXER_UI_FIXTURE"] != nil {
@@ -197,7 +198,7 @@ struct ContentView: View {
 
     private var bottomBar: some View {
         VStack(spacing: 0) {
-            Divider().overlay(Theme.Colors.border)
+            Divider().overlay(Theme.Signal.border)
 
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .center, spacing: Theme.Spacing.s16) {
@@ -218,7 +219,7 @@ struct ContentView: View {
             .padding(.vertical, Theme.Spacing.s12)
             .frame(maxWidth: .infinity)
 
-            Divider().overlay(Theme.Colors.border)
+            Divider().overlay(Theme.Signal.border)
 
             supportAccessBar
                 .frame(maxWidth: Theme.Window.contentMaxWidth, alignment: .leading)
@@ -226,7 +227,7 @@ struct ContentView: View {
                 .padding(.vertical, Theme.Spacing.s4)
                 .frame(maxWidth: .infinity)
         }
-        .background(Theme.Colors.surface)
+        .background(Theme.Signal.surface)
     }
 
     /// Support access: system check details, activity log, diagnostics export, and bug reports.
@@ -261,7 +262,7 @@ struct ContentView: View {
 
             Spacer(minLength: 0)
         }
-        .buttonStyle(QuietLinkButtonStyle(color: Theme.Colors.textSecondary))
+        .buttonStyle(QuietLinkButtonStyle(color: Theme.Signal.textSecondary))
     }
 
     private var footerStatusText: some View {
@@ -273,7 +274,7 @@ struct ContentView: View {
 
             Text(footerGuidance.message)
                 .font(Theme.Typography.body)
-                .foregroundStyle(Theme.Colors.textSecondary)
+                .foregroundStyle(Theme.Signal.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .combine)

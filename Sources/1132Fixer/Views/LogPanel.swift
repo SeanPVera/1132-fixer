@@ -10,7 +10,7 @@ struct LogPanel: View {
             HStack {
                 Label("Activity Log", systemImage: "text.alignleft")
                     .font(Theme.Typography.heading)
-                    .foregroundStyle(Theme.Colors.textPrimary)
+                    .foregroundStyle(Theme.Signal.textPrimary)
 
                 Spacer()
 
@@ -32,13 +32,13 @@ struct LogPanel: View {
                     if logs.isEmpty {
                         Text("No logs yet. Run a preview or repair to record diagnostic output.")
                             .font(Theme.Typography.body)
-                            .foregroundStyle(Theme.Colors.textSecondary)
+                            .foregroundStyle(Theme.Signal.textSecondary)
                             .padding(.top, Theme.Spacing.xSmall)
                     } else {
                         ForEach(Array(logs.enumerated()), id: \.offset) { index, line in
                             Text(line)
                                 .font(Theme.Typography.mono)
-                                .foregroundStyle(Theme.Colors.textPrimary)
+                                .foregroundStyle(Theme.Signal.textPrimary)
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.vertical, 2)
@@ -49,11 +49,11 @@ struct LogPanel: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(Theme.Spacing.medium)
             }
-            .background(Theme.Colors.surfaceRecessed)
+            .background(Theme.Signal.surfaceRecessed)
             .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                    .stroke(Theme.Colors.border, lineWidth: 1)
+                    .stroke(Theme.Signal.border, lineWidth: 1)
             )
         }
         .padding(Theme.Spacing.large)
@@ -77,12 +77,12 @@ struct ActivityLogSheet: View {
                 VStack(alignment: .leading, spacing: Theme.Spacing.xxSmall) {
                     Text("Activity log")
                         .font(Theme.Typography.sectionHeading)
-                        .foregroundStyle(Theme.Colors.textPrimary)
+                        .foregroundStyle(Theme.Signal.textPrimary)
                         .accessibilityAddTraits(.isHeader)
                     Text("\(viewModel.logEntries.count) entries retained in memory (capped at \(AppViewModel.maxInMemoryLogEntries) lines)")
                         .font(Theme.Typography.metadata)
                         .monospacedDigit()
-                        .foregroundStyle(Theme.Colors.textSecondary)
+                        .foregroundStyle(Theme.Signal.textSecondary)
                 }
 
                 Spacer()
@@ -90,7 +90,7 @@ struct ActivityLogSheet: View {
                 Toggle("Follow latest", isOn: $viewModel.isFollowingLatestLog)
                     .toggleStyle(.checkbox)
                     .font(Theme.Typography.label)
-                    .foregroundStyle(Theme.Colors.textSecondary)
+                    .foregroundStyle(Theme.Signal.textSecondary)
             }
 
             ScrollViewReader { proxy in
@@ -99,13 +99,13 @@ struct ActivityLogSheet: View {
                         if viewModel.logEntries.isEmpty {
                             Text("No diagnostic output recorded in this session yet.")
                                 .font(Theme.Typography.body)
-                                .foregroundStyle(Theme.Colors.textSecondary)
+                                .foregroundStyle(Theme.Signal.textSecondary)
                                 .padding(Theme.Spacing.medium)
                         } else {
                             ForEach(viewModel.logEntries) { entry in
                                 Text(entry.line)
                                     .font(Theme.Typography.mono)
-                                    .foregroundStyle(Theme.Colors.textPrimary)
+                                    .foregroundStyle(Theme.Signal.textPrimary)
                                     .textSelection(.enabled)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(.horizontal, Theme.Spacing.medium)
@@ -117,11 +117,11 @@ struct ActivityLogSheet: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, Theme.Spacing.small)
                 }
-                .background(Theme.Colors.surfaceRecessed)
+                .background(Theme.Signal.surfaceRecessed)
                 .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                        .stroke(Theme.Colors.border, lineWidth: 1)
+                        .stroke(Theme.Signal.border, lineWidth: 1)
                 )
                 .onAppear {
                     guard viewModel.isFollowingLatestLog, let lastSeq = viewModel.logEntries.last?.sequence else { return }
@@ -163,7 +163,7 @@ struct ActivityLogSheet: View {
         }
         .padding(Theme.Spacing.xLarge)
         .frame(minWidth: 680, idealWidth: 740, minHeight: 460, idealHeight: 520, alignment: .topLeading)
-        .background(Theme.Colors.surfaceModal)
+        .background(Theme.Signal.surfaceModal)
         .preferredColorScheme(.dark)
         .onExitCommand(perform: onClose)
     }
