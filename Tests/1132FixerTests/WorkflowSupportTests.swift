@@ -5,9 +5,9 @@ import Testing
 @Suite("Design system token parity")
 struct ThemeTokenParityTests {
     @Test func swiftThemeMatchesCanonicalMacOSTokensJSON() throws {
-        #expect(Theme.Colors.hexTokens["primary"] == "#235FA8")
-        #expect(Theme.Colors.hexTokens["border-control"] == "#718399")
-        #expect(Theme.Colors.hexTokens["focus"] == "#8DBCF2")
+        #expect(Theme.Colors.hexTokens["primary"] == "#FF9A3C")
+        #expect(Theme.Colors.hexTokens["border-control"] == "#7A746D")
+        #expect(Theme.Colors.hexTokens["focus"] == "#FFB25C")
         #expect(Theme.Window.defaultWidth == 900)
         #expect(Theme.Window.defaultHeight == 760)
         #expect(Theme.Window.minimumWidth == 720)
@@ -23,6 +23,7 @@ struct ThemeTokenParityTests {
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
         let colorSection = try #require(json["colors"] as? [String: String])
+        #expect(Set(colorSection.keys) == Set(Theme.Colors.hexTokens.keys), "Colour tokens must match macos.json in both directions")
         for (tokenName, expectedHex) in Theme.Colors.hexTokens {
             let value = try #require(colorSection[tokenName], "Missing color token \(tokenName) in macos.json")
             #expect(value.uppercased() == expectedHex.uppercased(), "Color mismatch for \(tokenName)")
@@ -31,7 +32,9 @@ struct ThemeTokenParityTests {
         let typographySection = try #require(json["typography"] as? [String: Any])
         #expect(typographySection["font-family-sans"] as? String == Theme.Typography.fontFamilySans)
         #expect(typographySection["font-family-mono"] as? String == Theme.Typography.fontFamilyMono)
+        #expect(typographySection["font-family-serif"] as? String == Theme.Typography.fontFamilySerif)
         let rolesSection = try #require(typographySection["roles"] as? [String: [String: Any]])
+        #expect(Set(rolesSection.keys) == Set(Theme.Typography.roleSpecs.keys), "Typography roles must match macos.json in both directions")
         for (roleName, spec) in Theme.Typography.roleSpecs {
             let entry = try #require(rolesSection[roleName], "Missing typography role \(roleName) in macos.json")
             let size = try #require(entry["size"] as? Double)
@@ -55,6 +58,14 @@ struct ThemeTokenParityTests {
         #expect(CGFloat(try #require(spacingSection["64"])) == Theme.Spacing.s64)
         #expect(CGFloat(try #require(spacingSection["outerMargin"])) == Theme.Spacing.outerMargin)
 
+        let elevationSection = try #require(json["elevation"] as? [String: Double])
+        #expect(CGFloat(try #require(elevationSection["primaryGlowRadius"])) == Theme.Elevation.primaryGlowRadius)
+        #expect(CGFloat(try #require(elevationSection["primaryGlowRadiusHover"])) == Theme.Elevation.primaryGlowRadiusHover)
+        let statusSection = try #require(json["status"] as? [String: Double])
+        #expect(CGFloat(try #require(statusSection["accentRuleWidth"])) == Theme.Status.accentRuleWidth)
+        let identitySection = try #require(json["identity"] as? [String: Double])
+        #expect(CGFloat(try #require(identitySection["iconSize"])) == Theme.Identity.iconSize)
+
         let radiusSection = try #require(json["radius"] as? [String: Double])
         #expect(CGFloat(try #require(radiusSection["row"])) == Theme.Radius.row)
         #expect(CGFloat(try #require(radiusSection["control"])) == Theme.Radius.control)
@@ -77,6 +88,8 @@ struct ThemeTokenParityTests {
         #expect(CGFloat(try #require(windowSection["contentMaxWidth"] as? Double)) == Theme.Window.contentMaxWidth)
         #expect(CGFloat(try #require(windowSection["recordFourColumnMinWidth"] as? Double)) == Theme.Window.recordFourColumnMinWidth)
         #expect(CGFloat(try #require(windowSection["rowMinHeight"] as? Double)) == Theme.Window.rowMinHeight)
+        #expect(CGFloat(try #require(windowSection["sidebarWidth"] as? Double)) == Theme.Window.sidebarWidth)
+        #expect(CGFloat(try #require(windowSection["sidebarBreakpoint"] as? Double)) == Theme.Window.sidebarBreakpoint)
     }
 }
 

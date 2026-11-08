@@ -77,10 +77,18 @@ struct ZoomLocationPanel: View {
 
     private var stackedBar: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
-            HStack(alignment: .center, spacing: Theme.Spacing.s12) {
-                locationTag
-                Spacer(minLength: Theme.Spacing.s8)
-                actionButtons
+            // Falls back to stacking the tag above the buttons in narrow containers
+            // such as the 264pt preflight sidebar.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: Theme.Spacing.s12) {
+                    locationTag
+                    Spacer(minLength: Theme.Spacing.s8)
+                    actionButtons
+                }
+                VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
+                    locationTag
+                    actionButtons
+                }
             }
             pathText
                 .frame(maxWidth: .infinity, alignment: .leading)

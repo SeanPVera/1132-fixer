@@ -23,6 +23,8 @@ struct WorkspaceSummary: View {
     let isRunning: Bool
     let onRecheck: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     private enum Glyph {
         case progress
         case symbol(String)
@@ -67,7 +69,7 @@ struct WorkspaceSummary: View {
 
                 VStack(alignment: .leading, spacing: Theme.Spacing.s4) {
                     Text(descriptor.heading)
-                        .font(Theme.Typography.mainOutcome)
+                        .font(Theme.Typography.statusHeadline)
                         .foregroundStyle(Theme.Colors.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityAddTraits(.isHeader)
@@ -102,6 +104,16 @@ struct WorkspaceSummary: View {
             if !isRunning, let notice {
                 noticeRow(notice)
             }
+        }
+        .padding(.leading, Theme.Spacing.s16)
+        .overlay(alignment: .leading) {
+            // State-derived accent rule; decorative, the heading carries the meaning.
+            // Only the rule's colour animates; text and layout update immediately (07-motion.md).
+            Capsule()
+                .fill(descriptor.tone.color)
+                .frame(width: Theme.Status.accentRuleWidth)
+                .animation(reduceMotion ? nil : .easeOut(duration: Theme.Motion.controlFeedbackDuration), value: descriptor.tone)
+                .accessibilityHidden(true)
         }
         .accessibilityElement(children: .contain)
     }
