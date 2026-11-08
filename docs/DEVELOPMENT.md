@@ -71,6 +71,10 @@ Before enabling publication, the owner must verify:
 - `release-signing` permits only approved release refs, requires independent
   reviewers, and scopes signing/notarization and write-only report credentials.
 - Fork and pull-request jobs cannot obtain that environment's credentials.
+- `release-signing` holds `APPLE_CERTIFICATE` (base64 Developer ID Application
+  .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_PASSWORD` (app-specific
+  password), `APPLE_TEAM_ID`, `FIXER_BUG_REPORT_ENDPOINT` and
+  `FIXER_BUG_REPORT_TOKEN`. Developer ID builds fail without the bug-report pair.
 
 The release workflow tests its exact checked-out commit before signing and
 checks the tested SHA and a clean tracked tree before publication. Workflow
@@ -92,6 +96,11 @@ copy. Production signing/notarization credentials require separate authorization
 
 Use a disposable macOS VM/account and fixture data. Do not reset real Zoom data
 or mutate a live network interface under the current authorization.
+
+Hosted CI now covers parts of items 1, 3 and 5 on macOS 15 and 26 (Apple silicon
+and Intel): builds, the full suite, the sandbox, keychain and literal-name
+shutdown canaries, and an ad-hoc universal DMG that is mounted and smoke-checked.
+The remaining parts below need owner hardware, a VM or credentials.
 
 1. Build debug/release, run the full suite and both explicit canaries, then start
    `swift run` and check immediate startup. Inspect narrow/regular window layouts,

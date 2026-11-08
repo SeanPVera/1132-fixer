@@ -9,7 +9,7 @@
     "docs/REMEDIATION_STATUS.md",
     "docs/verification-receipt.json"
   ],
-  "version": "1.8.5",
+  "version": "1.8.6",
   "host": {
     "os": "Linux x86_64 (Claude Code cloud session)",
     "swift": "Swift version 6.1.2 (swift-6.1.2-RELEASE)",
@@ -129,24 +129,25 @@
   },
   "native_checks": {
     "swift build": {
-      "status": "PASS on hosted macos-15 only",
-      "evidence": "CI run 42422840660"
+      "status": "PASS on hosted macos-15, macos-15-intel, macos-26, macos-26-intel",
+      "evidence": "CI run 42430252625"
     },
     "swift test": {
-      "status": "PASS on hosted macos-15 only",
-      "evidence": "CI run 42422840660"
+      "status": "PASS on hosted macos-15, macos-15-intel, macos-26, macos-26-intel",
+      "evidence": "CI run 42430252625"
     },
     "swift build -c release": {
-      "status": "PASS on hosted macos-15 only",
-      "evidence": "CI run 42422840660"
+      "status": "PASS on hosted macos-15, macos-15-intel, macos-26, macos-26-intel",
+      "evidence": "CI run 42430252625"
     },
     "swift run": {
       "status": "NOT RUN",
       "reason": "SwiftUI/AppKit unavailable on Linux"
     },
     "DMG": {
-      "status": "NOT RUN",
-      "reason": "Native macOS required; no image built or mounted"
+      "status": "PASS for ad-hoc universal DMG on hosted macos-15 (mounted smoke check)",
+      "evidence": "CI run 42430115231",
+      "not_covered": "Developer ID signing, notarization, downloaded DMG"
     }
   },
   "prior_session": "Original Codex receipt (Swift absent, exit 127 for all swift commands) is preserved in git at b3814f9.",
@@ -157,7 +158,7 @@
     "real signed sandboxed Zoom startup, SSO, media, keychain, helper/TCC and PID continuity",
     "complete mounted universal DMG, runtime resources, signatures, entitlements, notarization, cleanup",
     "hosted CI and repository/tag/release-signing protections",
-    "Swift build/test on macOS 13/14, Intel and Rosetta"
+    "Swift build/test and runtime on macOS 13/14 and under Rosetta (no hosted runners)"
   ],
   "core_candidate_sha256": {
     ".github/CODEOWNERS": "b9c394c3dc0cd3871af06213ab67fe35134ec57def6c6d46873ef0ef864e0064",
@@ -297,6 +298,80 @@
         "sandbox and keychain canaries": "PASS",
         "swift build -c release": "PASS"
       }
+    },
+    {
+      "pr": "SeanPVera/1132-fixer#27",
+      "workflow": "CI",
+      "run_id": 42429118203,
+      "head_sha": "e9bfd88df86ff10f47ac1e6835343d2c0792fecc",
+      "conclusion": "success",
+      "runners": {
+        "macos-15": "15.8.2 arm64, Xcode 16.4, Swift 6.1.2, 211 tests PASS",
+        "macos-15-intel": "15.7.9 x86_64, Xcode 16.4, Swift 6.1.2, 211 tests PASS",
+        "macos-26": "26.7.2 arm64, Xcode 26.6, Swift 6.3.3, 211 tests PASS",
+        "macos-26-intel": "26.6.1 x86_64, Xcode 26.6, Swift 6.3.3, 211 tests PASS"
+      },
+      "platform_facts": {
+        "hw.optional.arm64": "1 on Apple silicon; unknown oid on Intel",
+        "sysctl.proc_translated": "0 on Apple silicon; unknown oid on Intel",
+        "kern.bootsessionuuid": "readable on all four"
+      }
+    },
+    {
+      "workflow": "Build DMG",
+      "run_id": 42429131607,
+      "mode": "adhoc (untrusted ref)",
+      "conclusion": "failure",
+      "cause": "build-universal-dmg.sh line 205: resource_args[@]: unbound variable under /bin/bash 3.2; EXIT trap masked the status so the step reported success"
+    },
+    {
+      "pr": "SeanPVera/1132-fixer#27",
+      "workflow": "CI",
+      "run_id": 42430115231,
+      "job": "Package ad-hoc DMG (macOS)",
+      "head_sha": "92a88350bfb280bd31b77b8600d4a1c6c4e93c65",
+      "conclusion": "success",
+      "observed": "GNU bash 3.2.57; universal x86_64 arm64; resource validation x4; hdiutil verify VALID; mounted smoke check passed"
+    },
+    {
+      "pr": "SeanPVera/1132-fixer#27",
+      "workflow": "CI",
+      "run_id": 42430252625,
+      "head_sha": "40d336f10a009bb6a35d94a1d35df7e888e5c496",
+      "conclusion": "success",
+      "observed": "7/7 checks PASS; 213 tests per macOS runner; stopZoom literal-name canary and live hardware classification PASS on all four runners"
+    },
+    {
+      "workflow": "CI",
+      "run_id": 42431979699,
+      "head_sha": "14f9ab1d2f402db01a384e1e303e932c4660f114",
+      "branch": "main",
+      "conclusion": "success",
+      "observed": "PR 28 UI rework and VERSION 1.8.6: 6/6 jobs PASS (four macOS runners, ad-hoc DMG, Linux fixtures)"
+    },
+    {
+      "workflow": "Build DMG",
+      "run_id": 42431963794,
+      "head_sha": "a23bc9bd79606098a2dc6a90125b85a03c63de3c",
+      "branch": "main",
+      "trusted": true,
+      "conclusion": "success",
+      "mode": "adhoc",
+      "observed": "No APPLE_CERTIFICATE secret configured on a trusted main build; ad-hoc universal DMG smoke-checked and uploaded (artifact 13598056660)"
     }
-  ]
+  ],
+  "version_note": "Remediation set VERSION to 1.8.5; PR 28 (separate UI rework) moved it to 1.8.6.",
+  "owner_settings_observed": {
+    "release-signing approval wait": "none observed (Build DMG runs 9 and 10)",
+    "Developer ID secrets": "not configured (trusted run 10 fell back to ad-hoc)",
+    "required_release_secrets": [
+      "APPLE_CERTIFICATE",
+      "APPLE_CERTIFICATE_PASSWORD",
+      "APPLE_ID",
+      "APPLE_PASSWORD",
+      "APPLE_TEAM_ID",
+      "FIXER_BUG_REPORT_ENDPOINT",
+      "FIXER_BUG_REPORT_TOKEN"
+    ]
+  }
 }
