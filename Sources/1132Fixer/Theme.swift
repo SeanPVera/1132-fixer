@@ -215,52 +215,76 @@ enum ThemedButtonVariant {
     case destructive
 }
 
+/// Filled/outlined control button (design-system Button: primary and secondary/ghost).
+/// States follow docs/02-colors.md: hover and pressed use the macOS `*-hover` / `*-pressed`
+/// tokens; disabled drops the fill and uses `text-secondary` on a `border` outline.
 struct ThemedButtonStyle: ButtonStyle {
     let variant: ThemedButtonVariant
-    @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
+        ThemedButtonBody(configuration: configuration, variant: variant)
+    }
+}
+
+private struct ThemedButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    let variant: ThemedButtonVariant
+
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovering = false
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+
         configuration.label
             .font(Theme.Typography.button)
             .foregroundStyle(foregroundColor)
             .padding(.vertical, Theme.Spacing.s8)
             .padding(.horizontal, Theme.Spacing.s16)
-            .frame(minHeight: 34)
-            .background(backgroundColor(isPressed: configuration.isPressed))
-            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+            .frame(minHeight: Theme.Spacing.s32)
+            .background(fillColor)
+            .clipShape(shape)
             .overlay {
-                RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                    .stroke(borderColor(isPressed: configuration.isPressed), lineWidth: 1)
+                shape.stroke(strokeColor, lineWidth: 1)
             }
-            .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
-            .opacity(isEnabled ? 1.0 : 0.5)
+            .contentShape(shape)
+            .onHover { isHovering = $0 }
+            .animation(feedbackAnimation, value: isHovering)
+            .animation(feedbackAnimation, value: configuration.isPressed)
+    }
+
+    private var feedbackAnimation: Animation? {
+        reduceMotion ? nil : .easeOut(duration: Theme.Motion.controlFeedbackDuration)
     }
 
     private var foregroundColor: Color {
+        guard isEnabled else { return Theme.Colors.textSecondary }
         switch variant {
-        case .primary:
-            return Theme.Colors.textPrimary
-        case .secondary:
+        case .primary, .secondary:
             return Theme.Colors.textPrimary
         case .destructive:
             return Theme.Colors.error
         }
     }
 
-    private func backgroundColor(isPressed: Bool) -> Color {
+    private var fillColor: Color {
+        guard isEnabled else { return .clear }
         switch variant {
         case .primary:
-            return isPressed ? Theme.Colors.primaryPressed : Theme.Colors.primary
+            if configuration.isPressed { return Theme.Colors.primaryPressed }
+            return isHovering ? Theme.Colors.primaryHover : Theme.Colors.primary
         case .secondary, .destructive:
-            return isPressed ? Theme.Colors.surfacePressed : Theme.Colors.surface
+            if configuration.isPressed { return Theme.Colors.surfacePressed }
+            return isHovering ? Theme.Colors.surfaceHover : Theme.Colors.surface
         }
     }
 
-    private func borderColor(isPressed: Bool) -> Color {
+    private var strokeColor: Color {
+        guard isEnabled else { return Theme.Colors.border }
         switch variant {
-        case .primary:
-            return isPressed ? Theme.Colors.primaryPressed : Theme.Colors.primary
-        case .secondary:
+        case .primary, .secondary:
+            // Dark `primary` fill alone lacks 3:1 boundary contrast; pair with `border-control`.
             return Theme.Colors.borderControl
         case .destructive:
             return Theme.Colors.error
@@ -268,24 +292,89 @@ struct ThemedButtonStyle: ButtonStyle {
     }
 }
 
+/// Borderless text button for inline and utility actions (Recheck, Help, support access).
 struct QuietLinkButtonStyle: ButtonStyle {
     var color: Color = Theme.Colors.link
-    @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
+        QuietLinkButtonBody(configuration: configuration, color: color)
+    }
+}
+
+private struct QuietLinkButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    let color: Color
+
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovering = false
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+
         configuration.label
             .font(Theme.Typography.label)
-            .foregroundStyle(color.opacity(configuration.isPressed ? 0.75 : 1.0))
+            .foregroundStyle(isEnabled ? color : Theme.Colors.textSecondary)
             .padding(.vertical, Theme.Spacing.s4)
             .padding(.horizontal, Theme.Spacing.s8)
-            .background(
-                configuration.isPressed
-                    ? Theme.Colors.surfacePressed.opacity(0.6)
-                    : Color.clear
-            )
-            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
-            .opacity(isEnabled ? 1.0 : 0.45)
+            .background(fillColor)
+            .clipShape(shape)
+            .contentShape(shape)
+            .onHover { isHovering = $0 }
+            .animation(reduceMotion ? nil : .easeOut(duration: Theme.Motion.controlFeedbackDuration), value: isHovering)
+    }
+
+    private var fillColor: Color {
+        guard isEnabled else { return .clear }
+        if configuration.isPressed { return Theme.Colors.surfacePressed }
+        return isHovering ? Theme.Colors.surfaceHover : .clear
+    }
+}
+
+/// Semantic tone for status words, symbols, and tags. Status colors are never used alone:
+/// every tone is paired with explicit text (docs/09-accessibility.md).
+enum StatusTone: Equatable {
+    case neutral
+    case active
+    case success
+    case warning
+    case error
+
+    var color: Color {
+        switch self {
+        case .neutral: return Theme.Colors.textSecondary
+        // `primary` is a fill colour; its accessible text tint on dark surfaces is `link`.
+        case .active: return Theme.Colors.link
+        case .success: return Theme.Colors.success
+        case .warning: return Theme.Colors.warning
+        case .error: return Theme.Colors.error
+        }
+    }
+}
+
+/// Design-system "Status pill / tag": pill shape, caption-size text, `spacing.4`/`spacing.8`
+/// padding, status tint with matching text. Neutral tags use an outlined `border` pill.
+struct StatusTag: View {
+    let text: String
+    var tone: StatusTone = .neutral
+
+    var body: some View {
+        Text(text)
+            .font(Theme.Typography.metadata)
+            .monospacedDigit()
+            .foregroundStyle(tone.color)
+            .lineLimit(1)
+            .padding(.horizontal, Theme.Spacing.s8)
+            .padding(.vertical, Theme.Spacing.s4)
+            .background(fillColor)
+            .clipShape(Capsule())
+            .overlay {
+                Capsule().stroke(tone == .neutral ? Theme.Colors.border : .clear, lineWidth: 1)
+            }
+    }
+
+    private var fillColor: Color {
+        tone == .neutral ? .clear : tone.color.opacity(0.14)
     }
 }
 

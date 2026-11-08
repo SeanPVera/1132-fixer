@@ -10,9 +10,9 @@
 
 ## macOS Zoom diagnostic and repair app
 
-- `Start Zoom Repair`: validates the signed Zoom bundle and sandbox profile, shows every planned change for confirmation, closes Zoom, creates a recovery backup, handles the active network, clears Zoom local data/cache/preferences/log state, requests admin access to flush system DNS caches, stops Zoom's updaters for the current login session, then launches Zoom in the required sandbox mode with camera/microphone access preserved.
-- `Dry Run`: checks compatibility, the Zoom signature, sandbox profile, backup capacity, media permissions, and network support without modifying the system.
-- `Report a Bug`: opens a small form for optional email + message, then sends metadata plus an attached diagnostics file to the bug report API. The form lists exactly what the attachment contains, and `Export Diagnostics` in the app header shows you the file itself. Reports are sent to the project's server over HTTPS only (the app refuses other schemes and does not follow redirects), and the diagnostics attachment is capped at 1 MiB (essential metadata and the newest activity are kept; home paths and MAC addresses are sanitized).
+- `Review repair…`: validates the signed Zoom bundle and sandbox profile, shows every planned change for confirmation, closes Zoom, creates a recovery backup, handles the active network, clears Zoom local data/cache/preferences/log state, requests admin access to flush system DNS caches, stops Zoom's updaters for the current login session, then launches Zoom in the required sandbox mode with camera/microphone access preserved.
+- `Preview steps`: checks compatibility, the Zoom signature, sandbox profile, backup capacity, media permissions, and network support without modifying the system.
+- `Report a bug…`: opens a small form for optional email + message, then sends metadata plus an attached diagnostics file to the bug report API. The form lists exactly what the attachment contains, and `Export diagnostics…` in the bottom bar shows you the file itself. Reports are sent to the project's server over HTTPS only (the app refuses other schemes and does not follow redirects), and the diagnostics attachment is capped at 1 MiB (essential metadata and the newest activity are kept; home paths and MAC addresses are sanitized).
 
 ### Network identity and launch protection
 
@@ -20,7 +20,7 @@
 - **macOS 14 or later**: no verified automatic identity mechanism is used. macOS 15+ offers **Off**, **Fixed**, and **Rotating** Private Wi-Fi Address settings in System Settings > Wi-Fi. The app cannot verify or configure these modes; reconnecting does not guarantee an immediate new address.
 - A VPN default route prevents the network change. Other repair steps can continue with a recorded warning.
 
-**Launch in Sandbox** closes your running Zoom and launches the verified app in the required sandbox without a backup, reset, network change, or administrator DNS operation. Starting normal Zoom separately bypasses this launcher's protection. The profile denies selected identity and private-data access while preserving your existing home and login keychain; it does not fully isolate Zoom or guarantee that error 1132 is resolved.
+**Launch in sandbox** closes your running Zoom and launches the verified app in the required sandbox without a backup, reset, network change, or administrator DNS operation. Starting normal Zoom separately bypasses this launcher's protection. The profile denies selected identity and private-data access while preserving your existing home and login keychain; it does not fully isolate Zoom or guarantee that error 1132 is resolved.
 
 ### Backups
 
