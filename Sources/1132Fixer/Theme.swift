@@ -134,7 +134,9 @@ enum Theme {
         static let minimumWidth: CGFloat = 720
         static let minimumHeight: CGFloat = 640
         static let contentMaxWidth: CGFloat = 960
-        static let recordFourColumnMinWidth: CGFloat = 840
+        static let recordFourColumnMinWidth: CGFloat = 560
+        static let sidebarWidth: CGFloat = 264
+        static let sidebarBreakpoint: CGFloat = 880
         static let rowMinHeight: CGFloat = 44
 
         static let minWidth: CGFloat = minimumWidth

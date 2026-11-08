@@ -88,6 +88,8 @@ struct ThemeTokenParityTests {
         #expect(CGFloat(try #require(windowSection["contentMaxWidth"] as? Double)) == Theme.Window.contentMaxWidth)
         #expect(CGFloat(try #require(windowSection["recordFourColumnMinWidth"] as? Double)) == Theme.Window.recordFourColumnMinWidth)
         #expect(CGFloat(try #require(windowSection["rowMinHeight"] as? Double)) == Theme.Window.rowMinHeight)
+        #expect(CGFloat(try #require(windowSection["sidebarWidth"] as? Double)) == Theme.Window.sidebarWidth)
+        #expect(CGFloat(try #require(windowSection["sidebarBreakpoint"] as? Double)) == Theme.Window.sidebarBreakpoint)
     }
 }
 

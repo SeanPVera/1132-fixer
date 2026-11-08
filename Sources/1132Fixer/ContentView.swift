@@ -36,7 +36,6 @@ struct ContentView: View {
                         logCount: viewModel.logEntries.count,
                         isReportingBug: viewModel.isReportingBug,
                         zoomLocation: zoomLocationPanel,
-                        onRecheck: { viewModel.runPreflight() },
                         onShowDetails: { viewModel.isShowingSystemChecksSheet = true },
                         onShowLog: { viewModel.isShowingActivityLogSheet = true },
                         onExportDiagnostics: { viewModel.exportDiagnostics(appVersion: appVersion) },
@@ -242,9 +241,7 @@ struct ContentView: View {
                         footerActionButtons(stage: stage)
                         Spacer(minLength: 0)
                     }
-                    VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
-                        footerActionButtons(stage: stage)
-                    }
+                    footerActionButtons(stage: stage, stacked: true)
                 }
             }
         }
@@ -330,8 +327,12 @@ struct ContentView: View {
         .accessibilityElement(children: .combine)
     }
 
-    private func footerActionButtons(stage: WorkspaceStage) -> some View {
-        HStack(spacing: Theme.Spacing.s8) {
+    private func footerActionButtons(stage: WorkspaceStage, stacked: Bool = false) -> some View {
+        let isRepairRetry = stage == .results && RunKind(record: viewModel.currentRunRecord) == .repair
+        let layout = stacked
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: Theme.Spacing.s8))
+            : AnyLayout(HStackLayout(spacing: Theme.Spacing.s8))
+        return layout {
             if viewModel.isRunning {
                 Button(action: { viewModel.cancelWorkflow() }) {
                     Label(
@@ -357,10 +358,8 @@ struct ContentView: View {
 
                 Button(action: { viewModel.prepareAndPresentRepairPlan() }) {
                     Label(
-                        stage == .results && RunKind(record: viewModel.currentRunRecord) == .repair
-                            ? "Review repair again…"
-                            : "Review repair…",
-                        systemImage: stage == .results ? "arrow.clockwise" : "play.fill"
+                        isRepairRetry ? "Review repair again…" : "Review repair…",
+                        systemImage: isRepairRetry ? "arrow.clockwise" : "play.fill"
                     )
                 }
                 .buttonStyle(ThemedButtonStyle(variant: .primary))

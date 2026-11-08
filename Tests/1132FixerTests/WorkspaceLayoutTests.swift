@@ -37,6 +37,22 @@ struct WorkspaceLayoutTests {
         #expect(summary.label == "Step 3 of 4 · Clear state")
     }
 
+    @Test func stepNumberUsesTheRunningStepPosition() {
+        let summary = RunProgressSummary(states: [
+            (name: "Validate", state: .succeeded),
+            (name: "Close Zoom", state: .unstarted),
+            (name: "Backup", state: .running),
+        ])
+        #expect(summary.currentStepNumber == 3)
+        #expect(summary.label == "Step 3 of 3 · Backup")
+    }
+
+    @Test func sidebarLeavesRoomForTheFourColumnRecordAtDefaultWidth() {
+        let contentWidth = Theme.Window.defaultWidth - Theme.Window.sidebarWidth - 1 - Theme.Spacing.outerPadding * 2
+        #expect(Theme.Window.defaultWidth >= Theme.Window.sidebarBreakpoint)
+        #expect(contentWidth >= Theme.Window.recordFourColumnMinWidth)
+    }
+
     @Test func emptyProgressIsSafe() {
         let summary = RunProgressSummary(states: [])
         #expect(summary.fraction == 0)

@@ -33,6 +33,8 @@ struct RunProgressSummary: Equatable {
     let finishedCount: Int
     let totalCount: Int
     let currentStepName: String?
+    /// 1-based position of the running step, matching `WorkspaceSummary.currentStepText`.
+    let currentStepNumber: Int?
 
     init(items: [RepairRecordLedgerView.LedgerStepItem]) {
         self.init(states: items.map { ($0.name, $0.state) })
@@ -46,7 +48,13 @@ struct RunProgressSummary: Equatable {
             case .unstarted, .running: return false
             }
         }.count
-        currentStepName = states.first(where: { $0.state == .running })?.name
+        if let runningIndex = states.firstIndex(where: { $0.state == .running }) {
+            currentStepName = states[runningIndex].name
+            currentStepNumber = runningIndex + 1
+        } else {
+            currentStepName = nil
+            currentStepNumber = nil
+        }
     }
 
     var fraction: Double {
@@ -56,17 +64,17 @@ struct RunProgressSummary: Equatable {
 
     var label: String {
         guard totalCount > 0 else { return "Preparing steps…" }
-        if let currentStepName {
-            return "Step \(min(finishedCount + 1, totalCount)) of \(totalCount) · \(currentStepName)"
+        if let currentStepName, let currentStepNumber {
+            return "Step \(currentStepNumber) of \(totalCount) · \(currentStepName)"
         }
         return "\(finishedCount) of \(totalCount) steps finished"
     }
 }
 
 enum WorkspaceLayoutMetrics {
-    static let sidebarWidth: CGFloat = 264
+    static let sidebarWidth: CGFloat = Theme.Window.sidebarWidth
     /// Below this window width the sidebar folds back into the single-column layout.
-    static let sidebarBreakpoint: CGFloat = 880
+    static let sidebarBreakpoint: CGFloat = Theme.Window.sidebarBreakpoint
     static let liveLogLineCount = 6
 }
 
@@ -79,7 +87,6 @@ struct PreflightSidebar<ZoomLocation: View>: View {
     let logCount: Int
     let isReportingBug: Bool
     let zoomLocation: ZoomLocation
-    let onRecheck: () -> Void
     let onShowDetails: () -> Void
     let onShowLog: () -> Void
     let onExportDiagnostics: () -> Void
@@ -89,20 +96,12 @@ struct PreflightSidebar<ZoomLocation: View>: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Spacing.majorSection) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("System checks")
-                            .font(Theme.Typography.sectionHeading)
-                            .foregroundStyle(Theme.Colors.textPrimary)
-                            .accessibilityAddTraits(.isHeader)
-                        Spacer(minLength: Theme.Spacing.s8)
-                        Button(action: onRecheck) {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        .buttonStyle(QuietLinkButtonStyle(color: Theme.Colors.textSecondary))
-                        .disabled(isRunning)
-                        .help("Re-run checks")
-                        .accessibilityLabel("Re-run checks")
-                    }
+                    // Re-running checks stays in the status summary's Recheck button
+                    // (disabled while loading) to avoid a duplicate control.
+                    Text("System checks")
+                        .font(Theme.Typography.sectionHeading)
+                        .foregroundStyle(Theme.Colors.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
 
                     checkList
 
@@ -197,7 +196,9 @@ struct PreflightSidebar<ZoomLocation: View>: View {
 
 // MARK: - Running composition
 
-/// Determinate progress derived from step states, shown only while a run is active.
+/// Determinate progress bar derived from step states, shown only while a run is active.
+/// The step name and count are already narrated by the status summary above, so the
+/// strip shows text only while stopping.
 struct RunProgressStrip: View {
     let summary: RunProgressSummary
     let isCanceling: Bool
@@ -209,10 +210,11 @@ struct RunProgressStrip: View {
                 .tint(isCanceling ? Theme.Colors.warning : Theme.Colors.primary)
                 .accessibilityLabel("Run progress")
                 .accessibilityValue(summary.label)
-            Text(isCanceling ? "Stopping after the current step · \(summary.label)" : summary.label)
-                .font(Theme.Typography.metadata)
-                .foregroundStyle(Theme.Colors.textSecondary)
-                .monospacedDigit()
+            if isCanceling {
+                Text("Stopping after the current step")
+                    .font(Theme.Typography.metadata)
+                    .foregroundStyle(Theme.Colors.warning)
+            }
         }
     }
 }
@@ -253,11 +255,11 @@ struct LiveLogTail: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(Theme.Spacing.s12)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
                     .fill(Theme.Colors.surfaceRecessed)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
                     .stroke(Theme.Colors.border, lineWidth: 1)
             )
         }
