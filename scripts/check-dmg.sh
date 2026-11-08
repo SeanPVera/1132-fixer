@@ -114,11 +114,12 @@ RESOURCE_BUNDLE="$CONTENTS/Resources/1132 Fixer_1132Fixer.bundle"
   echo "Packaged app is missing its Finder icon or SwiftPM resource bundle" >&2
   exit 1
 }
+# Expand with ${arr[@]+...}: macOS bash 3.2 treats an empty array as unbound under set -u.
 resource_args=()
 if [[ "$SIGNING_MODE" == developer-id ]]; then
   resource_args+=(--require-bug-report)
 fi
-python3 "$ROOT_DIR/scripts/validate-resources.py" "$RESOURCE_BUNDLE" "${resource_args[@]}"
+python3 "$ROOT_DIR/scripts/validate-resources.py" "$RESOURCE_BUNDLE" ${resource_args[@]+"${resource_args[@]}"}
 [[ ! -e "$CONTENTS/Resources/AppIcon.png" ]] || {
   echo "Packaged app contains a redundant root AppIcon.png" >&2
   exit 1
