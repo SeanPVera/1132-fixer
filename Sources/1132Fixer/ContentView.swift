@@ -17,32 +17,19 @@ struct ContentView: View {
                 Theme.Window.contentMaxWidth
             )
             let isCompactLedger = availableContentWidth < Theme.Window.wideLedgerBreakpoint
+            let ledgerItems = RepairRecordLedgerView.makeItems(
+                steps: viewModel.workflowProgress?.steps ?? [],
+                stepResults: viewModel.lastRunResults ?? [],
+                runRecord: viewModel.currentRunRecord
+            )
 
-            ZStack {
-                Theme.Colors.background.ignoresSafeArea()
+            VStack(spacing: 0) {
+                masthead(ledgerItems: ledgerItems)
+
+                Divider().overlay(Theme.Colors.border)
 
                 ScrollView {
-                    VStack(alignment: .leading, spacing: Theme.Spacing.medium) {
-                        HeaderCard(
-                            appVersion: appVersion,
-                            workflowState: viewModel.workflowState,
-                            canStartZoom: viewModel.canStartZoom,
-                            logCount: viewModel.logEntries.count,
-                            isReportBugDisabled: viewModel.isReportingBug,
-                            onOpenActivityLog: { viewModel.isShowingActivityLogSheet = true },
-                            onExportDiagnostics: { viewModel.exportDiagnostics(appVersion: appVersion) },
-                            onReportBug: {
-                                viewModel.openBugReportSheet(appVersion: appVersion)
-                            }
-                        )
-
-                        ReadinessSummaryLedger(
-                            preflight: viewModel.preflight,
-                            isRunning: viewModel.isRunning,
-                            onInspectDetails: { viewModel.isShowingSystemChecksSheet = true },
-                            onRecheck: { viewModel.runPreflight() }
-                        )
-
+                    VStack(alignment: .leading, spacing: Theme.Spacing.majorSection) {
                         ZoomLocationPanel(
                             appPath: viewModel.zoomAppPath,
                             isCustom: viewModel.customZoomAppPath != nil,
@@ -53,38 +40,38 @@ struct ContentView: View {
                             onDismissNotice: { viewModel.installationNotice = nil }
                         )
 
-                        RepairRecordLedgerView(
-                            steps: viewModel.workflowProgress?.steps ?? [],
-                            stepResults: viewModel.lastRunResults ?? [],
-                            workflowState: viewModel.workflowState,
-                            runRecord: viewModel.currentRunRecord,
-                            expandedStepIDs: viewModel.expandedStepIDs,
-                            onToggleExpand: { stepID in
-                                if viewModel.expandedStepIDs.contains(stepID) {
-                                    viewModel.expandedStepIDs.remove(stepID)
-                                } else {
-                                    viewModel.expandedStepIDs.insert(stepID)
-                                }
-                            },
-                            isCompactLayout: isCompactLedger
-                        )
+                        VStack(alignment: .leading, spacing: Theme.Spacing.s12) {
+                            RepairRecordLedgerView(
+                                items: ledgerItems,
+                                workflowState: viewModel.workflowState,
+                                runRecord: viewModel.currentRunRecord,
+                                expandedStepIDs: viewModel.expandedStepIDs,
+                                onToggleExpand: { stepID in
+                                    if viewModel.expandedStepIDs.contains(stepID) {
+                                        viewModel.expandedStepIDs.remove(stepID)
+                                    } else {
+                                        viewModel.expandedStepIDs.insert(stepID)
+                                    }
+                                },
+                                isCompactLayout: isCompactLedger
+                            )
 
-                        BackupProvenanceBar(
-                            currentRunBackupPath: viewModel.currentRunBackupPath,
-                            previousBackupPath: viewModel.previousBackupPath,
-                            onRevealBackup: { viewModel.revealLatestBackup() }
-                        )
+                            BackupProvenanceBar(
+                                currentRunBackupPath: viewModel.currentRunBackupPath,
+                                previousBackupPath: viewModel.previousBackupPath,
+                                onRevealBackup: { viewModel.revealLatestBackup() }
+                            )
+                        }
                     }
                     .frame(maxWidth: Theme.Window.contentMaxWidth, alignment: .leading)
                     .padding(.horizontal, Theme.Spacing.outerPadding)
-                    .padding(.top, Theme.Spacing.outerPadding)
-                    .padding(.bottom, Theme.Spacing.large)
+                    .padding(.vertical, Theme.Spacing.majorSection)
                     .frame(maxWidth: .infinity, alignment: .top)
                 }
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    bottomActionBar
-                }
+
+                bottomBar
             }
+            .background(Theme.Colors.background)
         }
         .frame(
             minWidth: Theme.Window.minWidth,
@@ -182,17 +169,43 @@ struct ContentView: View {
         }
     }
 
-    private var bottomActionBar: some View {
+    // MARK: - Pinned regions
+
+    /// Identity and the readiness/outcome summary stay pinned while the record scrolls.
+    private func masthead(ledgerItems: [RepairRecordLedgerView.LedgerStepItem]) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.groupedContent) {
+            HeaderCard(
+                appVersion: appVersion,
+                latestRelease: viewModel.latestRelease
+            )
+
+            WorkspaceSummary(
+                preflight: viewModel.preflight,
+                workflowState: viewModel.workflowState,
+                runRecord: viewModel.currentRunRecord,
+                ledgerSteps: ledgerItems,
+                isRunning: viewModel.isRunning,
+                onRecheck: { viewModel.runPreflight() }
+            )
+        }
+        .frame(maxWidth: Theme.Window.contentMaxWidth, alignment: .leading)
+        .padding(.horizontal, Theme.Spacing.outerPadding)
+        .padding(.top, Theme.Spacing.s16)
+        .padding(.bottom, Theme.Spacing.majorSection)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var bottomBar: some View {
         VStack(spacing: 0) {
             Divider().overlay(Theme.Colors.border)
 
             ViewThatFits(in: .horizontal) {
-                HStack(alignment: .center, spacing: Theme.Spacing.large) {
+                HStack(alignment: .center, spacing: Theme.Spacing.s16) {
                     footerStatusText
-                    Spacer(minLength: Theme.Spacing.medium)
+                    Spacer(minLength: Theme.Spacing.s12)
                     footerActionButtons
                 }
-                VStack(alignment: .leading, spacing: Theme.Spacing.small) {
+                VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
                     footerStatusText
                     HStack {
                         Spacer()
@@ -202,17 +215,60 @@ struct ContentView: View {
             }
             .frame(maxWidth: Theme.Window.contentMaxWidth, alignment: .leading)
             .padding(.horizontal, Theme.Spacing.outerPadding)
-            .padding(.vertical, Theme.Spacing.medium)
+            .padding(.vertical, Theme.Spacing.s12)
             .frame(maxWidth: .infinity)
-            .background(Theme.Colors.surface)
+
+            Divider().overlay(Theme.Colors.border)
+
+            supportAccessBar
+                .frame(maxWidth: Theme.Window.contentMaxWidth, alignment: .leading)
+                .padding(.horizontal, Theme.Spacing.outerPadding - Theme.Spacing.s8)
+                .padding(.vertical, Theme.Spacing.s4)
+                .frame(maxWidth: .infinity)
         }
+        .background(Theme.Colors.surface)
+    }
+
+    /// Support access: system check details, activity log, diagnostics export, and bug reports.
+    private var supportAccessBar: some View {
+        HStack(spacing: Theme.Spacing.s4) {
+            Button {
+                viewModel.isShowingSystemChecksSheet = true
+            } label: {
+                Label("System check details", systemImage: "checklist")
+            }
+
+            Button {
+                viewModel.isShowingActivityLogSheet = true
+            } label: {
+                let count = viewModel.logEntries.count
+                Label(count > 0 ? "Activity log (\(count))" : "Activity log", systemImage: "text.alignleft")
+                    .monospacedDigit()
+            }
+
+            Button {
+                viewModel.exportDiagnostics(appVersion: appVersion)
+            } label: {
+                Label("Export diagnostics…", systemImage: "square.and.arrow.up")
+            }
+
+            Button {
+                viewModel.openBugReportSheet(appVersion: appVersion)
+            } label: {
+                Label("Report a bug…", systemImage: "ladybug")
+            }
+            .disabled(viewModel.isReportingBug)
+
+            Spacer(minLength: 0)
+        }
+        .buttonStyle(QuietLinkButtonStyle(color: Theme.Colors.textSecondary))
     }
 
     private var footerStatusText: some View {
-        HStack(spacing: Theme.Spacing.small) {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s8) {
             Image(systemName: footerGuidance.icon)
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(footerGuidance.color)
+                .foregroundStyle(footerGuidance.tone.color)
                 .accessibilityHidden(true)
 
             Text(footerGuidance.message)
@@ -220,14 +276,17 @@ struct ContentView: View {
                 .foregroundStyle(Theme.Colors.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+        .accessibilityElement(children: .combine)
     }
 
     private var footerActionButtons: some View {
-        HStack(spacing: Theme.Spacing.small) {
+        HStack(spacing: Theme.Spacing.s8) {
             if viewModel.isRunning {
                 Button(action: { viewModel.cancelWorkflow() }) {
                     Label(
-                        viewModel.isCanceling ? "Stopping…" : (viewModel.currentRunRecord?.title == "Sandbox-only Zoom launch" ? "Stop Launch" : "Stop Repair"),
+                        viewModel.isCanceling
+                            ? "Stopping…"
+                            : (RunKind(record: viewModel.currentRunRecord) == .sandboxLaunch ? "Stop launch" : "Stop repair"),
                         systemImage: "stop.fill"
                     )
                 }
@@ -235,17 +294,18 @@ struct ContentView: View {
                 .disabled(viewModel.isCanceling)
             } else {
                 Button(action: { viewModel.dryRun() }) {
-                    Label("Preview Steps", systemImage: "eye")
+                    Label("Preview steps", systemImage: "eye")
                 }
                 .buttonStyle(ThemedButtonStyle(variant: .secondary))
+                .help("Read-only: inspects all 9 repair steps without modifying files, network state, or processes.")
 
-                Button("Launch in Sandbox", action: { viewModel.launchZoomOnly() })
+                Button("Launch in sandbox", action: { viewModel.launchZoomOnly() })
                     .buttonStyle(ThemedButtonStyle(variant: .secondary))
                     .disabled(!viewModel.canStartZoom)
                     .help("Closes existing Zoom and launches in the required sandbox. No reset or administrator operations. Starting normal Zoom separately bypasses this protection.")
 
                 Button(action: { viewModel.prepareAndPresentRepairPlan() }) {
-                    Label("Review & Run Repair…", systemImage: "play.fill")
+                    Label("Review repair…", systemImage: "play.fill")
                 }
                 .buttonStyle(ThemedButtonStyle(variant: .primary))
                 .disabled(!viewModel.canStartZoom)
@@ -254,89 +314,80 @@ struct ContentView: View {
         }
     }
 
-    private var footerGuidance: (message: String, icon: String, color: Color) {
+    /// Action-area guidance: what the buttons will do, why they are unavailable, and
+    /// safety notices. The run's outcome itself is narrated by the pinned summary.
+    private var footerGuidance: (message: String, icon: String, tone: StatusTone) {
         if viewModel.hasUnsettledPrivilegedOperation {
-            return (PrivilegedOperationGuard.recoveryMessage, "exclamationmark.octagon.fill", Theme.Colors.error)
+            return (PrivilegedOperationGuard.recoveryMessage, "exclamationmark.octagon.fill", .error)
         }
         if viewModel.isCanceling {
             if viewModel.isExecutingPrivilegedStep {
                 return (
                     "Waiting for the current administrator command to finish before stopping…",
                     "lock.shield.fill",
-                    Theme.Colors.warning
+                    .warning
                 )
             }
             return (
                 "Finishing the active step safely before stopping…",
                 "hand.raised.fill",
-                Theme.Colors.warning
+                .warning
             )
         }
 
-        switch viewModel.workflowState {
-        case .preflight,
-            .closingZoom,
-            .spoofingMAC,
-            .checkingNetwork,
-            .backingUpState,
-            .clearingState,
-            .flushingDNS,
-            .stoppingUpdaters,
-            .checkingMediaAccess,
-            .launchingZoom:
-            let isPreview = viewModel.currentRunRecord?.title.localizedCaseInsensitiveContains("dry run") == true
-                || viewModel.currentRunRecord?.title.localizedCaseInsensitiveContains("preview") == true
-            return (
-                isPreview
-                    ? "Inspecting all 9 repair steps without modifying files, network state, or processes."
-                    : (viewModel.currentRunRecord?.title == "Sandbox-only Zoom launch"
-                        ? "Launching verified Zoom in the required sandbox without reset or administrator operations."
-                        : "Executing repair sequence. Network and DNS work share authorization when supported; DNS may run before reset."),
-                "bolt.horizontal.circle.fill",
-                Theme.Colors.primary
-            )
-        case .canceling:
-            return (
-                "Stopping repair safely…",
-                "hand.raised.fill",
-                Theme.Colors.warning
-            )
-        case .canceled:
-            return (
-                "Run stopped before completion. Unrun steps remain marked Not started.",
-                "stop.circle.fill",
-                Theme.Colors.warning
-            )
-        case .failed(let reason):
-            return (
-                "Run failed: \(reason)",
-                "xmark.circle.fill",
-                Theme.Colors.error
-            )
-        case .completed:
-            return (
-                viewModel.currentRunRecord?.title == "Sandbox-only Zoom launch"
-                    ? "Sandbox launch finished. Starting normal Zoom separately bypasses this protection."
-                    : "Sequence finished. Inspect the results and verify Zoom sign-in and media access.",
-                "checkmark.circle.fill",
-                Theme.Colors.success
-            )
-        case .completedWithWarnings:
-            return ("Completed with warnings. Review the recorded results before continuing.", "exclamationmark.triangle.fill", Theme.Colors.warning)
-        case .idle:
-            if !viewModel.canStartZoom {
+        let runKind = RunKind(record: viewModel.currentRunRecord)
+
+        if viewModel.workflowState.isActiveRun {
+            switch runKind ?? .repair {
+            case .preview:
                 return (
-                    "Resolve the blocking preflight check above or run Preview Steps to inspect.",
-                    "exclamationmark.octagon.fill",
-                    Theme.Colors.error
+                    "Read-only: no files, network state, or processes are modified.",
+                    "eye",
+                    .active
+                )
+            case .sandboxLaunch:
+                return (
+                    "Launching verified Zoom in the required sandbox without reset or administrator operations.",
+                    "lock.shield",
+                    .active
+                )
+            case .repair:
+                return (
+                    "Network and DNS work share one administrator prompt when supported; DNS may run before reset.",
+                    "lock.shield",
+                    .active
                 )
             }
+        }
+
+        switch viewModel.workflowState {
+        case .canceling:
+            return ("Stopping repair safely…", "hand.raised.fill", .warning)
+        case .completed where runKind == .sandboxLaunch:
             return (
-                "Preview Steps runs a read-only check; Review & Run Repair shows the exact plan before changing anything.",
-                "shield.lefthalf.filled",
-                Theme.Colors.textSecondary
+                "Sandbox launch finished. Starting normal Zoom separately bypasses this protection.",
+                "checkmark.shield",
+                .success
+            )
+        default:
+            break
+        }
+
+        if case .loading = viewModel.preflight.status {
+            return ("Waiting for system checks to finish.", "hourglass", .neutral)
+        }
+        if !viewModel.canStartZoom {
+            return (
+                "Repair unavailable until the blocking check above is resolved. Preview steps still runs read-only.",
+                "exclamationmark.octagon.fill",
+                .error
             )
         }
+        return (
+            "Preview steps is read-only. Review repair… shows the exact plan before anything changes.",
+            "shield.lefthalf.filled",
+            .neutral
+        )
     }
 
     private func configureWindowAndCaptureIfRequested() {

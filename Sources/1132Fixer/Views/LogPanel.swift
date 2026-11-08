@@ -75,11 +75,13 @@ struct ActivityLogSheet: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.large) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.xxSmall) {
-                    Text("Activity Log")
-                        .font(Theme.Typography.title)
+                    Text("Activity log")
+                        .font(Theme.Typography.sectionHeading)
                         .foregroundStyle(Theme.Colors.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
                     Text("\(viewModel.logEntries.count) entries retained in memory (capped at \(AppViewModel.maxInMemoryLogEntries) lines)")
-                        .font(Theme.Typography.caption)
+                        .font(Theme.Typography.metadata)
+                        .monospacedDigit()
                         .foregroundStyle(Theme.Colors.textSecondary)
                 }
 
@@ -134,7 +136,7 @@ struct ActivityLogSheet: View {
 
             HStack(spacing: Theme.Spacing.small) {
                 Button(action: viewModel.copyLogs) {
-                    Label("Copy All", systemImage: "doc.on.doc")
+                    Label("Copy all", systemImage: "doc.on.doc")
                 }
                 .buttonStyle(ThemedButtonStyle(variant: .secondary))
                 .disabled(viewModel.logEntries.isEmpty)
@@ -142,7 +144,7 @@ struct ActivityLogSheet: View {
                 Button {
                     viewModel.exportDiagnostics(appVersion: appVersion)
                 } label: {
-                    Label("Export Diagnostics…", systemImage: "square.and.arrow.up")
+                    Label("Export diagnostics…", systemImage: "square.and.arrow.up")
                 }
                 .buttonStyle(ThemedButtonStyle(variant: .secondary))
 
@@ -161,7 +163,8 @@ struct ActivityLogSheet: View {
         }
         .padding(Theme.Spacing.xLarge)
         .frame(minWidth: 680, idealWidth: 740, minHeight: 460, idealHeight: 520, alignment: .topLeading)
-        .background(Theme.Colors.background)
+        .background(Theme.Colors.surfaceModal)
         .preferredColorScheme(.dark)
+        .onExitCommand(perform: onClose)
     }
 }
