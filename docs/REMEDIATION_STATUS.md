@@ -136,7 +136,7 @@ shared stage without supplying each original audit's detailed wording.
 | F-06 | Existing sandbox/private-keychain canaries explicitly required and invoked in CI. Both PASS on hosted `macos-15` (CI run 42422840660). Also PASS on `macos-15-intel`, `macos-26` and `macos-26-intel` (CI run 42430252625). | macOS 13/14 on owner hardware. |
 | F-07 | Retention charges only retained snapshots. Extracted production shell fixtures PASS, including oversized candidate then older small candidate. Native fixture authored. | Native full generated backup command test. |
 | F-08 | Current-UID literal process selectors in shutdown, launch, updaters, preview, diagnostics. Scoped shutdown/refusal fixtures PASS. Darwin canary `stopZoomStopsOnlyTheLiteralZoomNameOnDarwin` PASSES on all four hosted runners: the real script and BSD pkill stop a detached process named exactly `zoom.us` and spare a `zoomXus` lookalike. | Another user's Zoom cannot satisfy success; launch provenance and replacement-PID behavior with real Zoom. |
-| F-09 | Release configuration validation, exact-commit tests, tested-SHA publication guard. Portable resource fixtures PASS. Hosted ad-hoc packaging found and fixed a release-path defect: under macOS `/bin/bash` 3.2.57, `build-universal-dmg.sh` died on an empty `resource_args` array yet exited 0 through its EXIT trap (Build DMG run 9). Fixed, and a credential-free `Package ad-hoc DMG (macOS)` PR job now builds, mounts and smoke-checks the universal DMG. | Developer ID signing, notarization/stapling, downloaded-DMG check and an actual release run. |
+| F-09 | Release configuration validation, exact-commit tests, tested-SHA publication guard. Portable resource fixtures PASS. Hosted ad-hoc packaging found and fixed a release-path defect: under macOS `/bin/bash` 3.2.57, `build-universal-dmg.sh` died on an empty `resource_args` array yet exited 0 through its EXIT trap (Build DMG run 9). Fixed, and a credential-free `Package ad-hoc DMG (macOS)` PR job now builds, mounts and smoke-checks the universal DMG. | Release secrets are not configured (trusted Build DMG run 10 fell back to ad-hoc); then Developer ID signing, notarization/stapling, downloaded-DMG check and an actual release run. |
 | F-10 | Pinned submodule initialization and explicit missing-token failures. Token JSON and brand checks PASS. | Native parity test execution and hosted CI. |
 | F-11 | Owner confirmed canonical SeanPVera/1132-fixer; update URLs, release restriction, README, and CODEOWNERS aligned; existing reviewers retained. | Repository/tag/environment settings unavailable. |
 | F-12 | Home redaction composes independently with report-local MAC aliases. | Swift privacy regressions and export inspection. |
@@ -307,11 +307,22 @@ so the repair stops before reset) and passes macOS CI, so it was left unchanged.
 | Build DMG run 42429131607 (ad-hoc, untrusted ref, `macos-15`) | FAIL, reproducing a real defect: `build-universal-dmg.sh: line 205: resource_args[@]: unbound variable`; the step still reported success and no DMG existed. |
 | CI run 42430115231 on `92a8835`: `Package ad-hoc DMG (macOS)` | PASS under `GNU bash, version 3.2.57`: arm64 and x86_64 release builds, universal binary, resource validation (source, both arches, staged app), ad-hoc signature, DMG `hdiutil verify` VALID, read-only mount, mounted resource validation and `DMG smoke check passed`. |
 | CI run 42430252625 on `40d336f` (merged as PR 27) | All seven checks PASS: four macOS runners at 213 tests each, the new shutdown canary and live hardware test, the ad-hoc DMG job, Linux fixtures and brand. |
+| Main CI run 42431979699 on `14f9ab1` (PR 28 UI rework, VERSION 1.8.6) | All six jobs PASS on the four macOS runners, the ad-hoc DMG job and Linux fixtures. |
+| Build DMG run 42431963794 on `a23bc9b` (push to main, trusted) | PASS end to end, but in **ad-hoc** mode: "Selected commit is reachable from origin/main; release credentials may be used" followed by "No APPLE_CERTIFICATE secret configured". Universal DMG smoke-checked and uploaded as an ad-hoc artifact. |
 
-Observed owner-setting signal: Build DMG run 9 started its `release-signing` job
-immediately with no approval wait, so that environment either has no required
-reviewers or the triggering admin bypasses them. Credentialed signing mode was not
-exercised because the run used an untrusted ref.
+Observed owner-setting signals:
+
+- Build DMG runs 9 and 10 started their `release-signing` jobs with no approval
+  wait, so that environment either has no required reviewers or the triggering
+  admin bypasses them.
+- The trusted run 10 received no `APPLE_CERTIFICATE`, so Developer ID secrets are
+  not configured for the repository or the `release-signing` environment. A `v*`
+  tag would stop at the release workflow's "Require distribution credentials"
+  step. Releasing needs `APPLE_CERTIFICATE` (base64 Developer ID Application
+  .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_PASSWORD` (app-specific
+  password), `APPLE_TEAM_ID`, and, because Developer ID builds require
+  bug-report configuration, `FIXER_BUG_REPORT_ENDPOINT` and
+  `FIXER_BUG_REPORT_TOKEN`.
 
 ## Changed-file reference index
 

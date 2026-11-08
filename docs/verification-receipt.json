@@ -340,7 +340,38 @@
       "head_sha": "40d336f10a009bb6a35d94a1d35df7e888e5c496",
       "conclusion": "success",
       "observed": "7/7 checks PASS; 213 tests per macOS runner; stopZoom literal-name canary and live hardware classification PASS on all four runners"
+    },
+    {
+      "workflow": "CI",
+      "run_id": 42431979699,
+      "head_sha": "14f9ab1d2f402db01a384e1e303e932c4660f114",
+      "branch": "main",
+      "conclusion": "success",
+      "observed": "PR 28 UI rework and VERSION 1.8.6: 6/6 jobs PASS (four macOS runners, ad-hoc DMG, Linux fixtures)"
+    },
+    {
+      "workflow": "Build DMG",
+      "run_id": 42431963794,
+      "head_sha": "a23bc9bd79606098a2dc6a90125b85a03c63de3c",
+      "branch": "main",
+      "trusted": true,
+      "conclusion": "success",
+      "mode": "adhoc",
+      "observed": "No APPLE_CERTIFICATE secret configured on a trusted main build; ad-hoc universal DMG smoke-checked and uploaded (artifact 13598056660)"
     }
   ],
-  "version_note": "Remediation set VERSION to 1.8.5; PR 28 (separate UI rework) moved it to 1.8.6."
+  "version_note": "Remediation set VERSION to 1.8.5; PR 28 (separate UI rework) moved it to 1.8.6.",
+  "owner_settings_observed": {
+    "release-signing approval wait": "none observed (Build DMG runs 9 and 10)",
+    "Developer ID secrets": "not configured (trusted run 10 fell back to ad-hoc)",
+    "required_release_secrets": [
+      "APPLE_CERTIFICATE",
+      "APPLE_CERTIFICATE_PASSWORD",
+      "APPLE_ID",
+      "APPLE_PASSWORD",
+      "APPLE_TEAM_ID",
+      "FIXER_BUG_REPORT_ENDPOINT",
+      "FIXER_BUG_REPORT_TOKEN"
+    ]
+  }
 }

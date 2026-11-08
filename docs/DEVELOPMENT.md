@@ -71,6 +71,10 @@ Before enabling publication, the owner must verify:
 - `release-signing` permits only approved release refs, requires independent
   reviewers, and scopes signing/notarization and write-only report credentials.
 - Fork and pull-request jobs cannot obtain that environment's credentials.
+- `release-signing` holds `APPLE_CERTIFICATE` (base64 Developer ID Application
+  .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_PASSWORD` (app-specific
+  password), `APPLE_TEAM_ID`, `FIXER_BUG_REPORT_ENDPOINT` and
+  `FIXER_BUG_REPORT_TOKEN`. Developer ID builds fail without the bug-report pair.
 
 The release workflow tests its exact checked-out commit before signing and
 checks the tested SHA and a clean tracked tree before publication. Workflow
