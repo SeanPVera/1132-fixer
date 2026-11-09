@@ -210,13 +210,13 @@ struct RepairStepSpec: Identifiable, Equatable {
                 index: 4,
                 id: "network",
                 name: macSpoofingDisabled ? "Network Check" : "MAC Spoof & Network",
-                scope: "Network & Admin",
-                requiresAdmin: true,
+                scope: macSpoofingDisabled ? "User Session" : "Network & Admin",
+                requiresAdmin: !macSpoofingDisabled,
                 plannedSummary: macSpoofingDisabled
-                    ? "Check active default route and rotate Private Wi-Fi Address when supported on Apple Silicon."
+                    ? "Check active default route and verify network service (MAC spoofing is disabled on macOS 14+)."
                     : "Randomize active network interface MAC address and cycle the network service.",
                 commandSummary: macSpoofingDisabled
-                    ? "route -n get default & networksetup private address rotation"
+                    ? "route -n get default & networksetup -listallhardwareports"
                     : "ifconfig lladdr & networksetup service cycle (Administrator)"
             ),
             RepairStepSpec(
@@ -345,7 +345,9 @@ struct RepairPlan: Identifiable, Equatable {
                 id: "network-dns",
                 label: "Network & DNS Cache",
                 path: "Active default-route interface & mDNSResponder",
-                action: "Updated in Steps 4 and 6 via a single macOS Administrator authorization prompt",
+                action: macSpoofingDisabled
+                    ? "Active route checked in Step 4; DNS cache flushed in Step 6 via a macOS Administrator prompt"
+                    : "Updated in Steps 4 and 6 via a single macOS Administrator authorization prompt",
                 requiresAdmin: true
             ),
         ]

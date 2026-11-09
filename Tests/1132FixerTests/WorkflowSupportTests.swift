@@ -163,7 +163,7 @@ struct WorkflowResultFormatterTests {
         #expect(steps[0].requiresAdmin == false)
         #expect(steps[1].requiresAdmin == false)
         #expect(steps[2].requiresAdmin == false)
-        #expect(steps[3].requiresAdmin == true)
+        #expect(steps[3].requiresAdmin == !ShellCommands.isMacSpoofingDisabledForCurrentOS())
         #expect(steps[4].requiresAdmin == false)
         #expect(steps[5].requiresAdmin == true)
     }
@@ -193,7 +193,7 @@ struct WorkflowExecutionSemanticsTests {
                 .init(id: "os", label: "macOS", value: "14.5 (Supported)", isWarning: false),
                 .init(id: "zoom", label: "Zoom App", value: "Verified at /Applications/zoom.us.app", isWarning: false),
                 .init(id: "network", label: "Network", value: "Wi-Fi (en0)", isWarning: false),
-                .init(id: "mac", label: "Network Identity", value: "Private Wi-Fi address rotation", isWarning: false),
+                .init(id: "macspoof", label: "MAC Spoofing", value: "Disabled on macOS 14+", isWarning: false),
                 .init(id: "disk", label: "Backup Space", value: "42 GB available", isWarning: false),
                 .init(id: "sandbox", label: "Sandbox", value: "sandbox-exec ready", isWarning: false),
             ]
@@ -307,11 +307,8 @@ struct WorkflowExecutionSemanticsTests {
             if stepName == "Inspect network services" {
                 return "(1) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)"
             }
-            if stepName == "Read current MAC address" {
-                return "aa:bb:cc:dd:ee:01"
-            }
-            if stepName == "Check Private Wi-Fi Address mode" {
-                return "static"
+            if stepName == "Reset Zoom data" {
+                return "__1132_RESET_STATUS__=0"
             }
             if executable == "/usr/bin/osascript" {
                 await gateSignal.enterAndWait()
@@ -362,7 +359,7 @@ struct WorkflowExecutionSemanticsTests {
         #expect(viewModel.workflowState == AppViewModel.WorkflowState.canceled)
         #expect(viewModel.currentRunRecord?.outcome == RunRecord.Outcome.cancelled)
 
-        // Step 3 (Backup) succeeded before Step 4 (Network Identity) was interrupted.
+        // Step 3 (Backup) succeeded before the privileged step was interrupted.
         #expect(viewModel.currentRunBackupPath == "/Users/tester/Library/Application Support/1132Fixer/Backups/snapshot-current")
         #expect(viewModel.currentRunRecord?.createdBackupPath == "/Users/tester/Library/Application Support/1132Fixer/Backups/snapshot-current")
 
@@ -370,9 +367,18 @@ struct WorkflowExecutionSemanticsTests {
         #expect(steps.first(where: { $0.id == "validate" })?.state == AppViewModel.WorkflowProgress.StepState.succeeded)
         #expect(steps.first(where: { $0.id == "closeZoom" })?.state == AppViewModel.WorkflowProgress.StepState.succeeded)
         #expect(steps.first(where: { $0.id == "backup" })?.state == AppViewModel.WorkflowProgress.StepState.succeeded)
-        #expect(steps.first(where: { $0.id == "network" })?.state == AppViewModel.WorkflowProgress.StepState.interrupted)
-        for unrunID in ["resetData", "dns", "updaters", "mediaAccess", "launch"] {
-            #expect(steps.first(where: { $0.id == unrunID })?.state == AppViewModel.WorkflowProgress.StepState.unstarted)
+        if ShellCommands.isMacSpoofingDisabledForCurrentOS() {
+            #expect(steps.first(where: { $0.id == "network" })?.state == AppViewModel.WorkflowProgress.StepState.succeeded)
+            #expect(steps.first(where: { $0.id == "resetData" })?.state == AppViewModel.WorkflowProgress.StepState.succeeded)
+            #expect(steps.first(where: { $0.id == "dns" })?.state == AppViewModel.WorkflowProgress.StepState.interrupted)
+            for unrunID in ["updaters", "mediaAccess", "launch"] {
+                #expect(steps.first(where: { $0.id == unrunID })?.state == AppViewModel.WorkflowProgress.StepState.unstarted)
+            }
+        } else {
+            #expect(steps.first(where: { $0.id == "network" })?.state == AppViewModel.WorkflowProgress.StepState.interrupted)
+            for unrunID in ["resetData", "dns", "updaters", "mediaAccess", "launch"] {
+                #expect(steps.first(where: { $0.id == unrunID })?.state == AppViewModel.WorkflowProgress.StepState.unstarted)
+            }
         }
     }
 

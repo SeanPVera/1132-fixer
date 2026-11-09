@@ -4,7 +4,7 @@ import AppKit
 
 struct ContentView: View {
     @ObservedObject var viewModel: AppViewModel
-    private let appVersion = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.8.4"
+    private let appVersion = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.8.5"
 
     init(viewModel: AppViewModel) {
         self.viewModel = viewModel
@@ -281,7 +281,9 @@ struct ContentView: View {
             return (
                 isPreview
                     ? "Inspecting all 9 repair steps without modifying files, network state, or processes."
-                    : "Executing repair sequence. Steps 04 & 06 share a single macOS administrator prompt.",
+                    : (ShellCommands.isMacSpoofingDisabledForCurrentOS()
+                        ? "Executing repair sequence. Step 06 requests a macOS administrator prompt."
+                        : "Executing repair sequence. Steps 04 & 06 share a single macOS administrator prompt."),
                 "bolt.horizontal.circle.fill",
                 Theme.Colors.primary
             )

@@ -1140,23 +1140,17 @@ final class AppViewModel: ObservableObject {
                 let portName = portMap[device] ?? "Unknown"
                 results.append("Active interface: \(portName) (\(device))")
 
-                var networkOutcome: StepResult.Outcome = .skipped
+                let networkOutcome: StepResult.Outcome = .skipped
                 var strategyDetail = "Active interface: \(portName) (\(device))"
                 if let kind = try? ShellCommands.classifySupportedInterface(hardwarePortName: portName) {
                     results.append("Interface type: \(kind.rawValue)")
-                    switch ShellCommands.networkIdentityStrategy(isWiFi: kind == .wifi) {
-                    case .rotatingPrivateWiFiAddress:
-                        let desc = "Rotating Private Wi-Fi Address (Apple Silicon + macOS 14+)"
-                        results.append("Network identity: \(desc)")
-                        strategyDetail += " — Read-only preview: would use \(desc)."
-                    case .unsupported:
-                        let desc = "UNAVAILABLE — MAC spoofing is disabled on macOS 14+"
-                        results.append("Network identity: \(desc)")
-                        strategyDetail += " — \(desc)."
-                        networkOutcome = .warning
-                    case .legacyMACSpoof:
+                    if ShellCommands.isMacSpoofingDisabledForCurrentOS() {
+                        let desc = "Disabled on macOS 14+"
+                        results.append("MAC spoofing: \(desc)")
+                        strategyDetail += " — MAC spoofing is disabled on macOS 14+."
+                    } else {
                         let desc = "MAC spoofing available"
-                        results.append("Network identity: \(desc)")
+                        results.append("MAC spoofing: \(desc)")
                         strategyDetail += " — Read-only preview: \(desc)."
                     }
                 }
@@ -1383,17 +1377,12 @@ final class AppViewModel: ObservableObject {
 
             checks.append(.init(id: "admin", label: "Admin Prompts", value: "Expected", isWarning: false))
 
-            if let activeInterfaceKind {
-                switch ShellCommands.networkIdentityStrategy(isWiFi: activeInterfaceKind == .wifi) {
-                case .rotatingPrivateWiFiAddress:
-                    checks.append(.init(id: "macspoof", label: "Network Identity", value: "Rotating Private Wi-Fi Address", isWarning: false))
-                case .unsupported:
-                    checks.append(.init(id: "macspoof", label: "Network Identity", value: "Unavailable on this macOS/interface", isWarning: true))
-                case .legacyMACSpoof:
-                    checks.append(.init(id: "macspoof", label: "Network Identity", value: "MAC spoofing available", isWarning: false))
-                }
+            if ShellCommands.isMacSpoofingDisabledForCurrentOS() {
+                checks.append(.init(id: "macspoof", label: "MAC Spoofing", value: "Disabled on macOS 14+", isWarning: false))
+            } else if activeInterfaceKind != nil {
+                checks.append(.init(id: "macspoof", label: "MAC Spoofing", value: "Available", isWarning: false))
             } else {
-                checks.append(.init(id: "macspoof", label: "Network Identity", value: "Could not determine", isWarning: true))
+                checks.append(.init(id: "macspoof", label: "MAC Spoofing", value: "Could not determine", isWarning: true))
             }
 
             let camera = Self.mediaAccessPreflightValue(for: .video)
@@ -1721,17 +1710,12 @@ Last action status: \(lastStatus)
     ) async throws -> MACSpoofResult {
         let interface = try await resolveActiveSupportedInterface()
 
-        switch ShellCommands.networkIdentityStrategy(isWiFi: interface.kind == .wifi) {
-        case .rotatingPrivateWiFiAddress:
-            return try await resetPrivateWiFiAddressAndReconnect(networkService: interface.networkService, device: interface.device)
-        case .unsupported:
+        if ShellCommands.isMacSpoofingDisabledForCurrentOS() {
             return MACSpoofResult(
-                summary: "MAC spoofing is disabled on macOS 14 and later because the old spoofing method no longer works reliably. Active network: \(interface.kind.rawValue) (\(interface.device), service: \(interface.networkService)).",
-                hasWarning: true,
-                wasSkipped: true
+                summary: "Active network verified: \(interface.kind.rawValue) (\(interface.device), service: \(interface.networkService)). Legacy MAC spoofing is disabled on macOS 14 and later.",
+                hasWarning: false,
+                wasSkipped: false
             )
-        case .legacyMACSpoof:
-            break
         }
 
         let spoofedMAC = try ShellCommands.generateRandomMACAddress()
@@ -1841,8 +1825,6 @@ the OS blocks Wi-Fi MAC spoofing at the driver level. Zoom will likely still sho
 What you can try:
   1. Connect via Ethernet — MAC spoofing still works on Ethernet adapters.
   2. Use your phone as a hotspot — this gives you a different network identity entirely.
-  3. Turn on Private Wi-Fi Address for your network in System Settings > Wi-Fi,
-disconnect, and reconnect before running Start Zoom again.
 If your network connection is disrupted after this step:
   - Open System Settings > Network and toggle '\(interface.networkService)' off then on
   - Or run in Terminal: sudo /sbin/ifconfig \(interface.device) up
@@ -1868,155 +1850,6 @@ If your network connection is disrupted after this step:
 
         return MACSpoofResult(
             summary: combinedSummary,
-            hasWarning: !warnings.isEmpty,
-            wasSkipped: false,
-            dnsResult: dnsResult
-        )
-    }
-
-    private func resetPrivateWiFiAddressAndReconnect(networkService: String, device: String) async throws -> MACSpoofResult {
-        let verifyScript = ShellCommands.makeVerifyMACCommand(device: device)
-        let previousMACOutput = (try? await runProcess(
-            stepName: "Read current MAC address",
-            executable: Constants.bashPath,
-            arguments: ["-c", verifyScript]
-        )) ?? ""
-        let previousMAC = ShellCommands.normalizedMACAddress(previousMACOutput)
-        try Task.checkCancellation()
-
-        let getModeCmd = ShellCommands.makeGetPrivateAddressModeCommand(networkService: networkService)
-        let currentModeOutput = (try? await runProcess(
-            stepName: "Check Private Wi-Fi Address mode",
-            executable: Constants.bashPath,
-            arguments: ["-c", getModeCmd]
-        )) ?? "unsupported"
-        try Task.checkCancellation()
-        let currentMode = ShellCommands.normalizePrivateAddressModeOutput(currentModeOutput)
-
-        appendLog("Private Wi-Fi Address mode: \(currentMode)")
-
-        var modeWasChanged = false
-        var warnings: [String] = []
-        let shouldEnableRotating = (currentMode != "unsupported" && currentMode != "rotating")
-
-        if currentMode == "unsupported" {
-            warnings.append("Warning: Private Wi-Fi Address controls are unsupported on this macOS/networksetup version.")
-        }
-
-        let resetAndDNSCmd = ShellCommands.makeRotatingMACAndDNSResetCommand(
-            device: device,
-            networkService: networkService,
-            enableRotatingMode: shouldEnableRotating,
-            includeDNSFlush: true
-        )
-        let resetScript = ShellCommands.appleScriptDoShellScript(
-            ShellCommands.makeTimeBoundedCommand(resetAndDNSCmd, seconds: 55),
-            administratorPrivileges: true
-        )
-        var dnsResult: PrivilegedDNSResult?
-        do {
-            let output = try await runProcess(
-                stepName: "Reset Wi-Fi to generate new rotating MAC",
-                executable: Constants.osascriptPath,
-                arguments: ["-e", resetScript],
-                timeout: 60
-            )
-            let lines = output.components(separatedBy: .newlines)
-            let wifiSentinelIndex = lines.firstIndex(where: { $0.hasPrefix("__1132_WIFI_RESET_STATUS__=") })
-            let dnsDetail: String
-            if let wifiSentinelIndex {
-                dnsDetail = lines[(wifiSentinelIndex + 1)...]
-                    .filter { !$0.hasPrefix("__1132_") }
-                    .joined(separator: "\n")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-            } else {
-                dnsDetail = lines
-                    .filter { !$0.hasPrefix("__1132_") }
-                    .joined(separator: "\n")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-
-            if shouldEnableRotating {
-                if lines.contains("__1132_PRIVATE_MODE_STATUS__=0")
-                    || !lines.contains(where: { $0.hasPrefix("__1132_PRIVATE_MODE_STATUS__=") }) {
-                    modeWasChanged = true
-                    appendLog("Private Wi-Fi Address set to rotating (was: \(currentMode))")
-                } else {
-                    let warning = "Warning: Could not set Private Wi-Fi Address to rotating."
-                    warnings.append(warning)
-                    appendLog(warning)
-                }
-            }
-
-            if let wifiStatusLine = lines.first(where: { $0.hasPrefix("__1132_WIFI_RESET_STATUS__=") }),
-               wifiStatusLine != "__1132_WIFI_RESET_STATUS__=0" {
-                let warning = "Warning: Wi-Fi cycle encountered an error."
-                warnings.append(warning)
-                appendLog(warning)
-            }
-
-            let dnsSucceeded = lines.contains("__1132_DNS_STATUS__=0")
-            dnsResult = PrivilegedDNSResult(succeeded: dnsSucceeded, detail: dnsDetail)
-        } catch {
-            try Task.checkCancellation()
-            if shouldEnableRotating {
-                let modeWarning = "Warning: Could not set Private Wi-Fi Address to rotating: \(error.localizedDescription)"
-                warnings.append(modeWarning)
-                appendLog(modeWarning)
-            }
-            let warning = "Warning: Wi-Fi cycle encountered an error: \(error.localizedDescription)"
-            warnings.append(warning)
-            appendLog(warning)
-            dnsResult = PrivilegedDNSResult(succeeded: false, detail: error.localizedDescription)
-        }
-
-        // 4. Read the new MAC for logging
-        let newMACOutput = (try? await runProcess(
-            stepName: "Read new MAC address",
-            executable: Constants.bashPath,
-            arguments: ["-c", verifyScript]
-        )) ?? ""
-        let newMAC = ShellCommands.normalizedMACAddress(newMACOutput)
-        try Task.checkCancellation()
-
-        let verifiedModeOutput = (try? await runProcess(
-            stepName: "Verify Private Wi-Fi Address mode",
-            executable: Constants.bashPath,
-            arguments: ["-c", getModeCmd]
-        )) ?? "unsupported"
-        try Task.checkCancellation()
-        let verifiedMode = ShellCommands.normalizePrivateAddressModeOutput(verifiedModeOutput)
-
-        if verifiedMode != "rotating" {
-            warnings.append("Warning: Private Wi-Fi Address mode is '\(verifiedMode)' after the change; rotating mode was not verified.")
-        }
-        if newMAC == nil {
-            warnings.append("Warning: The current MAC address could not be read after cycling Wi-Fi.")
-        } else if let previousMAC, newMAC == previousMAC {
-            warnings.append("Warning: Wi-Fi reconnected, but the MAC address did not change (\(previousMAC)).")
-        }
-        let recoveryWarning = try await verifyNetworkRecovered(expectedDevice: device)
-        if let recoveryWarning {
-            warnings.append(recoveryWarning)
-        }
-
-        let modeNote: String
-        if currentMode == "unsupported" {
-            modeNote = "Private Wi-Fi Address mode could not be verified on this system. "
-        } else if modeWasChanged {
-            modeNote = "Private Wi-Fi Address changed to rotating (was: \(currentMode)). "
-        } else if currentMode == "rotating" {
-            modeNote = "Private Wi-Fi Address was already set to rotating. "
-        } else {
-            modeNote = "Private Wi-Fi Address remained \(currentMode). "
-        }
-
-        let displayedMAC = newMAC ?? "(could not read)"
-        var summaryParts = ["\(modeNote)Wi-Fi cycled for a rotating MAC. Current MAC: \(displayedMAC)"]
-        summaryParts.append(contentsOf: warnings)
-
-        return MACSpoofResult(
-            summary: summaryParts.joined(separator: "\n"),
             hasWarning: !warnings.isEmpty,
             wasSkipped: false,
             dnsResult: dnsResult
@@ -2427,7 +2260,7 @@ If your network connection is disrupted after this step:
         applyUIFixture(named: fixtureName, appVersion: appVersion)
     }
 
-    func applyUIFixture(named fixtureName: String, appVersion: String = "1.8.4") {
+    func applyUIFixture(named fixtureName: String, appVersion: String = "1.8.5") {
         preflightTask?.cancel()
         activePreflightID = UUID()
 
@@ -2440,7 +2273,7 @@ If your network connection is disrupted after this step:
             .init(id: "iface", label: "Active Interface", value: "Wi-Fi (en0)", isWarning: false),
             .init(id: "vpn", label: "VPN", value: "No VPN default route detected", isWarning: false),
             .init(id: "admin", label: "Admin Prompts", value: "Expected", isWarning: false),
-            .init(id: "macspoof", label: "Network Identity", value: "Rotating Private Wi-Fi Address", isWarning: false),
+            .init(id: "macspoof", label: "MAC Spoofing", value: "Disabled on macOS 14+", isWarning: false),
             .init(id: "camera", label: "Camera", value: "Allowed", isWarning: false),
             .init(id: "microphone", label: "Microphone", value: "Allowed", isWarning: false),
         ]
@@ -2529,7 +2362,7 @@ If your network connection is disrupted after this step:
                 case 3:
                     return StepResult(id: spec.id, name: spec.name, outcome: .success, detail: "Saved to \(backupDir)")
                 case 4:
-                    return StepResult(id: spec.id, name: spec.name, outcome: .warning, detail: "Private Wi-Fi Address cycled; MAC rotation warning noted.")
+                    return StepResult(id: spec.id, name: spec.name, outcome: .warning, detail: "Active network check reported a route change warning.")
                 default:
                     return StepResult(id: spec.id, name: spec.name, outcome: .failed, detail: failureMsg)
                 }

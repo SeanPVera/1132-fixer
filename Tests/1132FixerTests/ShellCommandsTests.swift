@@ -249,11 +249,6 @@ struct ShellCommandsTests {
     }
 
     @Test func networkRecoveryCommandsAlwaysAttemptToRestoreConnectivity() {
-        let rotating = ShellCommands.makeRotatingMACResetCommand(device: "en0")
-        #expect(rotating.contains("restore_wifi"))
-        #expect(rotating.contains("trap restore_wifi EXIT"))
-        #expect(rotating.contains("networksetup -setairportpower 'en0' on"))
-
         let legacy = ShellCommands.makeSpoofCommand(
             device: "en0",
             spoofedMAC: "02:ab:cd:ef:12:34",
@@ -264,29 +259,6 @@ struct ShellCommandsTests {
     }
 
     @Test func combinedPrivilegedCommandsConsolidateNetworkAndDNSIntoSingleAdminScript() {
-        let rotatingWithMode = ShellCommands.makeRotatingMACAndDNSResetCommand(
-            device: "en0",
-            networkService: "Wi-Fi",
-            enableRotatingMode: true,
-            includeDNSFlush: true
-        )
-        #expect(rotatingWithMode.contains("networksetup -setPrivateNetworkAddress 'Wi-Fi' 'rotating'"))
-        #expect(rotatingWithMode.contains("__1132_PRIVATE_MODE_STATUS__="))
-        #expect(rotatingWithMode.contains("networksetup -setairportpower 'en0' off"))
-        #expect(rotatingWithMode.contains("__1132_WIFI_RESET_STATUS__="))
-        #expect(rotatingWithMode.contains("dscacheutil -flushcache"))
-        #expect(rotatingWithMode.contains("__1132_DNS_STATUS__="))
-
-        let rotatingWithoutMode = ShellCommands.makeRotatingMACAndDNSResetCommand(
-            device: "en0",
-            networkService: "Wi-Fi",
-            enableRotatingMode: false,
-            includeDNSFlush: true
-        )
-        #expect(!rotatingWithoutMode.contains("-setPrivateNetworkAddress"))
-        #expect(rotatingWithoutMode.contains("__1132_WIFI_RESET_STATUS__="))
-        #expect(rotatingWithoutMode.contains("__1132_DNS_STATUS__="))
-
         let spoofAndDNS = ShellCommands.makeSpoofAndDNSCommand(
             device: "en0",
             spoofedMAC: "02:ab:cd:ef:12:34",
@@ -729,51 +701,14 @@ struct ShellCommandsTests {
         #expect(!cmd.contains("not found at \(path)"))
     }
 
-    // MARK: - Network Identity Strategy
-
-    @Test func rotatingPrivateWiFiAddressIsReachableOnBlockedWiFi() {
-        // Apple Silicon + macOS 14+ on Wi-Fi: the rotating-address path must win. Testing
-        // isMacSpoofingDisabledForCurrentOS first would make this branch unreachable.
-        let strategy = ShellCommands.networkIdentityStrategy(
-            isWiFi: true,
-            isMacSpoofingBlockedOnWiFi: true,
-            isMacSpoofingDisabledForCurrentOS: true
-        )
-        #expect(strategy == .rotatingPrivateWiFiAddress)
-    }
-
-    @Test func ethernetOnModernMacOSIsUnsupported() {
-        let strategy = ShellCommands.networkIdentityStrategy(
-            isWiFi: false,
-            isMacSpoofingBlockedOnWiFi: true,
-            isMacSpoofingDisabledForCurrentOS: true
-        )
-        #expect(strategy == .unsupported)
-    }
-
-    @Test func legacyMACSpoofUsedWhenNotDisabled() {
-        let wifi = ShellCommands.networkIdentityStrategy(
-            isWiFi: true,
-            isMacSpoofingBlockedOnWiFi: false,
-            isMacSpoofingDisabledForCurrentOS: false
-        )
-        let ethernet = ShellCommands.networkIdentityStrategy(
-            isWiFi: false,
-            isMacSpoofingBlockedOnWiFi: false,
-            isMacSpoofingDisabledForCurrentOS: false
-        )
-        #expect(wifi == .legacyMACSpoof)
-        #expect(ethernet == .legacyMACSpoof)
-    }
+    // MARK: - Network Recovery & Verification
 
     @Test func reconnectCommandsDoNotUseBlindPostReconnectDelays() {
-        let rotating = ShellCommands.makeRotatingMACResetCommand(device: "en0")
         let legacy = ShellCommands.makeSpoofCommand(
             device: "en0",
             spoofedMAC: "02:ab:cd:ef:12:34",
             networkService: "Wi-Fi"
         )
-        #expect(!rotating.hasSuffix("/bin/sleep 2"))
         #expect(!legacy.hasSuffix("/bin/sleep 2"))
     }
 
