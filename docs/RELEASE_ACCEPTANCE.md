@@ -18,6 +18,13 @@ The latter built, mounted, smoke-checked and uploaded a universal **ad-hoc** DMG
 It reported no configured Apple certificate and performed no notarization.
 These runs cover the baseline; require green CI for the new candidate too.
 
+The first candidate run stalled on one Intel runner. Its single-job retry
+compiled successfully and then exposed two two-second process-I/O test limits
+under host contention. The three I/O-semantics tests now allow ten seconds;
+production executor deadlines, the dedicated 0.1-second timeout test and the
+four-second cancellation assertion remain unchanged. This corrects a test
+scheduling assumption and does not count as privileged process-lifecycle proof.
+
 ## Real-Mac procedure
 
 Use a disposable account or VM, fixture state and an approved test Zoom account.

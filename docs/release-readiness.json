@@ -45,6 +45,11 @@
       "id": "independent-reviewer",
       "status": "UNVERIFIED",
       "evidence": "Only SeanPVera is a repository collaborator; owner decision pending."
+    },
+    {
+      "id": "hosted-macos-ci",
+      "status": "PARTIALLY VERIFIED",
+      "evidence": "Attempt 2 exposed two non-deadline ProcessExecutor I/O tests timing out at 2 seconds on loaded macOS 26 Intel. Their I/O-only allowance is now 10 seconds; dedicated 0.1-second timeout and <4-second cancellation checks are unchanged. A fresh CI run is required."
     }
   ],
   "protection_attempts": [
@@ -78,6 +83,7 @@
     ".github/release-protections/release-signing.json",
     ".github/release-protections/version-tags.json",
     ".github/workflows/release.yml",
+    "Tests/1132FixerTests/ProcessExecutorTests.swift",
     "VERSION",
     "docs/DEVELOPMENT.md",
     "docs/RELEASE_ACCEPTANCE.md",
