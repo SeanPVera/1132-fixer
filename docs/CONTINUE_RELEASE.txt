@@ -1,0 +1,78 @@
+Continue 1132-Fixer release acceptance from draft PR 34:
+https://github.com/SeanPVera/1132-fixer/pull/34
+
+Workspace: /workspace/1132-fixer (adapt if transferred).
+Branch: codex/release-acceptance-1.8.8
+Main baseline: 4df69c48ab0abce63ce8a53f18bafac8799d3b2a (1.8.7).
+Candidate VERSION is already 1.8.8; do not bump again for this task.
+Design-system pin: 97ffa16ca1674de213a6bf12aed75107a057c11d; preserve it.
+Inspect git status, log, PR head and checks before making changes. Preserve user
+changes. The older 1.8.5 remediation handoff is historical; its implementation
+and subsequent native CI fixes have already been merged into main.
+
+Read AGENTS.md, docs/RELEASE_ACCEPTANCE.md, docs/REMEDIATION_STATUS.md and
+docs/release-readiness.json. Application sandbox/runtime code is unchanged by
+PR 34. The user authorized implementation, commit and push, but no merge, tag,
+production credentials, notarization, publication, dependency installation,
+real-user reset, report upload or live-network/privileged host mutation.
+Continue all independent authorized work without asking again. Production and
+isolated administrator experiments require their applicable explicit access and
+authorization. Do not ask for secrets in chat; use GitHub environment secrets.
+
+SeanPVera/1132-fixer is the confirmed canonical release/update repository.
+Preserve sandbox-only launch, fresh BJ4HAAB9B3-pinned signature authorization,
+backup failure stopping mutation, unprivileged validated resets, output bounds,
+symlink guards, watchdogs, cancellation and indeterminate-operation blocking.
+
+Implemented in PR 34:
+- Fail-closed native-evidence checker and eight explicitly unverified gates in
+  .github/native-acceptance.json. It validates the tested commit, unchanged build
+  inputs including design-system/packaging, native metadata and artifact hashes.
+- Release workflow requires that gate before signing credentials, then requires
+  all seven signing/report configuration secrets.
+- Reviewable main/tag/environment policies under .github/release-protections/.
+- Process-I/O semantic tests allow hosted scheduling delay. Production deadlines
+  and dedicated timeout/cancellation assertions are unchanged.
+- 27 portable fixture tests pass. Valid fixtures are synthetic, not native proof.
+
+Observed hosted evidence:
+- CI 43428981062 at 17ad7cc4a2eb0be67e9a508f20945e25ff4f743a passed all four
+  macOS 15/26 Intel/Apple-silicon jobs, full Swift tests, native canaries and release
+  builds; Linux fixtures and mounted ad-hoc universal DMG also passed. Check the
+  final PR-head CI because later changes tightened the evidence checker.
+- Build DMG 43424698062 produced artifact 14037210350 from a9048593140c79a1ffc36bd635c1aeccb2b92b8f.
+  Filename: 1132-Fixer-v1.8.8-a9048593140c-universal-adhoc-signed.dmg
+  SHA256: 36599cadcb40b0c44656c1b1812ddd99f5bcc96b924d24399a0367d381175b9a
+  Hosted mounted smoke check, local ZIP CRC and DMG checksum passed. Ad-hoc only;
+  no notarization or public release. Later changes do not alter its app sources.
+
+Current blockers and next steps:
+1. Finish final PR-head CI and fix concrete failures. Linux has no native SwiftUI
+   toolchain; do not install one or invent equivalent native results. Portable
+   command: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -v
+2. Obtain a disposable Mac account/VM for actual signed Zoom startup/SSO, camera,
+   microphone, keychain/TCC, launch provenance, narrow-window/accessibility checks,
+   macOS 13/14 Intel/Apple-silicon and Rosetta. The user was asked what Mac testing
+   access is available; no answer is recorded at this handoff.
+3. In a separately authorized isolated setup, observe real delayed/cancelled
+   authorization, watchdog/restoration, root descendants, UI stop, two instances,
+   crash/relaunch and reboot settlement. Fakes and larger limits are not proof.
+4. Record actual sanitized native evidence with source commit and SHA256 files
+   under docs/native-evidence/, then run python3 scripts/check-native-acceptance.py.
+   Never populate it from synthetic fixtures or mark unrun tests passed.
+5. Owner settings remain blocked by GitHub integration permissions. The three
+   attempted policy writes returned HTTP 403 Resource not accessible by integration;
+   no remote settings changed. Use the owner's authorized session to inspect and
+   apply the prepared policies, preserving stronger current settings. Require an
+   independent approver; only SeanPVera was a collaborator at inspection. The user
+   was asked who should approve; no selection is recorded at this handoff.
+6. The trusted baseline build reported no Apple certificate. After native gates
+   and owner protections pass, obtain explicit production-signing authorization,
+   configure credentials directly in release-signing, then verify Developer ID
+   signatures, notarization/stapling and the actual mounted distribution DMG.
+   Tagging and publication remain final separately authorized actions.
+
+Do not expand Zoom deletion/containment without versioned ownership, restore and
+startup/media evidence (NEW-02/F-16/SEC-TCC). Keep measured-only optimizations and
+executor/signing-job redesign deferred (F-14/F-18/NEW-08a). NEW-08b was false.
+Report exact completed/unverified checks. Release readiness remains BLOCKED.

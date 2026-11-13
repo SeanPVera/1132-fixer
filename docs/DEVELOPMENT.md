@@ -55,6 +55,10 @@ within a complete 1,048,576-byte UTF-8 budget.
 
 ## Release gates
 
+The remaining owner/native steps and the fail-closed evidence format are in
+[RELEASE_ACCEPTANCE.md](RELEASE_ACCEPTANCE.md). The release workflow requires
+`python3 scripts/check-native-acceptance.py` to pass before importing credentials.
+
 The owner confirmed `SeanPVera/1132-fixer` as the release/update repository.
 Publication is confined to that repository; manual build workflows remain
 available. Existing code owners are retained, with canonical-owner coverage

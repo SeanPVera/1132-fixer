@@ -1,0 +1,41 @@
+{
+  "required_status_checks": {
+    "strict": true,
+    "checks": [
+      {
+        "context": "Build & Test (macOS)",
+        "app_id": 15368
+      },
+      {
+        "context": "Build & Test (macOS 15 Intel)",
+        "app_id": 15368
+      },
+      {
+        "context": "Build & Test (macOS 26)",
+        "app_id": 15368
+      },
+      {
+        "context": "Build & Test (macOS 26 Intel)",
+        "app_id": 15368
+      },
+      {
+        "context": "Package ad-hoc DMG (macOS)",
+        "app_id": 15368
+      },
+      {
+        "context": "Packaging and shell fixtures (Linux)",
+        "app_id": 15368
+      },
+      {
+        "context": "brand-assets",
+        "app_id": 15368
+      }
+    ]
+  },
+  "enforce_admins": true,
+  "required_pull_request_reviews": null,
+  "restrictions": null,
+  "required_conversation_resolution": true,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}
