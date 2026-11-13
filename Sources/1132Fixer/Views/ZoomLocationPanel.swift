@@ -10,115 +10,112 @@ struct ZoomLocationPanel: View {
     var onDismissNotice: (() -> Void)? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ViewThatFits(in: .horizontal) {
-                horizontalBar
-                stackedBar
-            }
-            .padding(.horizontal, Theme.Spacing.large)
-            .padding(.vertical, Theme.Spacing.medium)
+        VStack(alignment: .leading, spacing: Theme.Spacing.s12) {
+            Text("Zoom installation")
+                .font(Theme.Typography.sectionHeading)
+                .foregroundStyle(Theme.Colors.textPrimary)
+                .accessibilityAddTraits(.isHeader)
 
-            if let notice = installationNotice, !notice.isEmpty {
-                Divider().overlay(Theme.Colors.borderSubtle)
-                HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.small) {
-                    Image(systemName: "info.circle.fill")
-                        .foregroundStyle(Theme.Colors.warning)
-                        .font(.system(size: 12, weight: .semibold))
-                        .accessibilityHidden(true)
-                    Text(notice)
-                        .font(Theme.Typography.caption)
-                        .foregroundStyle(Theme.Colors.textSecondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    if let onDismissNotice {
-                        Button("Dismiss", action: onDismissNotice)
-                            .buttonStyle(QuietLinkButtonStyle())
-                    }
+            VStack(alignment: .leading, spacing: 0) {
+                ViewThatFits(in: .horizontal) {
+                    horizontalBar
+                    stackedBar
                 }
-                .padding(.horizontal, Theme.Spacing.large)
-                .padding(.vertical, Theme.Spacing.small)
-                .background(Theme.Colors.warning.opacity(0.07))
+                .padding(.horizontal, Theme.Spacing.s16)
+                .padding(.vertical, Theme.Spacing.s12)
+                .frame(minHeight: Theme.Window.rowMinHeight)
+
+                if let notice = installationNotice, !notice.isEmpty {
+                    Divider().overlay(Theme.Colors.border)
+                    HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(Theme.Colors.warning)
+                            .font(.system(size: 12, weight: .semibold))
+                            .accessibilityHidden(true)
+                        Text("Selection rejected:")
+                            .font(Theme.Typography.label)
+                            .foregroundStyle(Theme.Colors.warning)
+                        Text(notice)
+                            .font(Theme.Typography.body)
+                            .foregroundStyle(Theme.Colors.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if let onDismissNotice {
+                            Button("Dismiss", action: onDismissNotice)
+                                .buttonStyle(QuietLinkButtonStyle())
+                        }
+                    }
+                    .padding(.horizontal, Theme.Spacing.s16)
+                    .padding(.vertical, Theme.Spacing.s12)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .ledgerContainer()
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .themedLedger()
+    }
+
+    private var pathText: some View {
+        Text(appPath)
+            .font(Theme.Typography.mono)
+            .foregroundStyle(Theme.Colors.textPrimary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .textSelection(.enabled)
+            .help(appPath)
+            .accessibilityLabel("Zoom application path: \(appPath)")
     }
 
     private var horizontalBar: some View {
-        HStack(alignment: .center, spacing: Theme.Spacing.medium) {
-            titleAndBadge
-
-            Text(appPath)
-                .font(Theme.Typography.mono)
-                .foregroundStyle(Theme.Colors.textSecondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
+        HStack(alignment: .center, spacing: Theme.Spacing.s12) {
+            locationTag
+            pathText
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityLabel("Zoom application path: \(appPath)")
-
             actionButtons
         }
     }
 
     private var stackedBar: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.small) {
-            HStack(alignment: .center, spacing: Theme.Spacing.medium) {
-                titleAndBadge
-                Spacer()
-                actionButtons
+        VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
+            // Falls back to stacking the tag above the buttons in narrow containers
+            // such as the 264pt preflight sidebar.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: Theme.Spacing.s12) {
+                    locationTag
+                    Spacer(minLength: Theme.Spacing.s8)
+                    actionButtons
+                }
+                VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
+                    locationTag
+                    actionButtons
+                }
             }
-
-            Text(appPath)
-                .font(Theme.Typography.mono)
-                .foregroundStyle(Theme.Colors.textSecondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
+            pathText
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityLabel("Zoom application path: \(appPath)")
         }
     }
 
-    private var titleAndBadge: some View {
-        HStack(spacing: Theme.Spacing.small) {
-            Image(systemName: "app.badge.checkmark")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Theme.Colors.textSecondary)
-                .accessibilityHidden(true)
-
-            Text("Zoom App")
-                .font(Theme.Typography.label)
-                .foregroundStyle(Theme.Colors.textPrimary)
-
-            Text(isCustom ? "Custom Location" : "Default")
-                .font(Theme.Typography.caption)
-                .foregroundStyle(isCustom ? Theme.Colors.warning : Theme.Colors.textSecondary)
-                .padding(.horizontal, Theme.Spacing.small)
-                .padding(.vertical, 2)
-                .background(isCustom ? Theme.Colors.warning.opacity(0.16) : Theme.Colors.surfaceRecessed)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                        .stroke(isCustom ? Theme.Colors.warning.opacity(0.45) : Theme.Colors.borderSubtle, lineWidth: 1)
-                )
-        }
+    private var locationTag: some View {
+        StatusTag(
+            text: isCustom ? "Custom location" : "Default location",
+            tone: isCustom ? .warning : .neutral
+        )
     }
 
     private var actionButtons: some View {
-        HStack(spacing: Theme.Spacing.small) {
+        HStack(spacing: Theme.Spacing.s8) {
             if isCustom {
-                Button(action: onReset) {
-                    Text("Use Default")
-                }
-                .buttonStyle(ThemedButtonStyle(variant: .secondary))
-                .disabled(isDisabled)
+                Button("Use default", action: onReset)
+                    .buttonStyle(ThemedButtonStyle(variant: .secondary))
+                    .disabled(isDisabled)
             }
 
             Button(action: onChoose) {
-                Label("Choose Zoom.app…", systemImage: "folder")
+                Label("Choose…", systemImage: "folder")
             }
             .buttonStyle(ThemedButtonStyle(variant: .secondary))
             .disabled(isDisabled)
+            .help("Choose zoom.us.app if it is installed outside /Applications")
         }
     }
 }

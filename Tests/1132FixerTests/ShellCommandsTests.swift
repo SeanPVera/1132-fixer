@@ -295,20 +295,25 @@ struct ShellCommandsTests {
 
     // MARK: - Backup Pruning
 
-    @Test func backupCommandPrunesOlderSnapshots() {
-        let cmd = ShellCommands.makeBackupZoomDataCommand()
-        // Default retention of 5 keeps entries 1...5 and deletes from entry 6 on.
-        #expect(cmd.contains(#"[ "$snapshot_index" -ge 6 ]"#))
-        #expect(cmd.contains(#"[ "$total_kb" -gt 2097152 ]"#))
-        #expect(cmd.contains(#"/bin/rm -rf "$backup_root/$stale""#))
-    }
-
-    @Test func backupCommandRetentionIsConfigurable() {
-        #expect(ShellCommands.makeBackupZoomDataCommand(retainedBackupCount: 1).contains(#"[ "$snapshot_index" -ge 2 ]"#))
-        #expect(ShellCommands.makeBackupZoomDataCommand(retainedBackupCount: 10).contains(#"[ "$snapshot_index" -ge 11 ]"#))
-        // A zero/negative count must still keep the snapshot just written.
-        #expect(ShellCommands.makeBackupZoomDataCommand(retainedBackupCount: 0).contains(#"[ "$snapshot_index" -ge 2 ]"#))
-        #expect(ShellCommands.makeBackupZoomDataCommand(retainedBackupMegabytes: 512).contains(#"[ "$total_kb" -gt 524288 ]"#))
+    @Test func retentionSkipsOversizedCandidateWithoutChargingItsSizeOrCount() async throws {
+        let fileManager = FileManager.default
+        let home = fileManager.temporaryDirectory.appendingPathComponent("1132-retention-" + UUID().uuidString)
+        defer { try? fileManager.removeItem(at: home) }
+        let root = home.appendingPathComponent(ZoomStateScope.backupRelativeRoot)
+        let large = root.appendingPathComponent("snapshot-large")
+        let small = root.appendingPathComponent("snapshot-small")
+        for path in [large, small] { try fileManager.createDirectory(at: path, withIntermediateDirectories: true) }
+        try Data(repeating: 120, count: 2_097_152).write(to: large.appendingPathComponent("payload"))
+        try Data(repeating: 120, count: 16_384).write(to: small.appendingPathComponent("payload"))
+        try fileManager.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -60)], ofItemAtPath: large.path)
+        try fileManager.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -120)], ofItemAtPath: small.path)
+        let script = ShellCommands.makeBackupZoomDataCommand(homeDirectory: home.path, retainedBackupCount: 2, retainedBackupMegabytes: 1)
+        let result = try await BoundedProcessExecutor().run(executable: "/bin/bash", arguments: ["-c", script], timeout: 15)
+        #expect(result.exitCode == 0)
+        #expect(!fileManager.fileExists(atPath: large.path))
+        #expect(fileManager.fileExists(atPath: small.path))
+        let current = URL(fileURLWithPath: result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines))
+        #expect(BackupStore.isManagedBackupURL(current, rootURL: root))
     }
 
     @Test func backupCommandUsesUniquePrivateSnapshotsAndCleansPartialCopies() {
@@ -355,27 +360,27 @@ struct ShellCommandsTests {
     }
 
     @Test func zoomSandboxProfileAllowsCameraAndMicrophone() {
-        #expect(ShellCommands.zoomSandboxProfile.contains("(allow device-camera)"))
-        #expect(ShellCommands.zoomSandboxProfile.contains("(allow device-microphone)"))
-        #expect(ShellCommands.zoomSandboxProfile.contains("(allow iokit-get-properties)"))
-        #expect(ShellCommands.zoomSandboxProfile.contains(#""AppleH13CamInUserClient""#))
-        #expect(ShellCommands.zoomSandboxProfile.contains(#""AppleUSBHostFrameworkInterfaceClient""#))
-        #expect(ShellCommands.zoomSandboxProfile.contains(#""IOUSBInterfaceUserClientV3""#))
-        #expect(ShellCommands.zoomSandboxProfile.contains(#""com.apple.cmio.VDCAssistant""#))
-        #expect(ShellCommands.zoomSandboxProfile.contains(#""com.apple.tccd""#))
-        #expect(ShellCommands.zoomSandboxProfile.contains(#""com.apple.tccd.system""#))
-        #expect(ShellCommands.zoomSandboxProfile.contains(#""com.apple.applecamerad""#))
-        #expect(ShellCommands.zoomSandboxProfile.contains(#""com.apple.appleh13camerad""#))
-        #expect(ShellCommands.zoomSandboxProfile.contains(#""com.apple.appleh16camerad""#))
-        #expect(ShellCommands.zoomSandboxProfile.contains(#""com.apple.cmio.AVCAssistant""#))
-        #expect(ShellCommands.zoomSandboxProfile.contains(#""com.apple.cmio.IIDCVideoAssistant""#))
-        #expect(ShellCommands.zoomSandboxProfile.contains(#""com.apple.cmio.iOSScreenCaptureAssistant""#))
-        #expect(ShellCommands.zoomSandboxProfile.contains(#""com.apple.cmio.registerassistantservice.system-extensions""#))
-        #expect(ShellCommands.zoomSandboxProfile.contains(#""com.apple.cmio.system-extensions""#))
-        #expect(ShellCommands.zoomSandboxProfile.contains(#""com.apple.coremedia.endpoint.xpc""#))
-        #expect(ShellCommands.zoomSandboxProfile.contains(#""com.apple.mediaexperience.endpoint.xpc""#))
-        #expect(ShellCommands.zoomSandboxProfile.contains(#""com.apple.runningboard""#))
-        #expect(ShellCommands.zoomSandboxProfile.contains(#""com.apple.videoconference.camera""#))
+        #expect(testProfile().contains("(allow device-camera)"))
+        #expect(testProfile().contains("(allow device-microphone)"))
+        #expect(testProfile().contains("(allow iokit-get-properties)"))
+        #expect(testProfile().contains(#""AppleH13CamInUserClient""#))
+        #expect(testProfile().contains(#""AppleUSBHostFrameworkInterfaceClient""#))
+        #expect(testProfile().contains(#""IOUSBInterfaceUserClientV3""#))
+        #expect(testProfile().contains(#""com.apple.cmio.VDCAssistant""#))
+        #expect(testProfile().contains(#""com.apple.tccd""#))
+        #expect(testProfile().contains(#""com.apple.tccd.system""#))
+        #expect(testProfile().contains(#""com.apple.applecamerad""#))
+        #expect(testProfile().contains(#""com.apple.appleh13camerad""#))
+        #expect(testProfile().contains(#""com.apple.appleh16camerad""#))
+        #expect(testProfile().contains(#""com.apple.cmio.AVCAssistant""#))
+        #expect(testProfile().contains(#""com.apple.cmio.IIDCVideoAssistant""#))
+        #expect(testProfile().contains(#""com.apple.cmio.iOSScreenCaptureAssistant""#))
+        #expect(testProfile().contains(#""com.apple.cmio.registerassistantservice.system-extensions""#))
+        #expect(testProfile().contains(#""com.apple.cmio.system-extensions""#))
+        #expect(testProfile().contains(#""com.apple.coremedia.endpoint.xpc""#))
+        #expect(testProfile().contains(#""com.apple.mediaexperience.endpoint.xpc""#))
+        #expect(testProfile().contains(#""com.apple.runningboard""#))
+        #expect(testProfile().contains(#""com.apple.videoconference.camera""#))
     }
 
     // MARK: - Sandbox Profile Hardening
@@ -385,7 +390,7 @@ struct ShellCommandsTests {
     // of the /Users deny against the home allow-back are load-bearing.
 
     private func testProfile(home: String = "/Users/tester") -> String {
-        ShellCommands.makeZoomSandboxProfile(homeDirectory: home)
+        try! ShellCommands.makeZoomSandboxProfile(homeDirectory: home)
     }
 
     @Test func zoomSandboxProfileDeniesHardwareIdentityProperties() {
@@ -501,18 +506,15 @@ struct ShellCommandsTests {
         #expect(ShellCommands.normalizedSandboxHome("/Users/tester//") == "/Users/tester")
     }
 
-    @Test func zoomSandboxProfileOmitsHomeRulesWhenHomeCannotAnchorSubpaths() {
-        // Anchoring these rules at "/" would deny Zoom most of the filesystem, so
-        // an unusable home drops them rather than widening them.
-        #expect(ShellCommands.normalizedSandboxHome("/") == nil)
-        #expect(ShellCommands.normalizedSandboxHome("") == nil)
-        #expect(ShellCommands.normalizedSandboxHome("relative/path") == nil)
-
-        for home in ["", "   ", "relative/path", "/"] {
-            let profile = testProfile(home: home)
-            #expect(!profile.contains(#"(deny file-read* (subpath "/Users"))"#))
-            #expect(profile.contains("(allow device-camera)"))
-            #expect(profile.contains(#"(iokit-property "IOPlatformSerialNumber")"#))
+    @Test func invalidHomeCannotProduceAWeakenedSandboxProfile() {
+        for home in ["", "   ", "relative/path", "/", "/Users/alice/..", "/Users/alice/../bob"] {
+            #expect(throws: (any Error).self) { try ShellCommands.makeZoomSandboxProfile(homeDirectory: home) }
+            let validation = ShellCommands.makeSandboxProfileValidationCommand(homeDirectory: home)
+            let launch = ShellCommands.makeLaunchZoomCommand(zoomBinaryPath: "/Applications/zoom.us.app/Contents/MacOS/zoom.us", zoomBinaryExists: true, homeDirectory: home)
+            #expect(validation.contains("exit 1"))
+            #expect(!validation.contains("encoded_profile="))
+            #expect(launch.contains("exit 1"))
+            #expect(!launch.contains("stop_zoom_processes"))
         }
     }
 
@@ -534,7 +536,7 @@ struct ShellCommandsTests {
         // compile means Zoom cannot start at all. Compile it for real.
         let fileManager = FileManager.default
         let sandboxExec = "/usr/bin/sandbox-exec"
-        guard fileManager.isExecutableFile(atPath: sandboxExec) else { return }
+        try #require(fileManager.isExecutableFile(atPath: sandboxExec), "Required sandbox canary cannot run without sandbox-exec")
 
         let profileURL = fileManager.temporaryDirectory
             .appendingPathComponent("1132fixer-profile-\(UUID().uuidString).sb")
@@ -568,7 +570,7 @@ struct ShellCommandsTests {
     }
 
     @Test func stopZoomFailsClosedWhenProcessesSurviveForceKill() {
-        guard let forceKill = ShellCommands.stopZoom.range(of: #"/usr/bin/killall -9 "$proc""#)?.upperBound,
+        guard let forceKill = ShellCommands.stopZoom.range(of: #"/usr/bin/pkill -KILL -u "$uid" -x "$proc""#)?.upperBound,
               let refusal = ShellCommands.stopZoom.range(of: "refusing to modify Zoom data")?.lowerBound else {
             Issue.record("Stop command is missing its force-kill or final refusal check")
             return
@@ -701,7 +703,7 @@ struct ShellCommandsTests {
         #expect(!cmd.contains("not found at \(path)"))
     }
 
-    // MARK: - Network Recovery & Verification
+    // MARK: - Network Identity Strategy
 
     @Test func reconnectCommandsDoNotUseBlindPostReconnectDelays() {
         let legacy = ShellCommands.makeSpoofCommand(
@@ -893,7 +895,7 @@ struct ShellCommandsTests {
     // MARK: - Security Audit Regressions (WP-1 through WP-4)
 
     @Test func appConfigurationMetadataPointsToForkAndGatesDebugEnvironment() {
-        #expect(AppConfiguration.repositoryURL.absoluteString == "https://github.com/1132-Fixer/macos")
+        #expect(AppConfiguration.repositoryURL.absoluteString == "https://github.com/SeanPVera/1132-fixer")
         #expect(AppConfiguration.websiteURL.absoluteString == "https://1132-fixer.xyz")
         #expect(!AppConfiguration.repositoryURL.absoluteString.contains("PrimeUpYourLife"))
         #if DEBUG
@@ -1037,7 +1039,7 @@ struct ShellCommandsTests {
         #expect(ShellCommands.normalizedSandboxHome("/Users/alice/..") == nil)
         #expect(ShellCommands.normalizedSandboxHome("/Users/alice/../bob") == nil)
 
-        let profile = ShellCommands.makeZoomSandboxProfile(homeDirectory: "/Users/alice")
+        let profile = testProfile(home: "/Users/alice")
         #expect(profile.contains(#"(subpath "/Users/alice/Library/Cookies")"#))
         #expect(profile.contains(#"(subpath "/Users/alice/.config")"#))
         #expect(profile.contains(#"(subpath "/Users/alice/Applications")"#))

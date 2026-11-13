@@ -1,116 +1,117 @@
 import SwiftUI
 
-struct WorkflowResultCard: View {
-    let results: [AppViewModel.StepResult]
-    let workflowState: AppViewModel.WorkflowState
-    let latestBackupPath: String?
-    let onRevealBackup: () -> Void
+/// The kind of run that populated the repair record, derived from the run's title.
+enum RunKind: Equatable {
+    case preview
+    case sandboxLaunch
+    case repair
 
-    private var headline: String {
-        if workflowState == .canceled || workflowState == .canceling {
-            return "Stopped before completion"
+    static let sandboxLaunchTitle = "Sandbox-only Zoom launch"
+
+    init?(record: RunRecord?) {
+        guard let title = record?.title else { return nil }
+        if title == Self.sandboxLaunchTitle {
+            self = .sandboxLaunch
+        } else if title.localizedCaseInsensitiveContains("dry run") || title.localizedCaseInsensitiveContains("preview") {
+            self = .preview
+        } else {
+            self = .repair
         }
-        if isFailedState || results.contains(where: { $0.outcome == .failed }) {
-            return "Repair stopped safely"
-        }
-        if results.contains(where: { $0.outcome != .success }) {
-            return "Repair completed with notes"
-        }
-        return "Repair completed"
     }
 
-    private var headlineColor: Color {
-        if workflowState == .canceled || workflowState == .canceling { return Theme.Colors.warning }
-        if isFailedState || results.contains(where: { $0.outcome == .failed }) { return Theme.Colors.error }
-        if results.contains(where: { $0.outcome != .success }) { return Theme.Colors.warning }
-        return Theme.Colors.success
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.medium) {
-            HStack {
-                Label(headline, systemImage: headlineIcon)
-                    .font(Theme.Typography.heading)
-                    .foregroundStyle(headlineColor)
-                Spacer()
-                if latestBackupPath != nil {
-                    Button(action: onRevealBackup) {
-                        Label("Reveal Backup", systemImage: "folder")
-                    }
-                    .buttonStyle(ThemedButtonStyle(variant: .secondary))
-                }
-            }
-
-            ForEach(results) { result in
-                HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.small) {
-                    Image(systemName: icon(for: result.outcome))
-                        .foregroundStyle(color(for: result.outcome))
-                        .accessibilityHidden(true)
-                    Text(result.outcome.label)
-                        .font(Theme.Typography.label)
-                        .foregroundStyle(color(for: result.outcome))
-                        .frame(width: Theme.Spacing.section * 2.5, alignment: .leading)
-                    Text(result.name)
-                        .font(Theme.Typography.label)
-                        .foregroundStyle(Theme.Colors.textPrimary)
-                    if let detail = result.detail, !detail.isEmpty {
-                        Text(detail)
-                            .font(Theme.Typography.caption)
-                            .foregroundStyle(Theme.Colors.textSecondary)
-                            .lineLimit(2)
-                    }
-                }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("\(result.outcome.accessibilityLabel): \(result.name). \(result.detail ?? "")")
-            }
-
-            if let latestBackupPath {
-                Text("Recovery backup: \(latestBackupPath)")
-                    .font(Theme.Typography.mono)
-                    .foregroundStyle(Theme.Colors.textSecondary)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-            }
+    var label: String {
+        switch self {
+        case .preview: return "Preview"
+        case .sandboxLaunch: return "Sandbox launch"
+        case .repair: return "Repair"
         }
-        .padding(Theme.Spacing.large)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .themedPanel()
     }
 
-    private var headlineIcon: String {
-        if workflowState == .canceled || workflowState == .canceling { return "stop.circle.fill" }
-        if isFailedState || results.contains(where: { $0.outcome == .failed }) { return "xmark.circle.fill" }
-        if results.contains(where: { $0.outcome != .success }) { return "exclamationmark.triangle.fill" }
-        return "checkmark.circle.fill"
+    var activeLabel: String {
+        switch self {
+        case .preview: return "Previewing"
+        case .sandboxLaunch: return "Launching"
+        case .repair: return "Repairing"
+        }
+    }
+}
+
+extension AppViewModel.WorkflowState {
+    /// True while a preview, sandbox launch, or repair run is executing a step.
+    var isActiveRun: Bool {
+        switch self {
+        case .preflight,
+            .closingZoom,
+            .spoofingMAC,
+            .checkingNetwork,
+            .backingUpState,
+            .clearingState,
+            .flushingDNS,
+            .stoppingUpdaters,
+            .checkingMediaAccess,
+            .launchingZoom:
+            return true
+        case .idle, .completed, .completedWithWarnings, .failed, .canceling, .canceled:
+            return false
+        }
+    }
+}
+
+extension AppViewModel.WorkflowProgress.StepState {
+    var outcomeText: String {
+        switch self {
+        case .unstarted: return "Not started"
+        case .running: return "Running…"
+        case .succeeded: return "Succeeded"
+        case .warning: return "Warning"
+        case .skipped: return "Skipped"
+        case .interrupted: return "Interrupted"
+        case .failed: return "Failed"
+        }
     }
 
-    private func icon(for outcome: AppViewModel.StepResult.Outcome) -> String {
-        switch outcome {
-        case .success: return "checkmark.circle.fill"
-        case .warning: return "exclamationmark.triangle.fill"
-        case .skipped: return "minus.circle.fill"
-        case .failed: return "xmark.circle.fill"
-        case .interrupted: return "stop.circle.fill"
+    var outcomeSymbol: String {
+        switch self {
         case .unstarted: return "circle"
         case .running: return "clock.fill"
+        case .succeeded: return "checkmark.circle.fill"
+        case .warning: return "exclamationmark.triangle.fill"
+        case .skipped: return "minus.circle.fill"
+        case .interrupted: return "stop.circle.fill"
+        case .failed: return "xmark.circle.fill"
         }
     }
 
-    private func color(for outcome: AppViewModel.StepResult.Outcome) -> Color {
-        switch outcome {
-        case .success: return Theme.Colors.success
-        case .warning, .skipped, .interrupted: return Theme.Colors.warning
-        case .failed: return Theme.Colors.error
-        case .unstarted: return Theme.Colors.textMuted
-        case .running: return Theme.Colors.primary
+    var tone: StatusTone {
+        switch self {
+        case .unstarted: return .neutral
+        case .running: return .active
+        case .succeeded: return .success
+        case .warning, .skipped, .interrupted: return .warning
+        case .failed: return .error
         }
     }
 
-    private var isFailedState: Bool {
-        if case .failed = workflowState { return true }
-        return false
+    /// Finished in any way (as opposed to not started or still running).
+    var isSettled: Bool {
+        switch self {
+        case .unstarted, .running: return false
+        case .succeeded, .warning, .skipped, .interrupted, .failed: return true
+        }
     }
+}
+
+/// Shared column geometry so headers, rows, and expanded detail stay aligned.
+private enum RecordColumns {
+    static let disclosure: CGFloat = 12
+    static let index: CGFloat = 24
+    static let operation: CGFloat = 224
+    static let outcome: CGFloat = 136
+    static let gap: CGFloat = Theme.Spacing.s12
+
+    static var sequence: CGFloat { disclosure + Theme.Spacing.s8 + index }
+    /// Leading inset that aligns expanded content with the operation column.
+    static var detailInset: CGFloat { sequence + gap }
 }
 
 struct RepairRecordLedgerView: View {
@@ -128,28 +129,30 @@ struct RepairRecordLedgerView: View {
         var requiresAdmin: Bool { spec.requiresAdmin }
     }
 
-    let steps: [AppViewModel.WorkflowProgress.Step]
-    var stepResults: [AppViewModel.StepResult] = []
+    let items: [LedgerStepItem]
     let workflowState: AppViewModel.WorkflowState
     let runRecord: RunRecord?
     var expandedStepIDs: Set<String> = []
     var onToggleExpand: ((String) -> Void)? = nil
     let isCompactLayout: Bool
 
-    private var effectiveResults: [AppViewModel.StepResult] {
+    /// Resolves the canonical step list against live progress and recorded results.
+    static func makeItems(
+        steps: [AppViewModel.WorkflowProgress.Step],
+        stepResults: [AppViewModel.StepResult],
+        runRecord: RunRecord?
+    ) -> [LedgerStepItem] {
+        let effectiveResults: [AppViewModel.StepResult]
         if let recordSteps = runRecord?.steps, !recordSteps.isEmpty {
-            return recordSteps
+            effectiveResults = recordSteps
+        } else {
+            effectiveResults = stepResults
         }
-        return stepResults
-    }
 
-    private var isPreviewRun: Bool {
-        guard let title = runRecord?.title else { return false }
-        return title.localizedCaseInsensitiveContains("dry run") || title.localizedCaseInsensitiveContains("preview")
-    }
-
-    private var ledgerSteps: [LedgerStepItem] {
-        let canonical = RepairStepSpec.canonicalSteps()
+        let quickLaunch = RunKind(record: runRecord) == .sandboxLaunch
+        let canonical = RepairStepSpec.canonicalSteps().filter {
+            !quickLaunch || ["validate", "closeZoom", "mediaAccess", "launch"].contains($0.id)
+        }
         let resultsByID = Dictionary(uniqueKeysWithValues: effectiveResults.map { ($0.id, $0) })
         let progressByID = Dictionary(uniqueKeysWithValues: steps.map { ($0.id, $0.state) })
 
@@ -179,187 +182,101 @@ struct RepairRecordLedgerView: View {
         }
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ledgerHeader
-
-            Divider().overlay(Theme.Colors.border)
-
-            if !isCompactLayout {
-                columnHeaders
-                Divider().overlay(Theme.Colors.borderSubtle)
-            }
-
-            ForEach(Array(ledgerSteps.enumerated()), id: \.element.id) { idx, step in
-                RepairRecordStepRow(
-                    step: step,
-                    isCompact: isCompactLayout,
-                    isEvenRow: idx.isMultiple(of: 2),
-                    isExpanded: expandedStepIDs.contains(step.id),
-                    onToggleExpand: onToggleExpand.map { callback in { callback(step.id) } }
-                )
-
-                if idx < ledgerSteps.count - 1 {
-                    Divider().overlay(Theme.Colors.borderSubtle)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .themedLedger()
+    private var runKind: RunKind? {
+        RunKind(record: runRecord)
     }
 
-    private var ledgerHeader: some View {
-        HStack(alignment: .center, spacing: Theme.Spacing.medium) {
-            HStack(spacing: Theme.Spacing.small) {
-                Image(systemName: headerStatus.icon)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(headerStatus.color)
-                    .accessibilityHidden(true)
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.s12) {
+            sectionHeader
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("REPAIR RECORD")
-                        .font(Theme.Typography.sectionEyebrow)
-                        .tracking(0.72)
-                        .foregroundStyle(Theme.Colors.textMuted)
-                    Text(headerStatus.title)
-                        .font(Theme.Typography.heading)
-                        .foregroundStyle(Theme.Colors.textPrimary)
+            VStack(alignment: .leading, spacing: 0) {
+                if !isCompactLayout {
+                    columnHeaders
+                    Divider().overlay(Theme.Colors.border)
+                }
+
+                ForEach(Array(items.enumerated()), id: \.element.id) { idx, step in
+                    RepairRecordStepRow(
+                        step: step,
+                        isCompact: isCompactLayout,
+                        isExpanded: expandedStepIDs.contains(step.id),
+                        onToggleExpand: onToggleExpand.map { callback in { callback(step.id) } }
+                    )
+
+                    if idx < items.count - 1 {
+                        Divider().overlay(Theme.Colors.border)
+                    }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .ledgerContainer()
+        }
+    }
 
-            Spacer(minLength: Theme.Spacing.medium)
+    private var sectionHeader: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s8) {
+            Text("Repair record")
+                .font(Theme.Typography.sectionHeading)
+                .foregroundStyle(Theme.Colors.textPrimary)
+                .accessibilityAddTraits(.isHeader)
 
-            HStack(spacing: Theme.Spacing.small) {
-                if let duration = runRecord?.formattedDuration {
-                    Text(duration)
-                        .font(Theme.Typography.mono)
-                        .foregroundStyle(Theme.Colors.textMuted)
-                }
+            Text("\(items.count) steps")
+                .font(Theme.Typography.metadata)
+                .monospacedDigit()
+                .foregroundStyle(Theme.Colors.textSecondary)
 
-                Text(modeBadge.label)
-                    .font(Theme.Typography.caption)
-                    .foregroundStyle(modeBadge.color)
-                    .padding(.horizontal, Theme.Spacing.small)
-                    .padding(.vertical, 3)
-                    .background(modeBadge.color.opacity(0.14))
-                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                            .stroke(modeBadge.color.opacity(0.35), lineWidth: 1)
-                    )
+            Spacer(minLength: Theme.Spacing.s12)
+
+            if let duration = runRecord?.formattedDuration {
+                Text(duration)
+                    .font(Theme.Typography.mono)
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.Colors.textSecondary)
+                    .accessibilityLabel("Duration \(duration)")
+            }
+
+            if let runKind {
+                let isLive = workflowState.isActiveRun || workflowState == .canceling
+                StatusTag(
+                    text: isLive ? runKind.activeLabel : runKind.label,
+                    tone: isLive ? .active : .neutral
+                )
             }
         }
-        .padding(.horizontal, Theme.Spacing.large)
-        .padding(.vertical, Theme.Spacing.medium)
     }
 
     private var columnHeaders: some View {
-        HStack(alignment: .center, spacing: Theme.Spacing.medium) {
+        HStack(alignment: .firstTextBaseline, spacing: RecordColumns.gap) {
             Text("#")
-                .font(Theme.Typography.sectionEyebrow)
-                .tracking(0.72)
-                .foregroundStyle(Theme.Colors.textMuted)
-                .frame(width: 28, alignment: .leading)
+                .padding(.leading, RecordColumns.disclosure + Theme.Spacing.s8)
+                .frame(width: RecordColumns.sequence, alignment: .leading)
 
-            Text("STEP & SCOPE")
-                .font(Theme.Typography.sectionEyebrow)
-                .tracking(0.72)
-                .foregroundStyle(Theme.Colors.textMuted)
-                .frame(width: 224, alignment: .leading)
+            Text("Operation")
+                .frame(width: RecordColumns.operation, alignment: .leading)
 
-            Text("DETAIL / EFFECT")
-                .font(Theme.Typography.sectionEyebrow)
-                .tracking(0.72)
-                .foregroundStyle(Theme.Colors.textMuted)
+            Text("Effect")
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text("OUTCOME")
-                .font(Theme.Typography.sectionEyebrow)
-                .tracking(0.72)
-                .foregroundStyle(Theme.Colors.textMuted)
-                .frame(width: 136, alignment: .trailing)
+            Text("Outcome")
+                .frame(width: RecordColumns.outcome, alignment: .trailing)
         }
-        .padding(.horizontal, Theme.Spacing.large)
-        .padding(.vertical, Theme.Spacing.small)
-        .background(Theme.Colors.surfaceRecessed.opacity(0.65))
-    }
-
-    private var headerStatus: (title: String, icon: String, color: Color) {
-        switch workflowState {
-        case .idle:
-            return ("9-Step Repair Sequence", "list.number", Theme.Colors.textSecondary)
-        case .preflight,
-            .closingZoom,
-            .spoofingMAC,
-            .checkingNetwork,
-            .backingUpState,
-            .clearingState,
-            .flushingDNS,
-            .stoppingUpdaters,
-            .checkingMediaAccess,
-            .launchingZoom:
-            let title = isPreviewRun ? "Running read-only preview…" : "Executing repair sequence…"
-            return (title, "bolt.horizontal.circle.fill", Theme.Colors.primary)
-        case .canceling:
-            return ("Stopping repair safely…", "hand.raised.fill", Theme.Colors.warning)
-        case .canceled:
-            return ("Stopped before completion", "stop.circle.fill", Theme.Colors.warning)
-        case .failed(let message):
-            return ("Repair stopped safely — \(message)", "xmark.circle.fill", Theme.Colors.error)
-        case .completed:
-            if isPreviewRun {
-                let hasAdvisories = ledgerSteps.contains { $0.state == .warning || $0.state == .failed }
-                return (
-                    hasAdvisories ? "Preview completed with advisories" : "Preview completed — no files or settings modified",
-                    hasAdvisories ? "exclamationmark.triangle.fill" : "checkmark.circle.fill",
-                    hasAdvisories ? Theme.Colors.warning : Theme.Colors.success
-                )
-            }
-            let hasNotes = ledgerSteps.contains { $0.state == .warning || $0.state == .skipped }
-            return (
-                hasNotes ? "Repair completed with notes" : "Repair completed — Zoom launched in sandbox mode",
-                hasNotes ? "exclamationmark.triangle.fill" : "checkmark.circle.fill",
-                hasNotes ? Theme.Colors.warning : Theme.Colors.success
-            )
-        }
-    }
-
-    private var modeBadge: (label: String, color: Color) {
-        switch workflowState {
-        case .idle:
-            return ("Ready", Theme.Colors.textSecondary)
-        case .preflight,
-            .closingZoom,
-            .spoofingMAC,
-            .checkingNetwork,
-            .backingUpState,
-            .clearingState,
-            .flushingDNS,
-            .stoppingUpdaters,
-            .checkingMediaAccess,
-            .launchingZoom:
-            return (isPreviewRun ? "Previewing" : "Live Repair", Theme.Colors.primary)
-        case .canceling:
-            return ("Stopping", Theme.Colors.warning)
-        case .canceled:
-            return ("Interrupted", Theme.Colors.warning)
-        case .failed:
-            return ("Stopped Safely", Theme.Colors.error)
-        case .completed:
-            if isPreviewRun {
-                return ("Preview Record", Theme.Colors.primary)
-            }
-            return ("Completed", Theme.Colors.success)
-        }
+        .font(Theme.Typography.metadata)
+        .foregroundStyle(Theme.Colors.textSecondary)
+        .padding(.horizontal, Theme.Spacing.s16)
+        .padding(.vertical, Theme.Spacing.s8)
+        .accessibilityHidden(true)
     }
 }
 
 private struct RepairRecordStepRow: View {
     let step: RepairRecordLedgerView.LedgerStepItem
     let isCompact: Bool
-    let isEvenRow: Bool
     let isExpanded: Bool
     let onToggleExpand: (() -> Void)?
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovering = false
 
     private var indexLabel: String {
         String(format: "%02d", step.index)
@@ -372,8 +289,13 @@ private struct RepairRecordStepRow: View {
         return step.summary
     }
 
+    private var hasRecordedDetail: Bool {
+        guard let detail = step.detail else { return false }
+        return !detail.isEmpty
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.small) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
             Group {
                 if isCompact {
                     compactRow
@@ -383,148 +305,184 @@ private struct RepairRecordStepRow: View {
             }
 
             if isExpanded {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(step.summary)
-                        .font(Theme.Typography.caption)
-                        .foregroundStyle(Theme.Colors.textSecondary)
-                    Text(step.commandSummary)
-                        .font(Theme.Typography.mono)
-                        .foregroundStyle(Theme.Colors.textMuted)
-                        .textSelection(.enabled)
-                }
-                .padding(.leading, isCompact ? 36 : 268)
-                .padding(.top, 2)
+                expandedDetail
             }
         }
-        .padding(.horizontal, Theme.Spacing.large)
-        .padding(.vertical, Theme.Spacing.small + 3)
-        .frame(minHeight: Theme.Window.rowMinHeight)
+        .padding(.horizontal, Theme.Spacing.s16)
+        .padding(.vertical, Theme.Spacing.s12)
+        .frame(maxWidth: .infinity, minHeight: Theme.Window.rowMinHeight, alignment: .leading)
         .background(rowBackground)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            onToggleExpand?()
-        }
         .overlay(alignment: .leading) {
-            if step.state == .running {
+            if let accent = leadingAccent {
                 Rectangle()
-                    .fill(Theme.Colors.primary)
+                    .fill(accent)
                     .frame(width: 2)
             }
         }
+        .contentShape(Rectangle())
+        .onTapGesture { toggle() }
+        .onHover { isHovering = $0 }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Step \(indexLabel), \(step.name), \(step.scope). Status: \(outcomeText). \(detailText)")
+        .accessibilityLabel("Step \(indexLabel), \(step.name), \(step.scope). Status: \(step.state.outcomeText). \(detailText)")
+        .accessibilityAction(named: Text(isExpanded ? "Hide details" : "Show details")) { toggle() }
     }
 
+    private func toggle() {
+        guard let onToggleExpand else { return }
+        if reduceMotion {
+            onToggleExpand()
+        } else {
+            withAnimation(.easeInOut(duration: Theme.Motion.disclosureDuration)) {
+                onToggleExpand()
+            }
+        }
+    }
+
+    // MARK: Layouts
+
     private var wideRow: some View {
-        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.medium) {
-            Text(indexLabel)
-                .font(Theme.Typography.stepIndex)
-                .foregroundStyle(step.state == .running ? Theme.Colors.primary : Theme.Colors.textMuted)
-                .frame(width: 28, alignment: .leading)
+        HStack(alignment: .firstTextBaseline, spacing: RecordColumns.gap) {
+            sequenceCell
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: Theme.Spacing.xSmall) {
-                    Text(step.name)
-                        .font(Theme.Typography.stepTitle)
-                        .foregroundStyle(Theme.Colors.textPrimary)
-                        .lineLimit(1)
-
-                    if step.requiresAdmin {
-                        adminBadge
-                    }
-                }
-
+            VStack(alignment: .leading, spacing: Theme.Spacing.s4) {
+                operationTitle
                 Text(step.scope)
-                    .font(Theme.Typography.caption)
-                    .foregroundStyle(Theme.Colors.textMuted)
+                    .font(Theme.Typography.metadata)
+                    .foregroundStyle(Theme.Colors.textSecondary)
                     .lineLimit(1)
             }
-            .frame(width: 224, alignment: .leading)
+            .frame(width: RecordColumns.operation, alignment: .leading)
 
             Text(detailText)
                 .font(Theme.Typography.body)
                 .foregroundStyle(detailColor)
                 .lineLimit(isExpanded ? nil : 2)
+                .fixedSize(horizontal: false, vertical: isExpanded)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            outcomeBadge
-                .frame(width: 136, alignment: .trailing)
+            outcomeLabel
+                .frame(width: RecordColumns.outcome, alignment: .trailing)
         }
     }
 
     private var compactRow: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.xxSmall) {
-            HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.small) {
-                Text(indexLabel)
-                    .font(Theme.Typography.stepIndex)
-                    .foregroundStyle(step.state == .running ? Theme.Colors.primary : Theme.Colors.textMuted)
-                    .frame(width: 28, alignment: .leading)
-
-                Text(step.name)
-                    .font(Theme.Typography.stepTitle)
-                    .foregroundStyle(Theme.Colors.textPrimary)
-                    .lineLimit(1)
-
-                if step.requiresAdmin {
-                    adminBadge
-                }
-
-                Spacer(minLength: Theme.Spacing.small)
-
-                outcomeBadge
+        VStack(alignment: .leading, spacing: Theme.Spacing.s4) {
+            HStack(alignment: .firstTextBaseline, spacing: RecordColumns.gap) {
+                sequenceCell
+                operationTitle
+                Spacer(minLength: Theme.Spacing.s8)
+                outcomeLabel
             }
 
-            HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.xSmall) {
-                Text("\(step.scope) · \(detailText)")
-                    .font(Theme.Typography.body)
-                    .foregroundStyle(detailColor)
-                    .lineLimit(isExpanded ? nil : 2)
-                    .textSelection(.enabled)
-            }
-            .padding(.leading, 36)
+            Text("\(step.scope) · \(detailText)")
+                .font(Theme.Typography.body)
+                .foregroundStyle(detailColor)
+                .lineLimit(isExpanded ? nil : 2)
+                .fixedSize(horizontal: false, vertical: isExpanded)
+                .textSelection(.enabled)
+                .padding(.leading, RecordColumns.detailInset)
         }
     }
 
-    private var adminBadge: some View {
-        Text("Admin")
-            .font(Theme.Typography.caption)
-            .foregroundStyle(Theme.Colors.warning)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(Theme.Colors.warning.opacity(0.14))
-            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+    private var expandedDetail: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.s4) {
+            if hasRecordedDetail {
+                Text(step.summary)
+                    .font(Theme.Typography.metadata)
+                    .foregroundStyle(Theme.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(step.commandSummary)
+                .font(Theme.Typography.mono)
+                .foregroundStyle(Theme.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+        .padding(.leading, RecordColumns.detailInset)
+        .transition(.opacity)
     }
 
-    private var outcomeBadge: some View {
-        HStack(spacing: 5) {
+    // MARK: Cells
+
+    private var sequenceCell: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s8) {
+            Button(action: toggle) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.Colors.textSecondary)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .frame(width: RecordColumns.disclosure)
+            }
+            .buttonStyle(.plain)
+            .disabled(onToggleExpand == nil)
+            .help(isExpanded ? "Hide planned effect and command" : "Show planned effect and command")
+            .accessibilityLabel(isExpanded ? "Hide details for \(step.name)" : "Show details for \(step.name)")
+
+            Text(indexLabel)
+                .font(Theme.Typography.mono)
+                .monospacedDigit()
+                .foregroundStyle(step.state == .running ? StatusTone.active.color : Theme.Colors.textSecondary)
+                .frame(width: RecordColumns.index, alignment: .leading)
+        }
+        .frame(width: RecordColumns.sequence, alignment: .leading)
+    }
+
+    private var operationTitle: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s8) {
+            Text(step.name)
+                .font(Theme.Typography.label)
+                .foregroundStyle(Theme.Colors.textPrimary)
+                .lineLimit(1)
+
+            if step.requiresAdmin {
+                Label("Admin", systemImage: "lock.fill")
+                    .font(Theme.Typography.metadata)
+                    .foregroundStyle(Theme.Colors.warning)
+                    .help("Requires the administrator password prompt")
+            }
+        }
+    }
+
+    private var outcomeLabel: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s4) {
             if step.state == .running {
                 ProgressView()
                     .controlSize(.small)
+                    .accessibilityHidden(true)
             } else {
-                Image(systemName: outcomeIcon)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(outcomeColor)
+                Image(systemName: step.state.outcomeSymbol)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(step.state.tone.color)
                     .accessibilityHidden(true)
             }
 
-            Text(outcomeText)
+            Text(step.state.outcomeText)
                 .font(Theme.Typography.label)
-                .foregroundStyle(outcomeColor)
+                .foregroundStyle(step.state.tone.color)
                 .lineLimit(1)
         }
     }
 
+    // MARK: State styling
+
     private var rowBackground: Color {
+        if step.state == .running {
+            return Theme.Colors.surfaceHover
+        }
+        if isHovering && onToggleExpand != nil {
+            return Theme.Colors.surfaceHover
+        }
+        return .clear
+    }
+
+    /// A 2pt leading rule marks the row that needs the eye: the active step or a stopped/failed one.
+    private var leadingAccent: Color? {
         switch step.state {
-        case .running:
-            return Theme.Colors.surfaceElevated
-        case .failed:
-            return Theme.Colors.error.opacity(0.06)
-        case .interrupted:
-            return Theme.Colors.warning.opacity(0.05)
-        default:
-            return isEvenRow ? Theme.Colors.surface : Theme.Colors.surfaceRecessed.opacity(0.35)
+        case .running, .failed, .interrupted:
+            return step.state.tone.color
+        case .unstarted, .succeeded, .warning, .skipped:
+            return nil
         }
     }
 
@@ -532,48 +490,12 @@ private struct RepairRecordStepRow: View {
         switch step.state {
         case .failed:
             return Theme.Colors.error
-        case .warning, .interrupted:
-            return Theme.Colors.textPrimary
-        case .running:
+        case .warning, .interrupted, .running:
             return Theme.Colors.textPrimary
         case .unstarted:
             return Theme.Colors.textSecondary
         case .succeeded, .skipped:
-            return step.detail != nil ? Theme.Colors.textPrimary : Theme.Colors.textSecondary
-        }
-    }
-
-    private var outcomeIcon: String {
-        switch step.state {
-        case .unstarted: return "circle"
-        case .running: return "clock.fill"
-        case .succeeded: return "checkmark.circle.fill"
-        case .warning: return "exclamationmark.triangle.fill"
-        case .skipped: return "minus.circle.fill"
-        case .interrupted: return "stop.circle.fill"
-        case .failed: return "xmark.circle.fill"
-        }
-    }
-
-    private var outcomeColor: Color {
-        switch step.state {
-        case .unstarted: return Theme.Colors.textMuted
-        case .running: return Theme.Colors.primary
-        case .succeeded: return Theme.Colors.success
-        case .warning, .skipped, .interrupted: return Theme.Colors.warning
-        case .failed: return Theme.Colors.error
-        }
-    }
-
-    private var outcomeText: String {
-        switch step.state {
-        case .unstarted: return "Not started"
-        case .running: return "Running…"
-        case .succeeded: return "Succeeded"
-        case .warning: return "Warning"
-        case .skipped: return "Skipped"
-        case .interrupted: return "Interrupted"
-        case .failed: return "Failed"
+            return hasRecordedDetail ? Theme.Colors.textPrimary : Theme.Colors.textSecondary
         }
     }
 }
@@ -587,7 +509,7 @@ struct BackupProvenanceBar: View {
         if let activeBackupPath = currentRunBackupPath {
             provenanceRow(
                 icon: "checkmark.shield.fill",
-                iconColor: Theme.Colors.success,
+                tone: .success,
                 label: "Backup created in this run",
                 path: activeBackupPath,
                 buttonTitle: "Reveal in Finder"
@@ -595,72 +517,62 @@ struct BackupProvenanceBar: View {
         } else if let olderBackupPath = previousBackupPath {
             provenanceRow(
                 icon: "clock.arrow.circlepath",
-                iconColor: Theme.Colors.textSecondary,
+                tone: .neutral,
                 label: "Previous backup available (not created in this run)",
                 path: olderBackupPath,
-                buttonTitle: "Reveal Previous Backup"
+                buttonTitle: "Reveal previous backup"
             )
         }
     }
 
     private func provenanceRow(
         icon: String,
-        iconColor: Color,
+        tone: StatusTone,
         label: String,
         path: String,
         buttonTitle: String
     ) -> some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: Theme.Spacing.medium) {
-                HStack(spacing: Theme.Spacing.small) {
-                    Image(systemName: icon)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(iconColor)
-                        .accessibilityHidden(true)
-                    Text(label)
-                        .font(Theme.Typography.label)
-                        .foregroundStyle(Theme.Colors.textPrimary)
-                }
+        let title = HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s8) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(tone.color)
+                .accessibilityHidden(true)
+            Text(label)
+                .font(Theme.Typography.label)
+                .foregroundStyle(Theme.Colors.textPrimary)
+        }
 
-                Text(path)
-                    .font(Theme.Typography.mono)
-                    .foregroundStyle(Theme.Colors.textSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+        let pathText = Text(path)
+            .font(Theme.Typography.mono)
+            .foregroundStyle(Theme.Colors.textSecondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .textSelection(.enabled)
+            .accessibilityLabel("Backup location: \(path)")
 
-                Button(action: onRevealBackup) {
-                    Label(buttonTitle, systemImage: "folder")
-                }
-                .buttonStyle(ThemedButtonStyle(variant: .secondary))
+        let reveal = Button(action: onRevealBackup) {
+            Label(buttonTitle, systemImage: "folder")
+        }
+        .buttonStyle(ThemedButtonStyle(variant: .secondary))
+
+        return ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: Theme.Spacing.s12) {
+                title
+                pathText.frame(maxWidth: .infinity, alignment: .leading)
+                reveal
             }
-            VStack(alignment: .leading, spacing: Theme.Spacing.small) {
-                HStack(spacing: Theme.Spacing.small) {
-                    Image(systemName: icon)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(iconColor)
-                        .accessibilityHidden(true)
-                    Text(label)
-                        .font(Theme.Typography.label)
-                        .foregroundStyle(Theme.Colors.textPrimary)
-                    Spacer()
-                    Button(action: onRevealBackup) {
-                        Label(buttonTitle, systemImage: "folder")
-                    }
-                    .buttonStyle(ThemedButtonStyle(variant: .secondary))
+            VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
+                HStack(alignment: .center, spacing: Theme.Spacing.s12) {
+                    title
+                    Spacer(minLength: Theme.Spacing.s8)
+                    reveal
                 }
-                Text(path)
-                    .font(Theme.Typography.mono)
-                    .foregroundStyle(Theme.Colors.textSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
+                pathText
             }
         }
-        .padding(.horizontal, Theme.Spacing.large)
-        .padding(.vertical, Theme.Spacing.medium)
+        .padding(.horizontal, Theme.Spacing.s16)
+        .padding(.vertical, Theme.Spacing.s12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .themedLedger()
+        .ledgerContainer()
     }
 }

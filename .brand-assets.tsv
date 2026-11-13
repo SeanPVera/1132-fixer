@@ -1,2 +1,5 @@
 # canonical path	shipped path
 assets/exports/macos/AppIcon.png	Sources/1132Fixer/Resources/AppIcon.png
+assets/exports/macos/AppIcon-small-optical-16x16.png	packaging/icon/AppIcon-small-optical-16x16.png
+assets/exports/macos/AppIcon-small-optical-16x16@2x.png	packaging/icon/AppIcon-small-optical-16x16@2x.png
+assets/exports/macos/AppIcon-small-optical-32x32.png	packaging/icon/AppIcon-small-optical-32x32.png

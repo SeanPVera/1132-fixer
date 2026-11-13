@@ -110,10 +110,16 @@ RESOURCE_BUNDLE="$CONTENTS/Resources/1132 Fixer_1132Fixer.bundle"
   echo "DMG is missing the /Applications shortcut" >&2
   exit 1
 }
-[[ -s "$CONTENTS/Resources/AppIcon.icns" && -s "$RESOURCE_BUNDLE/AppIcon.png" ]] || {
+[[ -s "$CONTENTS/Resources/AppIcon.icns" && -d "$RESOURCE_BUNDLE" ]] || {
   echo "Packaged app is missing its Finder icon or SwiftPM resource bundle" >&2
   exit 1
 }
+# Expand with ${arr[@]+...}: macOS bash 3.2 treats an empty array as unbound under set -u.
+resource_args=()
+if [[ "$SIGNING_MODE" == developer-id ]]; then
+  resource_args+=(--require-bug-report)
+fi
+python3 "$ROOT_DIR/scripts/validate-resources.py" "$RESOURCE_BUNDLE" ${resource_args[@]+"${resource_args[@]}"}
 [[ ! -e "$CONTENTS/Resources/AppIcon.png" ]] || {
   echo "Packaged app contains a redundant root AppIcon.png" >&2
   exit 1
@@ -137,6 +143,9 @@ ARCHITECTURES=" $(lipo -archs "$EXECUTABLE") "
   exit 1
 }
 codesign --verify --strict --deep --verbose=2 "$APP_PATH"
+if [[ "$SIGNING_MODE" == developer-id ]]; then
+  "$EXECUTABLE" --check-packaged-resources
+fi
 
 SIGNATURE_DETAILS="$(codesign -d --verbose=4 "$APP_PATH" 2>&1)"
 if [[ "$SIGNING_MODE" == adhoc ]]; then

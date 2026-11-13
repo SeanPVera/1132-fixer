@@ -5,9 +5,9 @@ import Testing
 @Suite("Design system token parity")
 struct ThemeTokenParityTests {
     @Test func swiftThemeMatchesCanonicalMacOSTokensJSON() throws {
-        #expect(Theme.Colors.hexTokens["primary"] == "#235FA8")
-        #expect(Theme.Colors.hexTokens["border-control"] == "#718399")
-        #expect(Theme.Colors.hexTokens["focus"] == "#8DBCF2")
+        #expect(Theme.Colors.hexTokens["primary"] == "#FF9A3C")
+        #expect(Theme.Colors.hexTokens["border-control"] == "#7A746D")
+        #expect(Theme.Colors.hexTokens["focus"] == "#FFB25C")
         #expect(Theme.Window.defaultWidth == 900)
         #expect(Theme.Window.defaultHeight == 760)
         #expect(Theme.Window.minimumWidth == 720)
@@ -18,13 +18,12 @@ struct ThemeTokenParityTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let tokenURL = repoRoot.appendingPathComponent("design-system/tokens/macos.json")
-        guard FileManager.default.fileExists(atPath: tokenURL.path) else {
-            return
-        }
+        try #require(FileManager.default.fileExists(atPath: tokenURL.path), "Missing canonical design-system/tokens/macos.json; initialize the pinned submodule")
         let data = try Data(contentsOf: tokenURL)
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
         let colorSection = try #require(json["colors"] as? [String: String])
+        #expect(Set(colorSection.keys) == Set(Theme.Colors.hexTokens.keys), "Colour tokens must match macos.json in both directions")
         for (tokenName, expectedHex) in Theme.Colors.hexTokens {
             let value = try #require(colorSection[tokenName], "Missing color token \(tokenName) in macos.json")
             #expect(value.uppercased() == expectedHex.uppercased(), "Color mismatch for \(tokenName)")
@@ -33,7 +32,9 @@ struct ThemeTokenParityTests {
         let typographySection = try #require(json["typography"] as? [String: Any])
         #expect(typographySection["font-family-sans"] as? String == Theme.Typography.fontFamilySans)
         #expect(typographySection["font-family-mono"] as? String == Theme.Typography.fontFamilyMono)
+        #expect(typographySection["font-family-serif"] as? String == Theme.Typography.fontFamilySerif)
         let rolesSection = try #require(typographySection["roles"] as? [String: [String: Any]])
+        #expect(Set(rolesSection.keys) == Set(Theme.Typography.roleSpecs.keys), "Typography roles must match macos.json in both directions")
         for (roleName, spec) in Theme.Typography.roleSpecs {
             let entry = try #require(rolesSection[roleName], "Missing typography role \(roleName) in macos.json")
             let size = try #require(entry["size"] as? Double)
@@ -57,6 +58,14 @@ struct ThemeTokenParityTests {
         #expect(CGFloat(try #require(spacingSection["64"])) == Theme.Spacing.s64)
         #expect(CGFloat(try #require(spacingSection["outerMargin"])) == Theme.Spacing.outerMargin)
 
+        let elevationSection = try #require(json["elevation"] as? [String: Double])
+        #expect(CGFloat(try #require(elevationSection["primaryGlowRadius"])) == Theme.Elevation.primaryGlowRadius)
+        #expect(CGFloat(try #require(elevationSection["primaryGlowRadiusHover"])) == Theme.Elevation.primaryGlowRadiusHover)
+        let statusSection = try #require(json["status"] as? [String: Double])
+        #expect(CGFloat(try #require(statusSection["accentRuleWidth"])) == Theme.Status.accentRuleWidth)
+        let identitySection = try #require(json["identity"] as? [String: Double])
+        #expect(CGFloat(try #require(identitySection["iconSize"])) == Theme.Identity.iconSize)
+
         let radiusSection = try #require(json["radius"] as? [String: Double])
         #expect(CGFloat(try #require(radiusSection["row"])) == Theme.Radius.row)
         #expect(CGFloat(try #require(radiusSection["control"])) == Theme.Radius.control)
@@ -79,6 +88,8 @@ struct ThemeTokenParityTests {
         #expect(CGFloat(try #require(windowSection["contentMaxWidth"] as? Double)) == Theme.Window.contentMaxWidth)
         #expect(CGFloat(try #require(windowSection["recordFourColumnMinWidth"] as? Double)) == Theme.Window.recordFourColumnMinWidth)
         #expect(CGFloat(try #require(windowSection["rowMinHeight"] as? Double)) == Theme.Window.rowMinHeight)
+        #expect(CGFloat(try #require(windowSection["sidebarWidth"] as? Double)) == Theme.Window.sidebarWidth)
+        #expect(CGFloat(try #require(windowSection["sidebarBreakpoint"] as? Double)) == Theme.Window.sidebarBreakpoint)
     }
 }
 
@@ -193,7 +204,7 @@ struct WorkflowExecutionSemanticsTests {
                 .init(id: "os", label: "macOS", value: "14.5 (Supported)", isWarning: false),
                 .init(id: "zoom", label: "Zoom App", value: "Verified at /Applications/zoom.us.app", isWarning: false),
                 .init(id: "network", label: "Network", value: "Wi-Fi (en0)", isWarning: false),
-                .init(id: "macspoof", label: "MAC Spoofing", value: "Disabled on macOS 14+", isWarning: false),
+                .init(id: "mac", label: "Network Identity", value: "Automatic identity unavailable; manual settings only", isWarning: false),
                 .init(id: "disk", label: "Backup Space", value: "42 GB available", isWarning: false),
                 .init(id: "sandbox", label: "Sandbox", value: "sandbox-exec ready", isWarning: false),
             ]
@@ -221,15 +232,13 @@ struct WorkflowExecutionSemanticsTests {
         }
 
         let olderBackup = "/Users/tester/Library/Application Support/1132Fixer/Backups/snapshot-older"
-        let viewModel = AppViewModel(initialDiskBackupPath: olderBackup)
+        let viewModel = AppViewModel(initialDiskBackupPath: olderBackup, mediaAccessChecker: { "Fixture grants" }, privilegedGuard: isolatedPrivilegedGuard(), networkEnvironment: { .init(osMajor: 13, hardware: .appleSilicon, executionArchitecture: "arm64") }, backupVerifier: { _, _ in true }, refreshPreflightAfterRun: false)
         viewModel.processExecutorOverride = runner
         viewModel.bundleVerifierOverride = verifier
         viewModel.preflight = Self.makeReadyPreflight()
 
         viewModel.startZoom()
-        while viewModel.isRunning {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        try await waitUntil("the workflow to finish") { !viewModel.isRunning }
 
         // Fail-closed: Backup, MAC spoof, data reset, DNS flush, updater unload, and launch must not run.
         #expect(commandLog.values == ["Validate Zoom sandbox profile", "Close Zoom"])
@@ -268,15 +277,13 @@ struct WorkflowExecutionSemanticsTests {
         }
 
         let priorBackup = "/Users/tester/Library/Application Support/1132Fixer/Backups/snapshot-prior"
-        let viewModel = AppViewModel(initialDiskBackupPath: priorBackup)
+        let viewModel = AppViewModel(initialDiskBackupPath: priorBackup, mediaAccessChecker: { "Fixture grants" }, privilegedGuard: isolatedPrivilegedGuard(), networkEnvironment: { .init(osMajor: 13, hardware: .appleSilicon, executionArchitecture: "arm64") }, backupVerifier: { _, _ in true }, refreshPreflightAfterRun: false)
         viewModel.processExecutorOverride = runner
         viewModel.bundleVerifierOverride = verifier
         viewModel.preflight = Self.makeReadyPreflight()
 
         viewModel.startZoom()
-        while viewModel.isRunning {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        try await waitUntil("the workflow to finish") { !viewModel.isRunning }
 
         #expect(commandLog.values == [
             "Validate Zoom sandbox profile",
@@ -307,12 +314,12 @@ struct WorkflowExecutionSemanticsTests {
             if stepName == "Inspect network services" {
                 return "(1) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)"
             }
-            if stepName == "Reset Zoom data" {
-                return "__1132_RESET_STATUS__=0"
+            if stepName == "Read current MAC address" {
+                return "aa:bb:cc:dd:ee:01"
             }
             if executable == "/usr/bin/osascript" {
                 await gateSignal.enterAndWait()
-                throw CancellationError()
+                return "__1132_SPOOF_STATUS__=0\n__1132_DNS_STATUS__=0\n__1132_PRIVILEGED_COMPLETE__=0"
             }
             return "ok"
         }
@@ -323,13 +330,13 @@ struct WorkflowExecutionSemanticsTests {
             )
         }
 
-        let viewModel = AppViewModel(initialDiskBackupPath: nil)
+        let viewModel = AppViewModel(initialDiskBackupPath: nil, mediaAccessChecker: { "Fixture grants" }, privilegedGuard: isolatedPrivilegedGuard(), networkEnvironment: { .init(osMajor: 13, hardware: .appleSilicon, executionArchitecture: "arm64") }, backupVerifier: { _, _ in true }, refreshPreflightAfterRun: false)
         viewModel.processExecutorOverride = runner
         viewModel.bundleVerifierOverride = verifier
         viewModel.preflight = Self.makeReadyPreflight()
 
         viewModel.startZoom()
-        await gateSignal.waitUntilEntered()
+        try await gateSignal.waitUntilEntered()
 
         #expect(viewModel.isRunning)
         #expect(viewModel.isExecutingPrivilegedStep)
@@ -349,9 +356,7 @@ struct WorkflowExecutionSemanticsTests {
 
         // Now release the privileged helper subprocess.
         await gateSignal.release()
-        while viewModel.isRunning {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        try await waitUntil("the workflow to finish") { !viewModel.isRunning }
 
         #expect(!viewModel.isRunning)
         #expect(!viewModel.isCanceling)
@@ -359,7 +364,7 @@ struct WorkflowExecutionSemanticsTests {
         #expect(viewModel.workflowState == AppViewModel.WorkflowState.canceled)
         #expect(viewModel.currentRunRecord?.outcome == RunRecord.Outcome.cancelled)
 
-        // Step 3 (Backup) succeeded before the privileged step was interrupted.
+        // Step 3 (Backup) succeeded before Step 4 (Network Identity) was interrupted.
         #expect(viewModel.currentRunBackupPath == "/Users/tester/Library/Application Support/1132Fixer/Backups/snapshot-current")
         #expect(viewModel.currentRunRecord?.createdBackupPath == "/Users/tester/Library/Application Support/1132Fixer/Backups/snapshot-current")
 
@@ -367,18 +372,9 @@ struct WorkflowExecutionSemanticsTests {
         #expect(steps.first(where: { $0.id == "validate" })?.state == AppViewModel.WorkflowProgress.StepState.succeeded)
         #expect(steps.first(where: { $0.id == "closeZoom" })?.state == AppViewModel.WorkflowProgress.StepState.succeeded)
         #expect(steps.first(where: { $0.id == "backup" })?.state == AppViewModel.WorkflowProgress.StepState.succeeded)
-        if ShellCommands.isMacSpoofingDisabledForCurrentOS() {
-            #expect(steps.first(where: { $0.id == "network" })?.state == AppViewModel.WorkflowProgress.StepState.succeeded)
-            #expect(steps.first(where: { $0.id == "resetData" })?.state == AppViewModel.WorkflowProgress.StepState.succeeded)
-            #expect(steps.first(where: { $0.id == "dns" })?.state == AppViewModel.WorkflowProgress.StepState.interrupted)
-            for unrunID in ["updaters", "mediaAccess", "launch"] {
-                #expect(steps.first(where: { $0.id == unrunID })?.state == AppViewModel.WorkflowProgress.StepState.unstarted)
-            }
-        } else {
-            #expect(steps.first(where: { $0.id == "network" })?.state == AppViewModel.WorkflowProgress.StepState.interrupted)
-            for unrunID in ["resetData", "dns", "updaters", "mediaAccess", "launch"] {
-                #expect(steps.first(where: { $0.id == unrunID })?.state == AppViewModel.WorkflowProgress.StepState.unstarted)
-            }
+        #expect(steps.first(where: { $0.id == "network" })?.state == AppViewModel.WorkflowProgress.StepState.interrupted)
+        for unrunID in ["resetData", "updaters", "mediaAccess", "launch"] {
+            #expect(steps.first(where: { $0.id == unrunID })?.state == AppViewModel.WorkflowProgress.StepState.unstarted)
         }
     }
 
@@ -402,7 +398,7 @@ struct WorkflowExecutionSemanticsTests {
             )
         }
 
-        let viewModel = AppViewModel(initialDiskBackupPath: nil)
+        let viewModel = AppViewModel(initialDiskBackupPath: nil, mediaAccessChecker: { "Fixture grants" }, privilegedGuard: isolatedPrivilegedGuard(), networkEnvironment: { .init(osMajor: 13, hardware: .appleSilicon, executionArchitecture: "arm64") }, backupVerifier: { _, _ in true }, refreshPreflightAfterRun: false)
         viewModel.processExecutorOverride = runner
         viewModel.bundleVerifierOverride = verifier
         viewModel.preflight = Self.makeReadyPreflight()
@@ -411,9 +407,7 @@ struct WorkflowExecutionSemanticsTests {
         #expect(viewModel.currentRunRecord?.outcome == RunRecord.Outcome.failed)
 
         viewModel.dryRun()
-        while viewModel.isRunning {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        try await waitUntil("the workflow to finish") { !viewModel.isRunning }
 
         let record = try #require(viewModel.currentRunRecord)
         #expect(record.title == "Preview Steps (Dry Run)")
@@ -451,17 +445,14 @@ struct WorkflowExecutionSemanticsTests {
 
         let viewModel = AppViewModel(
             initialDiskBackupPath: nil,
-            homeDirectoryProvider: { tempHome.path }
+            homeDirectoryProvider: { tempHome.path }, privilegedGuard: isolatedPrivilegedGuard(), refreshPreflightAfterRun: false
         )
         viewModel.processExecutorOverride = runner
         viewModel.bundleVerifierOverride = verifier
-        viewModel.requireOnDiskBackupVerification = true
         viewModel.preflight = Self.makeReadyPreflight()
 
         viewModel.startZoom()
-        while viewModel.isRunning {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        try await waitUntil("the workflow to finish") { !viewModel.isRunning }
 
         #expect(commandLog.values == [
             "Validate Zoom sandbox profile",
@@ -477,7 +468,7 @@ struct WorkflowExecutionSemanticsTests {
 @Suite("Activity log cap and monotonic sequence")
 @MainActor
 struct ActivityLogRetentionTests {
-    @Test func logEntriesCapAtFiveThousandWhileSequenceAndRevisionContinueIncrementing() {
+    @Test func logEntriesRespectConfiguredCapWhileSequenceAndRevisionContinueIncrementing() {
         let viewModel = AppViewModel()
         viewModel.clearLogs()
         let baseRevision = viewModel.logRevision
@@ -513,7 +504,7 @@ struct BugReportDraftTests {
         #expect(truncated.data.count <= ReportDraft.maxAttachmentBytes)
         #expect(truncated.text.utf8.count == truncated.data.count)
         #expect(String(data: truncated.data, encoding: .utf8) != nil)
-        #expect(truncated.text.contains("[Truncated to fit"))
+        #expect(truncated.text.contains("[Truncated from"))
     }
 
     @Test func reportDraftSnapshotRemainsFrozenWhenLogsChangeAfterSheetOpens() async throws {
@@ -522,9 +513,7 @@ struct BugReportDraftTests {
         viewModel.logMessage("Initial diagnostic entry before opening bug report")
 
         viewModel.openBugReportSheet(appVersion: "1.8.2")
-        while viewModel.isPreparingReportDraft {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        try await waitUntil("the report draft") { !viewModel.isPreparingReportDraft }
         let capturedDraft = viewModel.activeReportDraft
         #expect(capturedDraft != nil)
         let initialAttachment = capturedDraft?.attachmentContent ?? ""
@@ -539,9 +528,7 @@ struct BugReportDraftTests {
     @Test func overLimitDescriptionPreservesUserTextAndBlocksSubmissionWithExactCount() async throws {
         let viewModel = AppViewModel()
         viewModel.openBugReportSheet(appVersion: "1.8.2")
-        while viewModel.isPreparingReportDraft {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        try await waitUntil("the report draft") { !viewModel.isPreparingReportDraft }
 
         let overLimitText = String(repeating: "a", count: ReportDraft.maxDescriptionCharacters + 17)
         viewModel.bugReportMessage = overLimitText
@@ -572,26 +559,34 @@ private final class LockedArray<Element>: @unchecked Sendable {
     }
 }
 
+/// Polls with a deadline so a workflow that never starts or never finishes fails the test
+/// instead of hanging `swift test` until the CI job limit.
+@MainActor
+private func waitUntil(_ description: String, timeoutSeconds: Double = 10, _ condition: @MainActor () -> Bool) async throws {
+    let deadline = Date().addingTimeInterval(timeoutSeconds)
+    while !condition() {
+        guard Date() < deadline else { throw AppError.general("Timed out waiting for \(description)") }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+}
+
 private actor AsyncGate {
     private var hasEntered = false
-    private var enterWaiters: [CheckedContinuation<Void, Never>] = []
     private var releaseWaiter: CheckedContinuation<Void, Never>?
 
     func enterAndWait() async {
         hasEntered = true
-        for waiter in enterWaiters {
-            waiter.resume()
-        }
-        enterWaiters.removeAll()
         await withCheckedContinuation { continuation in
             releaseWaiter = continuation
         }
     }
 
-    func waitUntilEntered() async {
-        if hasEntered { return }
-        await withCheckedContinuation { continuation in
-            enterWaiters.append(continuation)
+    /// Bounded so a workflow that never reaches the gated step fails instead of hanging `swift test`.
+    func waitUntilEntered(timeoutSeconds: Double = 10) async throws {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while !hasEntered {
+            guard Date() < deadline else { throw AppError.general("Timed out waiting for the gated step to start") }
+            try await Task.sleep(nanoseconds: 10_000_000)
         }
     }
 

@@ -171,7 +171,14 @@ cleanup_bug_report_resources() {
     security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
   fi
 }
-trap cleanup_bug_report_resources EXIT
+# Preserve the failing status: macOS bash 3.2 otherwise lets the EXIT trap's last
+# command replace it, so a fatal error could still report success.
+on_build_exit() {
+  local status=$?
+  cleanup_bug_report_resources
+  exit "$status"
+}
+trap on_build_exit EXIT
 
 if [[ -f "$BUG_REPORT_ENDPOINT_RESOURCE_FILE" ]]; then
   BUG_REPORT_ENDPOINT_EXISTED="1"
@@ -198,6 +205,12 @@ if [[ -n "$FIXER_BUG_REPORT_TOKEN" ]]; then
   echo "==> Embedding FIXER_BUG_REPORT_TOKEN into app resources for this build"
   printf '%s\n' "$FIXER_BUG_REPORT_TOKEN" > "$BUG_REPORT_TOKEN_RESOURCE_FILE"
 fi
+# Expand with ${arr[@]+...}: macOS bash 3.2 treats an empty array as unbound under set -u.
+resource_args=()
+if [[ "$SIGN_IDENTITY" != "-" ]]; then
+  resource_args+=(--require-bug-report)
+fi
+python3 "$ROOT_DIR/scripts/validate-resources.py" "$ROOT_DIR/Sources/1132Fixer/Resources" ${resource_args[@]+"${resource_args[@]}"}
 
 rm -rf "$DIST_DIR" "$TEMP_BUILD_ROOT"
 mkdir -p "$DIST_DIR" "$UNIVERSAL_DIR"
@@ -236,7 +249,7 @@ if [[ -z "$SIGN_IDENTITY" ]]; then
     -P "$APPLE_CERTIFICATE_PASSWORD" \
     -T /usr/bin/codesign \
     -T /usr/bin/security >/dev/null
-  security list-keychains -d user -s "$KEYCHAIN_PATH" "${ORIGINAL_KEYCHAINS[@]}" >/dev/null
+  security list-keychains -d user -s "$KEYCHAIN_PATH" ${ORIGINAL_KEYCHAINS[@]+"${ORIGINAL_KEYCHAINS[@]}"} >/dev/null
   security set-key-partition-list \
     -S apple-tool:,apple:,codesign: \
     -s \
@@ -311,6 +324,9 @@ if [[ -d "$ARM64_RELEASE_DIR/$EXPECTED_RESOURCE_BUNDLE" ]]; then
   fi
   cp -R "$ARM64_RELEASE_DIR/$EXPECTED_RESOURCE_BUNDLE" "$APP_BUNDLE_DIR/Contents/Resources/"
 fi
+for resource_bundle in "$ARM64_RELEASE_DIR/$EXPECTED_RESOURCE_BUNDLE" "$X64_RELEASE_DIR/$EXPECTED_RESOURCE_BUNDLE" "$APP_BUNDLE_DIR/Contents/Resources/$EXPECTED_RESOURCE_BUNDLE"; do
+  python3 "$ROOT_DIR/scripts/validate-resources.py" "$resource_bundle" ${resource_args[@]+"${resource_args[@]}"}
+done
 
 # Use the project's Info.plist as the authoritative source, then patch in
 # build-time values (version, bundle ID, executable name, etc.).
@@ -342,6 +358,15 @@ if [[ -f "$SOURCE_APP_ICON" ]]; then
   sips -z 512 512 "$SOURCE_APP_ICON" --out "$ICONSET_DIR/icon_256x256@2x.png" >/dev/null
   sips -z 512 512 "$SOURCE_APP_ICON" --out "$ICONSET_DIR/icon_512x512.png" >/dev/null
   sips -z 1024 1024 "$SOURCE_APP_ICON" --out "$ICONSET_DIR/icon_512x512@2x.png" >/dev/null
+  # Small sizes use the heavier-stroke optical drawings from the design system
+  # (mapped in .brand-assets.tsv) instead of downscaling the 1024px master.
+  OPTICAL_ICON_DIR="$ROOT_DIR/packaging/icon"
+  for slot in 16x16 16x16@2x 32x32; do
+    optical_icon="$OPTICAL_ICON_DIR/AppIcon-small-optical-$slot.png"
+    if [[ -f "$optical_icon" ]]; then
+      cp "$optical_icon" "$ICONSET_DIR/icon_$slot.png"
+    fi
+  done
   iconutil -c icns "$ICONSET_DIR" -o "$APP_BUNDLE_DIR/Contents/Resources/AppIcon.icns"
 fi
 

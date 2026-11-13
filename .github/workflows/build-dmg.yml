@@ -48,6 +48,7 @@ jobs:
           ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 0
           persist-credentials: false
+          submodules: recursive
 
       - name: Validate signing trust boundary
         id: trust
@@ -81,6 +82,11 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "Building $version from $sha"
+
+      - name: Test selected commit before packaging
+        run: |
+          test -s design-system/tokens/macos.json
+          swift test
 
       - name: Select signing mode
         id: signing

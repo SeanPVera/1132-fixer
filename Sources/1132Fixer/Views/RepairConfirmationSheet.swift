@@ -38,22 +38,23 @@ struct RepairConfirmationSheet: View {
             // Sheet Header
             VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Review Repair Plan")
+                    Text("Review repair plan")
                         .font(Theme.Typography.sectionHeading)
                         .foregroundStyle(Theme.Colors.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
                     Spacer()
-                    Text("\(plan.steps.count) steps • \(plan.adminPromptCount) admin \(plan.adminPromptCount == 1 ? "prompt" : "prompts")")
+                    Text("\(plan.steps.count) steps · \(plan.adminPromptCount) admin \(plan.adminPromptCount == 1 ? "prompt" : "prompts")")
                         .font(Theme.Typography.metadata)
+                        .monospacedDigit()
                         .foregroundStyle(Theme.Colors.textSecondary)
                 }
 
-                Text("Inspect the exact files, services, and 9-step repair sequence before starting. Nothing is modified until you choose Start Repair.")
+                Text("Inspect the exact files, services, and 9-step repair sequence before starting. Nothing is modified until you choose Start repair.")
                     .font(Theme.Typography.body)
                     .foregroundStyle(Theme.Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(Theme.Spacing.s24)
-            .background(Theme.Colors.surface)
 
             Divider()
                 .overlay(Theme.Colors.border)
@@ -63,7 +64,7 @@ struct RepairConfirmationSheet: View {
                     // Advisory warnings from readiness snapshot if any
                     if !plan.readiness.warningChecks.isEmpty {
                         VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
-                            Label("Readiness Advisories", systemImage: "exclamationmark.triangle.fill")
+                            Label("Readiness advisories", systemImage: "exclamationmark.triangle.fill")
                                 .font(Theme.Typography.label)
                                 .foregroundStyle(Theme.Colors.warning)
 
@@ -79,18 +80,15 @@ struct RepairConfirmationSheet: View {
                         }
                         .padding(Theme.Spacing.s16)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Theme.Colors.warning.opacity(0.10))
-                        .overlay {
-                            Rectangle()
-                                .stroke(Theme.Colors.warning.opacity(0.45), lineWidth: 1)
-                        }
+                        .ledgerContainer(background: Theme.Colors.surfaceModal)
                     }
 
                     // Affected Locations Ledger
                     VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
-                        Text("AFFECTED LOCATIONS & SERVICES")
+                        Text("Affected locations and services")
                             .font(Theme.Typography.label)
-                            .foregroundStyle(Theme.Colors.textSecondary)
+                            .foregroundStyle(Theme.Colors.textPrimary)
+                            .accessibilityAddTraits(.isHeader)
 
                         VStack(spacing: 0) {
                             ForEach(Array(plan.affectedLocations.enumerated()), id: \.element.id) { index, location in
@@ -100,21 +98,16 @@ struct RepairConfirmationSheet: View {
                                             .font(Theme.Typography.label)
                                             .foregroundStyle(Theme.Colors.textPrimary)
                                         Spacer()
-                                        Text(location.requiresAdmin ? "Administrator" : "User Scope")
-                                            .font(Theme.Typography.metadata)
-                                            .foregroundStyle(location.requiresAdmin ? Theme.Colors.warning : Theme.Colors.textSecondary)
-                                            .padding(.horizontal, Theme.Spacing.s8)
-                                            .padding(.vertical, 2)
-                                            .background(
-                                                (location.requiresAdmin ? Theme.Colors.warning : Theme.Colors.border)
-                                                    .opacity(0.16)
-                                            )
-                                            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                                        StatusTag(
+                                            text: location.requiresAdmin ? "Administrator" : "User scope",
+                                            tone: location.requiresAdmin ? .warning : .neutral
+                                        )
                                     }
 
                                     Text(location.path)
                                         .font(Theme.Typography.mono)
-                                        .foregroundStyle(Theme.Colors.link)
+                                        .foregroundStyle(Theme.Colors.textPrimary)
+                                        .fixedSize(horizontal: false, vertical: true)
                                         .textSelection(.enabled)
 
                                     Text(location.action)
@@ -130,25 +123,27 @@ struct RepairConfirmationSheet: View {
                                 }
                             }
                         }
-                        .ledgerContainer(background: Theme.Colors.surface, borderColor: Theme.Colors.border)
+                        .ledgerContainer(background: Theme.Colors.surfaceModal)
                     }
 
                     // 9-Step Planned Sequence
                     VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
-                        Text("PLANNED 9-STEP SEQUENCE")
+                        Text("Planned \(plan.steps.count)-step sequence")
                             .font(Theme.Typography.label)
-                            .foregroundStyle(Theme.Colors.textSecondary)
+                            .foregroundStyle(Theme.Colors.textPrimary)
+                            .accessibilityAddTraits(.isHeader)
 
                         VStack(spacing: 0) {
                             ForEach(Array(plan.steps.enumerated()), id: \.element.id) { index, step in
                                 HStack(alignment: .top, spacing: Theme.Spacing.s12) {
-                                    Text("\(step.index).")
+                                    Text(String(format: "%02d", step.index))
                                         .font(Theme.Typography.mono)
+                                        .monospacedDigit()
                                         .foregroundStyle(Theme.Colors.textSecondary)
                                         .frame(width: 24, alignment: .trailing)
 
                                     VStack(alignment: .leading, spacing: Theme.Spacing.s4) {
-                                        HStack(spacing: Theme.Spacing.s8) {
+                                        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s8) {
                                             Text(step.name)
                                                 .font(Theme.Typography.label)
                                                 .foregroundStyle(Theme.Colors.textPrimary)
@@ -156,7 +151,7 @@ struct RepairConfirmationSheet: View {
                                                 .font(Theme.Typography.metadata)
                                                 .foregroundStyle(Theme.Colors.textSecondary)
                                             if step.requiresAdmin {
-                                                Label("Admin Prompt", systemImage: "lock.fill")
+                                                Label("Admin prompt", systemImage: "lock.fill")
                                                     .font(Theme.Typography.metadata)
                                                     .foregroundStyle(Theme.Colors.warning)
                                             }
@@ -177,12 +172,12 @@ struct RepairConfirmationSheet: View {
                                 }
                             }
                         }
-                        .ledgerContainer(background: Theme.Colors.surface, borderColor: Theme.Colors.border)
+                        .ledgerContainer(background: Theme.Colors.surfaceModal)
                     }
 
                     // Safety Guarantees
                     VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
-                        Label("Safety & Sandbox Guarantees", systemImage: "checkmark.shield.fill")
+                        Label("Safety and sandbox guarantees", systemImage: "checkmark.shield.fill")
                             .font(Theme.Typography.label)
                             .foregroundStyle(Theme.Colors.success)
 
@@ -199,10 +194,7 @@ struct RepairConfirmationSheet: View {
                     }
                     .padding(Theme.Spacing.s16)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Theme.Colors.surface)
-                    .overlay {
-                        Rectangle().stroke(Theme.Colors.border, lineWidth: 1)
-                    }
+                    .ledgerContainer(background: Theme.Colors.surfaceModal)
                 }
                 .padding(Theme.Spacing.s24)
             }
@@ -220,20 +212,19 @@ struct RepairConfirmationSheet: View {
 
                 Label(
                     plan.adminStepCount > 1
-                        ? "Single administrator password prompt for Steps 4 & 6"
-                        : "Single administrator password prompt for Step 6",
+                        ? "Single administrator password prompt for steps 4 and 6"
+                        : "Single administrator password prompt for step 6",
                     systemImage: "lock.fill"
                 )
                     .font(Theme.Typography.metadata)
                     .foregroundStyle(Theme.Colors.warning)
 
-                Button("Start Repair", action: onConfirm)
+                Button("Start repair", action: onConfirm)
                     .buttonStyle(ThemedButtonStyle(variant: .primary))
                     .keyboardShortcut(.defaultAction)
             }
             .padding(.horizontal, Theme.Spacing.s24)
             .padding(.vertical, Theme.Spacing.s16)
-            .background(Theme.Colors.surface)
         }
         .frame(width: 680, height: 600)
         .background(Theme.Colors.surfaceModal)

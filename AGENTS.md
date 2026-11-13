@@ -27,7 +27,7 @@
 - Keep UI changes in SwiftUI and follow existing visual/component patterns.
 
 ## Design System
-- `design-system/` is a git submodule (`https://github.com/1132-Fixer/design-system.git`) and the source of truth for all design decisions.
+- `design-system/` is a git submodule (`https://github.com/SeanPVera/design-system.git`) and the source of truth for all design decisions.
 - For any design matter — colors, typography, spacing, components, icons, visual patterns — consult `design-system/` first and follow its tokens/components.
 - Do not invent new visual patterns, colors, or component styles that diverge from `design-system/`.
 - If `design-system/` lacks guidance for a needed case, ask the user before improvising rather than guessing.
@@ -54,6 +54,7 @@
  - After edits, run at least: `swift build`.
  - If UI or runtime behavior changed, also run: `swift run` and verify no immediate startup errors.
  - If `swift build` or `swift run` fails, analyze the error message, fix syntax or dependency issues, and retry the relevant command.
+ - Cloud/Linux sessions: `swift build`, `swift test`, and `swift run` cannot pass there (SwiftUI/AppKit are Apple-only), so do not try to fix `no such module 'SwiftUI'`; instead run `find Sources Tests -name '*.swift' -print0 | xargs -0 swiftc -parse` (syntax only) and `shellcheck scripts/*.sh`, and rely on macOS CI for the real build and tests.
 
 Escalation guidance:
 

@@ -48,7 +48,7 @@ struct UpdateCheckerTests {
         let jsonString = """
         {
             "tag_name": "v1.2.3",
-            "html_url": "https://github.com/1132-Fixer/macos/releases/tag/v1.2.3",
+            "html_url": "https://github.com/SeanPVera/1132-fixer/releases/tag/v1.2.3",
             "body": "Test release notes",
             "draft": false,
             "prerelease": false
@@ -65,7 +65,7 @@ struct UpdateCheckerTests {
         let releaseInfo = try await UpdateChecker.fetchLatestRelease(session: session)
 
         #expect(releaseInfo.version == "1.2.3")
-        #expect(releaseInfo.htmlURL.absoluteString == "https://github.com/1132-Fixer/macos/releases/tag/v1.2.3")
+        #expect(releaseInfo.htmlURL.absoluteString == "https://github.com/SeanPVera/1132-fixer/releases/tag/v1.2.3")
         #expect(releaseInfo.releaseNotes == "Test release notes")
     }
 
@@ -94,7 +94,7 @@ struct UpdateCheckerTests {
         let jsonString = """
         {
             "tag_name": "v1.2.3",
-            "html_url": "https://github.com/1132-Fixer/macos/releases/tag/v1.2.3",
+            "html_url": "https://github.com/SeanPVera/1132-fixer/releases/tag/v1.2.3",
             "body": "Draft release notes",
             "draft": true,
             "prerelease": false
@@ -123,7 +123,7 @@ struct UpdateCheckerTests {
         let jsonString = """
         {
             "tag_name": "v1.2.3-beta",
-            "html_url": "https://github.com/1132-Fixer/macos/releases/tag/v1.2.3-beta",
+            "html_url": "https://github.com/SeanPVera/1132-fixer/releases/tag/v1.2.3-beta",
             "body": "Pre-release notes",
             "draft": false,
             "prerelease": true
@@ -210,7 +210,7 @@ struct UpdateCheckerTests {
         let jsonString = """
         {
             "tag_name": "v1.2.3",
-            "html_url": "https://github.com/1132-Fixer/macos/releases/tag/v1.2.3"
+            "html_url": "https://github.com/SeanPVera/1132-fixer/releases/tag/v1.2.3"
         """ // Missing closing brace and other fields
         let data = jsonString.data(using: .utf8)!
 
@@ -234,16 +234,16 @@ struct UpdateCheckerTests {
 struct UpdateCheckerURLTests {
 
     @Test func acceptsGitHubReleaseURLs() {
-        #expect(UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/1132-Fixer/macos/releases/tag/v1.8.1")!))
-        #expect(UpdateChecker.isTrustedReleaseURL(URL(string: "https://GitHub.com/1132-Fixer/macos/releases/latest")!))
-        #expect(UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com:443/1132-Fixer/macos/releases/tag/v1")!))
+        #expect(UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/SeanPVera/1132-fixer/releases/tag/v1.8.1")!))
+        #expect(UpdateChecker.isTrustedReleaseURL(URL(string: "https://GitHub.com/SeanPVera/1132-fixer/releases/latest")!))
+        #expect(UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com:443/SeanPVera/1132-fixer/releases/tag/v1")!))
     }
 
     @Test func rejectsReleaseURLsForOtherRepositories() {
         #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/attacker/project/releases/tag/v1")!))
-        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/1132-Fixer/macos-malware/releases/tag/v1")!))
-        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/1132-Fixer/macos")!))
-        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/1132-Fixer/macos/releases/../../attacker/project")!))
+        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/SeanPVera/1132-fixer-malware/releases/tag/v1")!))
+        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/SeanPVera/1132-fixer")!))
+        #expect(!UpdateChecker.isTrustedReleaseURL(URL(string: "https://github.com/SeanPVera/1132-fixer/releases/../../attacker/project")!))
     }
 
     @Test func rejectsLookalikeHosts() {

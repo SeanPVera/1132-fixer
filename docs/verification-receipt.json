@@ -1,0 +1,377 @@
+{
+  "date": "2026-11-07",
+  "user_timezone": "America/New_York",
+  "committed_base": "67067beff3fd7b7313488b9578b1c6303f99cf2b",
+  "branch": "remediation/final-plan-1.8.5",
+  "branch_head_at_continuation": "5c2f86d0c4f9473b581e827d91675e76bed25d8d",
+  "working_tree_changes_at_receipt": [
+    "Sources/1132Fixer/AppViewModel.swift",
+    "docs/REMEDIATION_STATUS.md",
+    "docs/verification-receipt.json"
+  ],
+  "version": "1.8.6",
+  "host": {
+    "os": "Linux x86_64 (Claude Code cloud session)",
+    "swift": "Swift version 6.1.2 (swift-6.1.2-RELEASE)",
+    "unavailable": [
+      "SwiftUI",
+      "AppKit",
+      "Xcode",
+      "sandbox-exec",
+      "hdiutil",
+      "codesign",
+      "native Zoom"
+    ]
+  },
+  "portable_checks_passed": true,
+  "implementation_verification": "PARTIALLY VERIFIED",
+  "release_readiness": "BLOCKED",
+  "checks": [
+    {
+      "command": "find Sources Tests -name '*.swift' -print0 | xargs -0 swiftc -parse",
+      "exit_code": 0,
+      "status": "PASS",
+      "output": ""
+    },
+    {
+      "command": "shellcheck scripts/*.sh",
+      "exit_code": 0,
+      "status": "PASS",
+      "output": ""
+    },
+    {
+      "command": [
+        "/usr/local/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts/tests",
+        "-v"
+      ],
+      "exit_code": 0,
+      "status": "PASS",
+      "output": "test_adhoc_fixture_does_not_require_distribution_credentials (test_packaged_resources.PackagedResourceTests.test_adhoc_fixture_does_not_require_distribution_credentials) ... ok\ntest_ambiguous_layout_and_symlinked_resource_fail (test_packaged_resources.PackagedResourceTests.test_ambiguous_layout_and_symlinked_resource_fail) ... ok\ntest_flat_bundle_passes (test_packaged_resources.PackagedResourceTests.test_flat_bundle_passes) ... ok\ntest_invalid_endpoint_and_control_characters_fail_without_values_in_output (test_packaged_resources.PackagedResourceTests.test_invalid_endpoint_and_control_characters_fail_without_values_in_output) ... ok\ntest_missing_empty_and_invalid_resources_fail (test_packaged_resources.PackagedResourceTests.test_missing_empty_and_invalid_resources_fail) ... ok\ntest_structured_bundle_passes (test_packaged_resources.PackagedResourceTests.test_structured_bundle_passes) ... ok\ntest_current_snapshot_survives_when_it_alone_exceeds_cap (test_shell_fixtures.ShellFixtureTests.test_current_snapshot_survives_when_it_alone_exceeds_cap) ... ok\ntest_foreign_user_process_cannot_satisfy_shutdown_probe (test_shell_fixtures.ShellFixtureTests.test_foreign_user_process_cannot_satisfy_shutdown_probe) ... ok\ntest_no_unexpanded_interpolations_in_shutdown_script (test_shell_fixtures.ShellFixtureTests.test_no_unexpanded_interpolations_in_shutdown_script) ... ok\ntest_oversized_rejected_candidate_does_not_evict_older_small_snapshot (test_shell_fixtures.ShellFixtureTests.test_oversized_rejected_candidate_does_not_evict_older_small_snapshot) ... ok\ntest_retained_count_counts_current_snapshot (test_shell_fixtures.ShellFixtureTests.test_retained_count_counts_current_snapshot) ... ok\ntest_surviving_process_causes_refusal_after_scoped_force_kill (test_shell_fixtures.ShellFixtureTests.test_surviving_process_causes_refusal_after_scoped_force_kill) ... ok\ntest_unrelated_live_pid_is_not_launch_provenance (test_shell_fixtures.ShellFixtureTests.test_unrelated_live_pid_is_not_launch_provenance) ... ok\ntest_watchdog_parent_selectors_are_unchanged (test_shell_fixtures.ShellFixtureTests.test_watchdog_parent_selectors_are_unchanged) ... ok\n\n----------------------------------------------------------------------\nRan 14 tests in 1.450s\n\nOK\n"
+    },
+    {
+      "command": [
+        "bash",
+        "-n",
+        "scripts/build-universal-dmg.sh",
+        "scripts/check-dmg.sh"
+      ],
+      "exit_code": 0,
+      "status": "PASS",
+      "output": ""
+    },
+    {
+      "command": [
+        "bash",
+        "design-system/scripts/brand-assets.sh",
+        "check",
+        ".",
+        ".brand-assets.tsv"
+      ],
+      "exit_code": 0,
+      "status": "PASS",
+      "output": "brand assets check passed\n"
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check",
+        "67067beff3fd7b7313488b9578b1c6303f99cf2b"
+      ],
+      "exit_code": 0,
+      "status": "PASS",
+      "output": ""
+    },
+    {
+      "command": "Python json.load (tokens), plistlib.load, yaml.safe_load (workflows)",
+      "status": "PASS",
+      "token_files": 6,
+      "plist_files": 2,
+      "workflow_files": 4
+    }
+  ],
+  "approximate_linux_checks": {
+    "note": "Run in a scratch copy outside the repository with shims (Darwin->Glibc, FoundationNetworking, stubs for sysctlbyname, URLSession.bytes, volumeAvailableCapacityForImportantUsage, AppViewModel nested value types). Not evidence of Darwin compilation or behavior.",
+    "typecheck_non_swiftui_sources": {
+      "files": 15,
+      "errors": 0,
+      "warnings": 0,
+      "language_mode": "Swift 5",
+      "status": "PASS (approximate)"
+    },
+    "test_files_typechecked": {
+      "passed": 12,
+      "total": 14,
+      "not_checkable": [
+        "AppViewModelWorkflowTests.swift",
+        "WorkflowSupportTests.swift"
+      ]
+    },
+    "linux_test_run": {
+      "tests": 179,
+      "passed": 173,
+      "failed": 6,
+      "failures": {
+        "zoomSandboxProfileIsAcceptedBySandboxExec": "requires /usr/bin/sandbox-exec (now a required canary)",
+        "sandboxedClientCanReadAndUpdateItsKeychain": "requires macOS keychain/sandbox",
+        "timeBoundedCommandTriggersRecoveryTrapInSubshellOnTimeout": "pre-existing; fails identically on 67067be under Linux; passed macOS CI run 49 (67067be)",
+        "backupCommandPreservesNewestSnapshotEvenWhenFutureDatedSnapshotExists": "pre-existing; fails identically on 67067be under Linux; passed macOS CI run 49 (67067be)",
+        "retentionSkipsOversizedCandidateWithoutChargingItsSizeOrCount": "new; script exits 0 and writes marker; fails at isManagedBackupURL URL equality (Linux trailing-slash difference diagnosed); inferred Linux-only",
+        "bootIdentifierIsAvailableAndStableWithinOneBoot": "new; Linux shim has no sysctl; native-only meaningful"
+      }
+    },
+    "baseline_comparison": "ShellCommandsTests from 67067be built with identical shims: 95 tests, same two pre-existing failures"
+  },
+  "native_checks": {
+    "swift build": {
+      "status": "PASS on hosted macos-15, macos-15-intel, macos-26, macos-26-intel",
+      "evidence": "CI run 42430252625"
+    },
+    "swift test": {
+      "status": "PASS on hosted macos-15, macos-15-intel, macos-26, macos-26-intel",
+      "evidence": "CI run 42430252625"
+    },
+    "swift build -c release": {
+      "status": "PASS on hosted macos-15, macos-15-intel, macos-26, macos-26-intel",
+      "evidence": "CI run 42430252625"
+    },
+    "swift run": {
+      "status": "NOT RUN",
+      "reason": "SwiftUI/AppKit unavailable on Linux"
+    },
+    "DMG": {
+      "status": "PASS for ad-hoc universal DMG on hosted macos-15 (mounted smoke check)",
+      "evidence": "CI run 42430115231",
+      "not_covered": "Developer ID signing, notarization, downloaded DMG"
+    }
+  },
+  "prior_session": "Original Codex receipt (Swift absent, exit 127 for all swift commands) is preserved in git at b3814f9.",
+  "essential_unverified": [
+    "native startup and rendered UI",
+    "Darwin cross-instance lock and durable settlement",
+    "actual administrator authorization, watchdog/restoration and root process lifecycle",
+    "real signed sandboxed Zoom startup, SSO, media, keychain, helper/TCC and PID continuity",
+    "complete mounted universal DMG, runtime resources, signatures, entitlements, notarization, cleanup",
+    "hosted CI and repository/tag/release-signing protections",
+    "Swift build/test and runtime on macOS 13/14 and under Rosetta (no hosted runners)"
+  ],
+  "core_candidate_sha256": {
+    ".github/CODEOWNERS": "b9c394c3dc0cd3871af06213ab67fe35134ec57def6c6d46873ef0ef864e0064",
+    ".github/workflows/build-dmg.yml": "f649b6cac0c0c17f41e8defb4fcd23af3b2bd90bba899238bc4f6c0ccab56547",
+    ".github/workflows/ci.yml": "61654444fa9f781a8763358e491dcee6943732ccca9ccccfb642d4b54192c77d",
+    ".github/workflows/release.yml": "85d4d11ddf18310d56df1d9445d56cae200bb4db76230ae039b73e8d08dbd5f8",
+    "README.md": "75d32a88a7ad7ed18757db5700fc78317f4c2984694bd63235bfdcaf9d386d40",
+    "Sources/1132Fixer/1132FixerApp.swift": "3954ebeec368fb64e9a56bbab87783fbb1a9d89aa32b73b9c21b796c393e05a5",
+    "Sources/1132Fixer/AppConfiguration.swift": "e4300f135ed9105d1250f3412801bb4bcbb34a0b66602235d7202e46962a864e",
+    "Sources/1132Fixer/AppViewModel.swift": "b0120469067dcc291f67b16d957e16740b786c5420f527fcb07cc98cd7f8530a",
+    "Sources/1132Fixer/BackupStore.swift": "717c69b9196eb586e31f2195523ee68015d8fbb4f3a37275144175a98e30e75c",
+    "Sources/1132Fixer/BugReportService.swift": "51347fe82d0fbd938c728f6eb3ff737a0edc4c1110384aaf3aecb0ffd789bd0a",
+    "Sources/1132Fixer/ContentView.swift": "952ed70a3be63a305a9d7629e116cbd0a0ba264e062a4c4aded8865da5a16f1c",
+    "Sources/1132Fixer/DiagnosticsCollector.swift": "635ee93c71a9b1747d940f3af86281a6087de62b034c9029f96b0cb37e4115de",
+    "Sources/1132Fixer/Info.plist": "0204e5337a2c4c4a636fdfb2bd696a7a81acf5a443da4f81cb39be03564ff5e4",
+    "Sources/1132Fixer/NetworkCapabilities.swift": "3b2506c249ad8ef7168211c96b18a1301740f71a19bd3f61cfcbd305b772b607",
+    "Sources/1132Fixer/OperationContracts.swift": "20bd2e2fa815a9e5d523f1e79303f49275c43d6148dc0b114b93e4369de5322c",
+    "Sources/1132Fixer/PackagedResources.swift": "b71a59aa79f1cbc8ae463060ed437c5f6185a23c40a5ba4c57c62071cf17f3d3",
+    "Sources/1132Fixer/PrivilegedOperationGuard.swift": "c178c6e711419ae63e0c943ea3ef83b1a338639489f0dbfb85f6b7c70d3ad6d2",
+    "Sources/1132Fixer/ShellCommands.swift": "d7386ddfb75717217544a08dec02d1ad3db89b10231b0594c75b34fb4c654821",
+    "Sources/1132Fixer/Views/BugReportFormSheet.swift": "da1591c966c17876ff68c418d319fc3c43612d9a69c3aa660d0629b4d00ffe4b",
+    "Sources/1132Fixer/Views/HeaderCard.swift": "d12d3d3c0a75b86ba3b4afa4f1f03fe3a206a36a34cea817defeeed03a2d78de",
+    "Sources/1132Fixer/Views/PreflightPanel.swift": "30ca1cc2d239814d508ecfefd962cd0d54472a89fa339d043ee0908fc6bb7e27",
+    "Sources/1132Fixer/Views/WorkflowResultCard.swift": "4bbd284954192b209a1d1787beed4f006ddce6d8a5140fe5207c219087adfb94",
+    "Sources/1132Fixer/WorkflowOwnershipLock.swift": "f2edaeea72be7adf8d2eaece7ffd031cc18e4206836f708d211e03fb6495c1fe",
+    "Sources/1132Fixer/WorkflowSupport.swift": "8ea552a28bd4868e139c4dbab5e1e62dd717434f9a1daa11747f41f3eeca0227",
+    "Tests/1132FixerTests/AppViewModelWorkflowTests.swift": "eeb337ef362f7dd11723f9f576a473fd9dc7c3283be1afc1393f148076ad14d4",
+    "Tests/1132FixerTests/BugReportServiceTests.swift": "2dc14b28dfcef46c92bde131a65a582076c19dcd44221f8c442106a59b04fa71",
+    "Tests/1132FixerTests/PackagedResourcesTests.swift": "1228a3236e9f67a2dc904ecb5efa4c47662b0ac2da5f5a63da77da79d54b51f7",
+    "Tests/1132FixerTests/RemediationContractTests.swift": "388c12f25b60ab52c3903cd200ea6739cf90ea31419e562cec235999941f62ca",
+    "Tests/1132FixerTests/ShellCommandsTests.swift": "b6b4a5f20d43f390498c5a4ae6f413877b05654ae997a2250e5a6e7ed688bc22",
+    "Tests/1132FixerTests/UpdateCheckerTests.swift": "d00c4a01deac8d1649366a40e5d0d4d12ad8cdf66831d88cda0ca480934a78b9",
+    "Tests/1132FixerTests/WorkflowSupportTests.swift": "4bab7896065a0345cab6d193e31c530091a0c6395496777d8608717c5a9ba5d7",
+    "VERSION": "6fa53c88aa961145d6a5e470dc2bf4e56f5e9b893e29e3c24a203c4c5759e7ee",
+    "scripts/build-universal-dmg.sh": "cd10064fdc3814e100941b424a4ceed7b0b4d4a25e4d17f4f2f9277ea983af37",
+    "scripts/check-dmg.sh": "c461d19aa94a4e82688b5fba66d39664e6161b59c07f50e10551b40089bcd2cb",
+    "scripts/tests/test_packaged_resources.py": "925cc22ec39d8af2f131d9a7673ea3c75b0f61e0db38a9ccfd71262640db7faf",
+    "scripts/tests/test_shell_fixtures.py": "a8095d84da01ed500f5957a8f6c11fa63f6d0c6541a1966a3582d9e8f4247325",
+    "scripts/validate-resources.py": "660acf7c852b0097ef7268030032a9b2338670c496a5650955ee54868e676fe8"
+  },
+  "changed_files": [
+    ".github/CODEOWNERS",
+    ".github/workflows/build-dmg.yml",
+    ".github/workflows/ci.yml",
+    ".github/workflows/release.yml",
+    "README.md",
+    "Sources/1132Fixer/1132FixerApp.swift",
+    "Sources/1132Fixer/AppConfiguration.swift",
+    "Sources/1132Fixer/AppViewModel.swift",
+    "Sources/1132Fixer/BackupStore.swift",
+    "Sources/1132Fixer/BugReportService.swift",
+    "Sources/1132Fixer/ContentView.swift",
+    "Sources/1132Fixer/DiagnosticsCollector.swift",
+    "Sources/1132Fixer/Info.plist",
+    "Sources/1132Fixer/NetworkCapabilities.swift",
+    "Sources/1132Fixer/OperationContracts.swift",
+    "Sources/1132Fixer/PackagedResources.swift",
+    "Sources/1132Fixer/PrivilegedOperationGuard.swift",
+    "Sources/1132Fixer/ShellCommands.swift",
+    "Sources/1132Fixer/Views/ActionCard.swift",
+    "Sources/1132Fixer/Views/BugReportFormSheet.swift",
+    "Sources/1132Fixer/Views/HeaderCard.swift",
+    "Sources/1132Fixer/Views/PreflightPanel.swift",
+    "Sources/1132Fixer/Views/WorkflowProgressBar.swift",
+    "Sources/1132Fixer/Views/WorkflowResultCard.swift",
+    "Sources/1132Fixer/WorkflowOwnershipLock.swift",
+    "Sources/1132Fixer/WorkflowSupport.swift",
+    "Tests/1132FixerTests/AppViewModelWorkflowTests.swift",
+    "Tests/1132FixerTests/BugReportServiceTests.swift",
+    "Tests/1132FixerTests/PackagedResourcesTests.swift",
+    "Tests/1132FixerTests/RemediationContractTests.swift",
+    "Tests/1132FixerTests/ShellCommandsTests.swift",
+    "Tests/1132FixerTests/UpdateCheckerTests.swift",
+    "Tests/1132FixerTests/WorkflowSupportTests.swift",
+    "VERSION",
+    "docs/CHANGED_FILES.txt",
+    "docs/CONTINUE_REMEDIATION.txt",
+    "docs/DEVELOPMENT.md",
+    "docs/REMEDIATION_STATUS.md",
+    "docs/verification-receipt.json",
+    "scripts/build-universal-dmg.sh",
+    "scripts/check-dmg.sh",
+    "scripts/tests/test_packaged_resources.py",
+    "scripts/tests/test_shell_fixtures.py",
+    "scripts/validate-resources.py"
+  ],
+  "wip_delivery": {
+    "authorized": true,
+    "branch": "remediation/final-plan-1.8.5",
+    "remote": "origin",
+    "repository": "SeanPVera/1132-fixer",
+    "pushed_wip_commit": "b3814f92",
+    "note": "Continuation changes listed in working_tree_changes_at_receipt were uncommitted when this receipt was generated."
+  },
+  "hosted_ci": [
+    {
+      "pr": "SeanPVera/1132-fixer#25",
+      "workflow": "CI",
+      "run_id": 42419734058,
+      "job": "Build & Test (macOS)",
+      "head_sha": "5c2f86d0c4f9473b581e827d91675e76bed25d8d",
+      "conclusion": "failure",
+      "cause": "swift build: AppViewModel.swift nested helpers record/recordDNS not @MainActor (actor-isolation compile errors)",
+      "follow_up": "Both helpers annotated @MainActor in the next commit"
+    },
+    {
+      "pr": "SeanPVera/1132-fixer#25",
+      "workflow": "Brand guard",
+      "run_id": 42419734007,
+      "head_sha": "5c2f86d0c4f9473b581e827d91675e76bed25d8d",
+      "conclusion": "success"
+    },
+    {
+      "pr": "SeanPVera/1132-fixer#25",
+      "workflow": "CI",
+      "run_id": 42419977661,
+      "job": "Build & Test (macOS)",
+      "head_sha": "e9e85693e6976599c1f96117f7f3f10468a102ca",
+      "conclusion": "cancelled",
+      "observed": "swift build passed; swift test hung after 22:19:19Z; ~20 workflow tests failed with the ownership-lock refusal before the hang",
+      "cause": "test lock directory under /var (resolvingSymlinksInPath strips /private) refused by WorkflowOwnershipLock; unbounded AsyncGate wait",
+      "follow_up": "realpath-based canonicalTemporaryDirectory() and bounded test waits"
+    },
+    {
+      "pr": "SeanPVera/1132-fixer#26",
+      "workflow": "CI",
+      "run_id": 42422840660,
+      "job": "Build & Test (macOS)",
+      "head_sha": "25f4a1c618e3914bee93ee64e751f02287967e5d",
+      "conclusion": "success",
+      "runner": "macos-15",
+      "xcode": "16.4",
+      "swift": "6.1.2",
+      "results": {
+        "swift build": "PASS",
+        "swift test": "PASS (211 tests, 0 failures)",
+        "sandbox and keychain canaries": "PASS",
+        "swift build -c release": "PASS"
+      }
+    },
+    {
+      "pr": "SeanPVera/1132-fixer#27",
+      "workflow": "CI",
+      "run_id": 42429118203,
+      "head_sha": "e9bfd88df86ff10f47ac1e6835343d2c0792fecc",
+      "conclusion": "success",
+      "runners": {
+        "macos-15": "15.8.2 arm64, Xcode 16.4, Swift 6.1.2, 211 tests PASS",
+        "macos-15-intel": "15.7.9 x86_64, Xcode 16.4, Swift 6.1.2, 211 tests PASS",
+        "macos-26": "26.7.2 arm64, Xcode 26.6, Swift 6.3.3, 211 tests PASS",
+        "macos-26-intel": "26.6.1 x86_64, Xcode 26.6, Swift 6.3.3, 211 tests PASS"
+      },
+      "platform_facts": {
+        "hw.optional.arm64": "1 on Apple silicon; unknown oid on Intel",
+        "sysctl.proc_translated": "0 on Apple silicon; unknown oid on Intel",
+        "kern.bootsessionuuid": "readable on all four"
+      }
+    },
+    {
+      "workflow": "Build DMG",
+      "run_id": 42429131607,
+      "mode": "adhoc (untrusted ref)",
+      "conclusion": "failure",
+      "cause": "build-universal-dmg.sh line 205: resource_args[@]: unbound variable under /bin/bash 3.2; EXIT trap masked the status so the step reported success"
+    },
+    {
+      "pr": "SeanPVera/1132-fixer#27",
+      "workflow": "CI",
+      "run_id": 42430115231,
+      "job": "Package ad-hoc DMG (macOS)",
+      "head_sha": "92a88350bfb280bd31b77b8600d4a1c6c4e93c65",
+      "conclusion": "success",
+      "observed": "GNU bash 3.2.57; universal x86_64 arm64; resource validation x4; hdiutil verify VALID; mounted smoke check passed"
+    },
+    {
+      "pr": "SeanPVera/1132-fixer#27",
+      "workflow": "CI",
+      "run_id": 42430252625,
+      "head_sha": "40d336f10a009bb6a35d94a1d35df7e888e5c496",
+      "conclusion": "success",
+      "observed": "7/7 checks PASS; 213 tests per macOS runner; stopZoom literal-name canary and live hardware classification PASS on all four runners"
+    },
+    {
+      "workflow": "CI",
+      "run_id": 42431979699,
+      "head_sha": "14f9ab1d2f402db01a384e1e303e932c4660f114",
+      "branch": "main",
+      "conclusion": "success",
+      "observed": "PR 28 UI rework and VERSION 1.8.6: 6/6 jobs PASS (four macOS runners, ad-hoc DMG, Linux fixtures)"
+    },
+    {
+      "workflow": "Build DMG",
+      "run_id": 42431963794,
+      "head_sha": "a23bc9bd79606098a2dc6a90125b85a03c63de3c",
+      "branch": "main",
+      "trusted": true,
+      "conclusion": "success",
+      "mode": "adhoc",
+      "observed": "No APPLE_CERTIFICATE secret configured on a trusted main build; ad-hoc universal DMG smoke-checked and uploaded (artifact 13598056660)"
+    }
+  ],
+  "version_note": "Remediation set VERSION to 1.8.5; PR 28 (separate UI rework) moved it to 1.8.6.",
+  "owner_settings_observed": {
+    "release-signing approval wait": "none observed (Build DMG runs 9 and 10)",
+    "Developer ID secrets": "not configured (trusted run 10 fell back to ad-hoc)",
+    "required_release_secrets": [
+      "APPLE_CERTIFICATE",
+      "APPLE_CERTIFICATE_PASSWORD",
+      "APPLE_ID",
+      "APPLE_PASSWORD",
+      "APPLE_TEAM_ID",
+      "FIXER_BUG_REPORT_ENDPOINT",
+      "FIXER_BUG_REPORT_TOKEN"
+    ]
+  }
+}

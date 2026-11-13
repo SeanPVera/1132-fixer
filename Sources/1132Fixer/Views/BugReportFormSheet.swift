@@ -17,7 +17,7 @@ struct BugReportFormSheet: View {
         "App version, macOS version/build, architecture, locale, and time zone",
         "Whether Zoom is installed, where it is, and whether its processes are running",
         "Network interface type, preflight checks, and the latest workflow results",
-        "Up to 5,000 recent activity-log entries (redacted for home-directory privacy)",
+        "Up to 2,000 recent log entries within 512 KiB; home paths and MAC addresses are sanitized",
     ]
 
     init(
@@ -104,9 +104,10 @@ struct BugReportFormSheet: View {
             // Sheet Header
             VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Report an Issue")
+                    Text("Report a bug")
                         .font(Theme.Typography.sectionHeading)
                         .foregroundStyle(Theme.Colors.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
                     Spacer()
                     Text("Snapshot captured at sheet open")
                         .font(Theme.Typography.metadata)
@@ -119,7 +120,6 @@ struct BugReportFormSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(Theme.Spacing.s24)
-            .background(Theme.Colors.surface)
 
             Divider().overlay(Theme.Colors.border)
 
@@ -137,16 +137,10 @@ struct BugReportFormSheet: View {
                                         .font(Theme.Typography.mono)
                                         .foregroundStyle(Theme.Colors.textSecondary)
                                     if draft.wasTruncated {
-                                        Text("Truncated to 1 MB limit")
-                                            .font(Theme.Typography.metadata)
-                                            .foregroundStyle(Theme.Colors.warning)
-                                            .padding(.horizontal, Theme.Spacing.s8)
-                                            .padding(.vertical, 2)
-                                            .background(Theme.Colors.warning.opacity(0.15))
-                                            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                                        StatusTag(text: "Truncated to 1 MiB limit", tone: .warning)
                                     }
                                 }
-                                Text("Target: \(draft.selectedAppPath) • \(draft.runSummary)")
+                                Text("Target: \(draft.selectedAppPath) · \(draft.runSummary)")
                                     .font(Theme.Typography.metadata)
                                     .foregroundStyle(Theme.Colors.textSecondary)
                                     .lineLimit(1)
@@ -154,7 +148,7 @@ struct BugReportFormSheet: View {
 
                             Spacer()
 
-                            Button("Save Log…", action: onSaveAttachment)
+                            Button("Save log…", action: onSaveAttachment)
                                 .buttonStyle(ThemedButtonStyle(variant: .secondary))
                                 .disabled(isSubmitting)
 
@@ -162,7 +156,7 @@ struct BugReportFormSheet: View {
                                 isAttachmentPreviewExpanded.toggle()
                             } label: {
                                 Label(
-                                    isAttachmentPreviewExpanded ? "Hide Preview" : "Preview Payload",
+                                    isAttachmentPreviewExpanded ? "Hide preview" : "Show preview",
                                     systemImage: isAttachmentPreviewExpanded ? "chevron.up" : "chevron.down"
                                 )
                             }
@@ -185,7 +179,7 @@ struct BugReportFormSheet: View {
                             .background(Theme.Colors.background)
                         }
                     }
-                    .ledgerContainer(background: Theme.Colors.surface, borderColor: Theme.Colors.border)
+                    .ledgerContainer(background: Theme.Colors.surfaceModal)
 
                     // Optional Contact Field
                     VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
@@ -197,7 +191,7 @@ struct BugReportFormSheet: View {
                             .font(Theme.Typography.body)
                             .foregroundStyle(Theme.Colors.textPrimary)
                             .padding(Theme.Spacing.s12)
-                            .background(Theme.Colors.surface)
+                            .background(Theme.Colors.surfaceModal)
                             .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                             .overlay {
                                 RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
@@ -214,7 +208,7 @@ struct BugReportFormSheet: View {
                                 .foregroundStyle(Theme.Colors.textPrimary)
                             Text("Required")
                                 .font(Theme.Typography.metadata)
-                                .foregroundStyle(Theme.Colors.warning)
+                                .foregroundStyle(Theme.Colors.textSecondary)
                             Spacer()
                             if isMessageOverLimit {
                                 Text("Exceeds limit by \(excessCharacterCount) (\(message.count)/\(Self.maximumMessageLength))")
@@ -233,7 +227,7 @@ struct BugReportFormSheet: View {
                             .scrollContentBackground(.hidden)
                             .frame(minHeight: 120)
                             .padding(Theme.Spacing.s8)
-                            .background(Theme.Colors.surface)
+                            .background(Theme.Colors.surfaceModal)
                             .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                             .overlay {
                                 RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
@@ -249,7 +243,7 @@ struct BugReportFormSheet: View {
 
                         if isMessageOverLimit {
                             Label(
-                                "Your text is preserved. Shorten the description by \(excessCharacterCount) \(excessCharacterCount == 1 ? "character" : "characters") to enable Send Report.",
+                                "Your text is preserved. Shorten the description by \(excessCharacterCount) \(excessCharacterCount == 1 ? "character" : "characters") to enable Send report.",
                                 systemImage: "exclamationmark.circle.fill"
                             )
                             .font(Theme.Typography.metadata)
@@ -285,7 +279,7 @@ struct BugReportFormSheet: View {
                             Text("Sending…")
                         }
                     } else {
-                        Text("Send Report")
+                        Text("Send report")
                     }
                 }
                 .buttonStyle(ThemedButtonStyle(variant: .primary))
@@ -294,7 +288,6 @@ struct BugReportFormSheet: View {
             }
             .padding(.horizontal, Theme.Spacing.s24)
             .padding(.vertical, Theme.Spacing.s16)
-            .background(Theme.Colors.surface)
         }
         .frame(width: 640, height: 620)
         .background(Theme.Colors.surfaceModal)

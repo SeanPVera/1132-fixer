@@ -195,7 +195,7 @@ struct RepairStepSpec: Identifiable, Equatable {
                 scope: "User Session",
                 requiresAdmin: false,
                 plannedSummary: "Quit running Zoom processes cleanly before backing up or modifying any files.",
-                commandSummary: "osascript quit / killall zoom.us"
+                commandSummary: "pgrep / pkill scoped to the current UID (zoom.us, caphost, CptHost)"
             ),
             RepairStepSpec(
                 index: 3,
@@ -203,8 +203,8 @@ struct RepairStepSpec: Identifiable, Equatable {
                 name: "Backup State",
                 scope: "~/Library/Application Support",
                 requiresAdmin: false,
-                plannedSummary: "Copy ~/Library/Application Support/zoom.us to a timestamped 0700 recovery folder (fail-closed).",
-                commandSummary: "ditto ~/Library/Application Support/zoom.us ~/.1132-fixer-backups/..."
+                plannedSummary: "Copy the four listed Zoom state paths to a private timestamped recovery snapshot before mutation.",
+                commandSummary: "cp -a to ~/\(ZoomStateScope.backupRelativeRoot)/snapshot-… (atomic publication)"
             ),
             RepairStepSpec(
                 index: 4,
@@ -213,10 +213,10 @@ struct RepairStepSpec: Identifiable, Equatable {
                 scope: macSpoofingDisabled ? "User Session" : "Network & Admin",
                 requiresAdmin: !macSpoofingDisabled,
                 plannedSummary: macSpoofingDisabled
-                    ? "Check active default route and verify network service (MAC spoofing is disabled on macOS 14+)."
-                    : "Randomize active network interface MAC address and cycle the network service.",
+                    ? "Inspect the active default route. No verified automatic identity mechanism is available; manual Private Wi-Fi Address settings may be available on macOS 15+."
+                    : "Attempt a legacy MAC change, reconnect the service, and flush DNS in the same administrator session. Driver support and the resulting address are checked.",
                 commandSummary: macSpoofingDisabled
-                    ? "route -n get default & networksetup -listallhardwareports"
+                    ? "route -n get default & networksetup interface/service inspection"
                     : "ifconfig lladdr & networksetup service cycle (Administrator)"
             ),
             RepairStepSpec(
@@ -225,8 +225,8 @@ struct RepairStepSpec: Identifiable, Equatable {
                 name: "Clear Local State",
                 scope: "User Library",
                 requiresAdmin: false,
-                plannedSummary: "Remove cached Zoom preferences, containers, logs, and device identifiers in ~/Library.",
-                commandSummary: "Remove ~/Library/{Application Support,Caches,Preferences,Logs}/zoom*"
+                plannedSummary: "Clear the four backed-up state paths and permanently remove the listed local logs. Containers and keychains are not reset.",
+                commandSummary: "rm on the listed state paths and log pattern; defaults delete us.zoom.xos (current user)"
             ),
             RepairStepSpec(
                 index: 6,
@@ -234,7 +234,7 @@ struct RepairStepSpec: Identifiable, Equatable {
                 name: "DNS Flush",
                 scope: "Administrator",
                 requiresAdmin: true,
-                plannedSummary: "Flush system DNS cache and restart mDNSResponder using the single administrator authorization.",
+                plannedSummary: "Flush system DNS caches and send HUP to mDNSResponder. This may already run during Step 4 before the local reset.",
                 commandSummary: "dscacheutil -flushcache & killall -HUP mDNSResponder (Administrator)"
             ),
             RepairStepSpec(
@@ -244,7 +244,7 @@ struct RepairStepSpec: Identifiable, Equatable {
                 scope: "User LaunchAgents",
                 requiresAdmin: false,
                 plannedSummary: "Unload Zoom background updater LaunchAgents for the current login session without deleting plists.",
-                commandSummary: "launchctl bootout gui/$UID us.zoom.ZoomAutoUpdater"
+                commandSummary: "pkill current-UID updaters; launchctl bootout gui/$UID and user/$UID agents"
             ),
             RepairStepSpec(
                 index: 8,
@@ -252,7 +252,7 @@ struct RepairStepSpec: Identifiable, Equatable {
                 name: "Camera & Mic",
                 scope: "Privacy & Security",
                 requiresAdmin: false,
-                plannedSummary: "Check Camera and Microphone permissions for 1132 Fixer so sandboxed Zoom inherits A/V access.",
+                plannedSummary: "Request Camera and Microphone access needed by the sandboxed session. Verify Zoom media behavior after launch; Zoom may also request permissions.",
                 commandSummary: "AVCaptureDevice authorization check (60s prompt timeout)"
             ),
             RepairStepSpec(
@@ -261,7 +261,7 @@ struct RepairStepSpec: Identifiable, Equatable {
                 name: "Launch Zoom",
                 scope: "Sandbox Exec",
                 requiresAdmin: false,
-                plannedSummary: "Re-verify the Zoom binary and launch it inside sandbox-exec with isolated HOME and user keychain.",
+                plannedSummary: "Re-verify Zoom immediately before sandbox-exec launch using your existing home and login keychain. The profile denies selected paths; it is not full isolation.",
                 commandSummary: "sandbox-exec -f <profile> <Zoom.app>/Contents/MacOS/zoom.us"
             ),
         ]
@@ -316,21 +316,21 @@ struct RepairPlan: Identifiable, Equatable {
             AffectedLocation(
                 id: "backup-dir",
                 label: "Recovery Backup Store",
-                path: "~/Library/Application Support/1132Fixer/Backups",
+                path: "~/" + ZoomStateScope.backupRelativeRoot,
                 action: "New timestamped backup created in Step 3 before any deletion",
                 requiresAdmin: false
             ),
             AffectedLocation(
                 id: "user-zoom-data",
                 label: "User Zoom State",
-                path: "~/Library/Application Support/zoom.us, ~/Library/Caches/us.zoom.xos, ~/Library/Preferences/us.zoom.xos.plist, ~/Library/Saved Application State/us.zoom.xos.savedState",
+                path: ZoomStateScope.consentPaths,
                 action: "Backed up first, then cleared in Step 5 (unprivileged)",
                 requiresAdmin: false
             ),
             AffectedLocation(
                 id: "user-zoom-logs",
                 label: "Zoom Local Logs",
-                path: "~/Library/Logs/zoom.us.log*",
+                path: "~/" + ZoomStateScope.removedLogPattern,
                 action: "Permanently removed in Step 5 (not included in backup)",
                 requiresAdmin: false
             ),
@@ -345,16 +345,15 @@ struct RepairPlan: Identifiable, Equatable {
                 id: "network-dns",
                 label: "Network & DNS Cache",
                 path: "Active default-route interface & mDNSResponder",
-                action: macSpoofingDisabled
-                    ? "Active route checked in Step 4; DNS cache flushed in Step 6 via a macOS Administrator prompt"
-                    : "Updated in Steps 4 and 6 via a single macOS Administrator authorization prompt",
+                action: "Updated in Steps 4 and 6 via a single macOS Administrator authorization prompt",
                 requiresAdmin: true
             ),
         ]
         let guarantees = [
             "Fail-closed: If Safety Check, Close Zoom, or Backup State fails, the workflow stops immediately before any data or network change.",
             "Unprivileged file reset: Local Zoom data removal runs strictly as your user account inside your validated home directory.",
-            "Sandboxed launch only: Zoom is always launched under sandbox-exec with your login keychain remained accessible.",
+            "Sandboxed launch only: this launcher uses sandbox-exec with selected deny rules and your existing home; login keychain access remains available.",
+            "Starting normal Zoom independently bypasses this launcher's protection. This app does not prove that error 1132 is resolved.",
         ]
         return RepairPlan(
             id: UUID(),
@@ -410,7 +409,7 @@ struct RunRecord: Identifiable, Equatable {
     }
 }
 
-/// Monotonically sequenced log entry so `Follow latest` works reliably past the 5,000-entry cap.
+/// Monotonically sequenced log entry; retention is capped at 2,000 entries and 512 KiB.
 struct LogEntry: Identifiable, Equatable {
     let sequence: UInt64
     let timestamp: String
@@ -444,28 +443,27 @@ struct ReportDraft: Identifiable, Equatable {
     static func truncateDiagnosticsUTF8(_ content: String, maxBytes: Int = maxAttachmentBytes) -> (text: String, data: Data, originalBytes: Int, wasTruncated: Bool) {
         let fullData = Data(content.utf8)
         let originalBytes = fullData.count
-        guard originalBytes > maxBytes else {
+        let limit = max(0, maxBytes)
+        guard originalBytes > limit else {
             return (content, fullData, originalBytes, false)
         }
-
-        let footer = "\n\n[Truncated to fit \(ByteCountFormatter.string(fromByteCount: Int64(maxBytes), countStyle: .file)) attachment limit (original size: \(originalBytes) bytes).]"
-        let footerData = Data(footer.utf8)
-        let budget = max(0, maxBytes - footerData.count)
-
-        // Walk back at most 3 bytes from budget to land on a valid UTF-8 code point boundary.
-        var prefixLength = min(budget, fullData.count)
-        var prefixText = ""
-        while prefixLength > 0 {
-            if let decoded = String(data: fullData.prefix(prefixLength), encoding: .utf8) {
-                prefixText = decoded
-                break
-            }
-            prefixLength -= 1
+        func prefix(_ bytes: Data, budget: Int) -> Data {
+            var data = Data(bytes.prefix(max(0, budget)))
+            while !data.isEmpty && String(data: data, encoding: .utf8) == nil { data.removeLast() }
+            return data
         }
-
-        let combinedText = prefixText + footer
-        let combinedData = Data(combinedText.utf8)
-        return (combinedText, combinedData, originalBytes, true)
+        let note = Data("\n[Truncated from \(originalBytes) bytes; metadata and newest activity retained.]\n".utf8)
+        guard limit > note.count else {
+            let data = prefix(note, budget: limit)
+            return (String(decoding: data, as: UTF8.self), data, originalBytes, true)
+        }
+        let budget = limit - note.count
+        let metadata = content.components(separatedBy: "--- Activity Log").first ?? content
+        let header = prefix(Data(metadata.utf8), budget: min(65_536, budget / 3))
+        var tail = Data(fullData.suffix(budget - header.count))
+        while let first = tail.first, first & 0xC0 == 0x80 { tail.removeFirst() }
+        let data = header + note + tail
+        return (String(decoding: data, as: UTF8.self), data, originalBytes, true)
     }
 }
 

@@ -89,7 +89,7 @@ enum DiagnosticsCollector {
     }
 
     private static func processIsRunning(_ name: String, executor: any ProcessExecuting) async -> Bool {
-        await run("/usr/bin/pgrep", ["-x", name], executor: executor) != nil
+        await run("/usr/bin/pgrep", ShellCommands.currentUserProcessArguments(name: name), executor: executor) != nil
     }
 
     /// Runs a bounded, cancellation-aware tool directly (no shell) and returns trimmed
@@ -123,6 +123,29 @@ enum DiagnosticsCollector {
         let home = homeDirectory.hasSuffix("/") ? String(homeDirectory.dropLast()) : homeDirectory
         guard !home.isEmpty, home != "/" else { return text }
         return text.replacingOccurrences(of: home, with: "~")
+    }
+
+    /// Aliases exist only within this report; they carry no persistent device identifier.
+    static func sanitizingMACAddresses(_ text: String) -> String {
+        let pattern = #"(?i)(?<![0-9a-f])(?:[0-9a-f]{2}(?:[:-][0-9a-f]{2}){5}|[0-9a-f]{4}(?:\.[0-9a-f]{4}){2})(?![0-9a-f])"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        let source = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: source.length))
+        var aliases: [String: String] = [:]
+        var replacements: [(NSRange, String)] = []
+        for match in matches {
+            let address = source.substring(with: match.range).lowercased().filter { $0.isHexDigit }
+            let alias = aliases[address] ?? "[MAC#\(aliases.count + 1)]"
+            aliases[address] = alias
+            replacements.append((match.range, alias))
+        }
+        let result = NSMutableString(string: text)
+        for (range, alias) in replacements.reversed() { result.replaceCharacters(in: range, with: alias) }
+        return result as String
+    }
+
+    static func sanitizedForSharing(_ text: String, homeDirectory: String = NSHomeDirectory()) -> String {
+        sanitizingMACAddresses(redactingHomeDirectory(text, homeDirectory: homeDirectory))
     }
 
     static func yesNo(_ value: Bool) -> String {
