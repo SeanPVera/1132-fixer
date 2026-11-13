@@ -16,7 +16,10 @@ REQUIRED_CHECKS = (
     "zoom-startup-sso", "camera-microphone-keychain", "privileged-lifecycle",
     "launch-provenance", "macos-13", "macos-14", "rosetta", "ui-accessibility",
 )
-RELEASE_INPUTS = ("Sources", "Package.swift", "VERSION", "MIN_MACOS_VERSION", "scripts", ".github/workflows")
+RELEASE_INPUTS = (
+    "Sources", "Package.swift", "Package.resolved", "VERSION", "MIN_MACOS_VERSION",
+    "scripts", "packaging", "design-system", ".gitmodules", ".github/workflows",
+)
 
 
 def unique_keys(pairs):
@@ -100,9 +103,9 @@ def validate(document, root):
         try:
             git(root, "rev-parse", "--verify", source + "^{commit}")
             git(root, "merge-base", "--is-ancestor", source, "HEAD")
-            if git(root, "diff", "--name-only", source, "HEAD", "--", *RELEASE_INPUTS):
+            if git(root, "diff", "--ignore-submodules=none", "--name-only", source, "HEAD", "--", *RELEASE_INPUTS):
                 errors.append("Release inputs changed after the native tests; repeat affected acceptance on this candidate")
-            if git(root, "status", "--porcelain=v1", "--untracked-files=all", "--", *RELEASE_INPUTS):
+            if git(root, "status", "--ignore-submodules=none", "--porcelain=v1", "--untracked-files=all", "--", *RELEASE_INPUTS):
                 errors.append("Release inputs have uncommitted changes")
         except ValueError as error:
             errors.append(str(error))

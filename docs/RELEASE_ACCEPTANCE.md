@@ -24,6 +24,20 @@ under host contention. The three I/O-semantics tests now allow ten seconds;
 production executor deadlines, the dedicated 0.1-second timeout test and the
 four-second cancellation assertion remain unchanged. This corrects a test
 scheduling assumption and does not count as privileged process-lifecycle proof.
+The corrected tests passed all four platform jobs in
+[CI run 43428981062](https://github.com/SeanPVera/1132-fixer/actions/runs/43428981062)
+at `17ad7cc4a2eb0be67e9a508f20945e25ff4f743a`, including debug/release builds
+and sandbox, keychain and shutdown canaries. Require green checks on the final
+PR head as well.
+
+An ad-hoc test installer is available from
+[Build DMG run 43424698062](https://github.com/SeanPVera/1132-fixer/actions/runs/43424698062/artifacts/14037210350).
+It contains application sources at `a9048593140c79a1ffc36bd635c1aeccb2b92b8f`;
+subsequent candidate changes affect tests, documentation and the release-evidence
+checker. Its SHA-256 is
+`36599cadcb40b0c44656c1b1812ddd99f5bcc96b924d24399a0367d381175b9a`.
+The hosted build mounted and smoke-checked the DMG; local ZIP CRC and DMG hash
+checks also passed. It is not notarized or approved for public distribution.
 
 ## Real-Mac procedure
 
@@ -45,7 +59,8 @@ launch. Do not infer sandbox provenance from another process with the same name.
    performed. Fix failures and repeat affected checks.
 4. Set `source_commit` to the full candidate commit actually tested. The checker
    requires that commit to be an ancestor of the release checkout, with identical
-   Sources, Package.swift, VERSION, MIN_MACOS_VERSION, scripts and workflow files.
+   Sources, Package.swift/Package.resolved, VERSION, MIN_MACOS_VERSION, scripts,
+   packaging assets, the design-system pin/content, .gitmodules and workflow files.
    A following evidence/docs commit is allowed. Changing a release input requires
    affected acceptance again; the checker never accepts stale source evidence.
 5. Run `python3 scripts/check-native-acceptance.py`. A nonzero result blocks
@@ -137,3 +152,5 @@ still require both slices, resource/runtime lookup, entitlements, version,
 Developer ID signatures, stapled notarization and cleanup. Publishing or creating
 a release tag is the final step, after those observations. No release tag has
 been created by this work.
+
+For a continuation handoff, use [CONTINUE_RELEASE.txt](CONTINUE_RELEASE.txt).

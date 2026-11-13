@@ -96,6 +96,19 @@ class NativeAcceptanceTests(unittest.TestCase):
         (self.root / "Sources/new.swift").write_text("// new runtime input\n")
         self.assertTrue(self.errors())
 
+    def test_changed_packaging_and_dependency_inputs_require_retesting(self):
+        for name in ("packaging/icon.png", "design-system/tokens.json", ".gitmodules", "Package.resolved"):
+            with self.subTest(path=name):
+                path = self.root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("fixture build input\n")
+                self.assertTrue(self.errors())
+                self.git("add", name)
+                self.git("commit", "--quiet", "-m", "Changed build input")
+                self.assertTrue(self.errors())
+                self.document["source_commit"] = self.git("rev-parse", "HEAD")
+                self.assertEqual(self.errors(), [])
+
     def test_evidence_only_followup_commit_does_not_invalidate_tested_sources(self):
         self.git("add", "docs")
         self.git("commit", "--quiet", "-m", "Record fixture evidence")

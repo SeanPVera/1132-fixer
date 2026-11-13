@@ -1,3 +1,7 @@
+HISTORICAL 1.8.5 IMPLEMENTATION HANDOFF: superseded by docs/CONTINUE_RELEASE.txt.
+The original WIP work below has since been merged, followed by additional fixes.
+Do not check out or restart this old branch for current release preparation.
+
 Continue the implemented 1132-Fixer remediation from its WIP branch. The owner
 subsequently authorized its commit and push. Check Git for delivery state; do not
 restart with a new audit or discard the changes.

@@ -14,7 +14,7 @@
     {
       "id": "portable-fixtures",
       "status": "PASS",
-      "evidence": "26 unittest fixtures passed; synthetic validator fixtures are not native acceptance."
+      "evidence": "27 unittest fixtures passed, including changed packaging/dependency inputs; synthetic validator fixtures are not native acceptance."
     },
     {
       "id": "static-checks",
@@ -48,8 +48,8 @@
     },
     {
       "id": "hosted-macos-ci",
-      "status": "PARTIALLY VERIFIED",
-      "evidence": "Attempt 2 exposed two non-deadline ProcessExecutor I/O tests timing out at 2 seconds on loaded macOS 26 Intel. Their I/O-only allowance is now 10 seconds; dedicated 0.1-second timeout and <4-second cancellation checks are unchanged. A fresh CI run is required."
+      "status": "PASS",
+      "evidence": "CI 43428981062 at 17ad7cc4a2eb0be67e9a508f20945e25ff4f743a passed all four macOS jobs (full Swift suite, native canaries, debug/release builds), Linux fixtures and mounted ad-hoc DMG. Require green checks on the final PR head after evidence-checker refinements."
     }
   ],
   "protection_attempts": [
@@ -85,6 +85,8 @@
     ".github/workflows/release.yml",
     "Tests/1132FixerTests/ProcessExecutorTests.swift",
     "VERSION",
+    "docs/CONTINUE_RELEASE.txt",
+    "docs/CONTINUE_REMEDIATION.txt",
     "docs/DEVELOPMENT.md",
     "docs/RELEASE_ACCEPTANCE.md",
     "docs/REMEDIATION_STATUS.md",
@@ -93,5 +95,17 @@
     "scripts/tests/test_native_acceptance.py"
   ],
   "publication_performed": false,
-  "release_tag_created": false
+  "release_tag_created": false,
+  "candidate_evidence": {
+    "ci_run": 43428981062,
+    "ci_source_commit": "17ad7cc4a2eb0be67e9a508f20945e25ff4f743a",
+    "dmg_run": 43424698062,
+    "dmg_source_commit": "a9048593140c79a1ffc36bd635c1aeccb2b92b8f",
+    "dmg_artifact_id": 14037210350,
+    "dmg_sha256": "36599cadcb40b0c44656c1b1812ddd99f5bcc96b924d24399a0367d381175b9a",
+    "dmg_signing": "adhoc",
+    "notarized": false,
+    "local_zip_crc": "PASS",
+    "local_dmg_checksum": "PASS"
+  }
 }
