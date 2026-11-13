@@ -4,6 +4,22 @@ As of 2026-11-07. Implementation is **PARTIALLY VERIFIED**. Release readiness is
 **BLOCKED** by essential native macOS gates. No claim of complete security
 remediation is made.
 
+## Release acceptance follow-up
+
+The release-preparation candidate is now **1.8.8** (main remains 1.8.7 until
+review/merge). Baseline main `4df69c4` has green four-platform macOS CI and a
+smoke-checked ad-hoc DMG. A fail-closed native-evidence gate and regression
+fixtures now block signing while the real Zoom/admin/older-OS/Rosetta/UI checks
+are incomplete. GitHub refused all protection-setting writes with
+`Resource not accessible by integration`; no settings changed. Signing remains
+blocked by unavailable Apple certificate configuration. The independent reviewer
+and disposable Mac/VM are owner inputs still pending.
+
+See [RELEASE_ACCEPTANCE.md](RELEASE_ACCEPTANCE.md) for exact owner/native steps,
+reviewable protection JSON and the evidence format, and
+[release-readiness.json](release-readiness.json) for the current QA receipt.
+Historical observations below remain attached to their original commits.
+
 ## Baseline and authority
 
 - Checkout: `/workspace/1132-fixer`; initial branch `work`; initial implementation

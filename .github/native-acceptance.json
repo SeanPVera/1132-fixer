@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "application_version": "1.8.8",
+  "source_commit": null,
+  "checks": [
+    {
+      "id": "zoom-startup-sso",
+      "status": "unverified",
+      "records": []
+    },
+    {
+      "id": "camera-microphone-keychain",
+      "status": "unverified",
+      "records": []
+    },
+    {
+      "id": "privileged-lifecycle",
+      "status": "unverified",
+      "records": []
+    },
+    {
+      "id": "launch-provenance",
+      "status": "unverified",
+      "records": []
+    },
+    {
+      "id": "macos-13",
+      "status": "unverified",
+      "records": []
+    },
+    {
+      "id": "macos-14",
+      "status": "unverified",
+      "records": []
+    },
+    {
+      "id": "rosetta",
+      "status": "unverified",
+      "records": []
+    },
+    {
+      "id": "ui-accessibility",
+      "status": "unverified",
+      "records": []
+    }
+  ]
+}

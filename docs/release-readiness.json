@@ -1,0 +1,91 @@
+{
+  "candidate_version": "1.8.8",
+  "base_commit": "4df69c48ab0abce63ce8a53f18bafac8799d3b2a",
+  "branch": "codex/release-acceptance-1.8.8",
+  "implementation_verification": "PARTIALLY VERIFIED",
+  "release_readiness": "BLOCKED",
+  "baseline_evidence": {
+    "ci_run": 43342078046,
+    "dmg_run": 43342767190,
+    "dmg_signing": "adhoc",
+    "notarized": false
+  },
+  "checks": [
+    {
+      "id": "portable-fixtures",
+      "status": "PASS",
+      "evidence": "26 unittest fixtures passed; synthetic validator fixtures are not native acceptance."
+    },
+    {
+      "id": "static-checks",
+      "status": "PASS",
+      "evidence": "Python AST, JSON/YAML, release gate ordering, seven credential names, Bash syntax, brand assets and diff whitespace."
+    },
+    {
+      "id": "native-release-gate",
+      "status": "PASS",
+      "evidence": "Current incomplete native-acceptance manifest exits 1; all eight native checks remain unverified."
+    },
+    {
+      "id": "real-zoom-and-privileged-acceptance",
+      "status": "UNVERIFIED",
+      "evidence": "Linux executor; disposable Mac/VM and explicit isolated administrator-test access are pending."
+    },
+    {
+      "id": "owner-protections",
+      "status": "BLOCKED",
+      "evidence": "All three writes denied: Resource not accessible by integration; no remote settings changed."
+    },
+    {
+      "id": "signing-notarization",
+      "status": "BLOCKED",
+      "evidence": "Latest baseline DMG job reports no Apple certificate; no notarization performed."
+    },
+    {
+      "id": "independent-reviewer",
+      "status": "UNVERIFIED",
+      "evidence": "Only SeanPVera is a repository collaborator; owner decision pending."
+    }
+  ],
+  "protection_attempts": [
+    {
+      "action": "main-protection",
+      "exit_code": 1,
+      "status": "BLOCKED",
+      "message": "Resource not accessible by integration",
+      "response_id": null
+    },
+    {
+      "action": "version-tag-rules",
+      "exit_code": 1,
+      "status": "BLOCKED",
+      "message": "Resource not accessible by integration",
+      "response_id": null
+    },
+    {
+      "action": "release-environment-ref-policy",
+      "exit_code": 1,
+      "status": "BLOCKED",
+      "message": "Resource not accessible by integration",
+      "response_id": null
+    }
+  ],
+  "changed_files": [
+    ".github/native-acceptance.json",
+    ".github/release-protections/allow-main.json",
+    ".github/release-protections/allow-version-tags.json",
+    ".github/release-protections/main.json",
+    ".github/release-protections/release-signing.json",
+    ".github/release-protections/version-tags.json",
+    ".github/workflows/release.yml",
+    "VERSION",
+    "docs/DEVELOPMENT.md",
+    "docs/RELEASE_ACCEPTANCE.md",
+    "docs/REMEDIATION_STATUS.md",
+    "docs/release-readiness.json",
+    "scripts/check-native-acceptance.py",
+    "scripts/tests/test_native_acceptance.py"
+  ],
+  "publication_performed": false,
+  "release_tag_created": false
+}

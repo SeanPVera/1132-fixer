@@ -63,6 +63,9 @@ jobs:
           swift build -c release
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+      - name: Require reviewed native acceptance for release sources
+        run: python3 scripts/check-native-acceptance.py
+
       - name: Require distribution credentials
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -70,9 +73,11 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          FIXER_BUG_REPORT_ENDPOINT: ${{ secrets.FIXER_BUG_REPORT_ENDPOINT }}
+          FIXER_BUG_REPORT_TOKEN: ${{ secrets.FIXER_BUG_REPORT_TOKEN }}
         run: |
           set -euo pipefail
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID FIXER_BUG_REPORT_ENDPOINT FIXER_BUG_REPORT_TOKEN; do
             if [[ -z "${!name}" ]]; then
               echo "Required release secret $name is not configured." >&2
               exit 1
