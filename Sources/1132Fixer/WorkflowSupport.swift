@@ -210,7 +210,7 @@ struct RepairStepSpec: Identifiable, Equatable {
                 index: 4,
                 id: "network",
                 name: macSpoofingDisabled ? "Network Check" : "MAC Spoof & Network",
-                scope: "Network & Admin",
+                scope: macSpoofingDisabled ? "User Session" : "Network & Admin",
                 requiresAdmin: !macSpoofingDisabled,
                 plannedSummary: macSpoofingDisabled
                     ? "Inspect the active default route. No verified automatic identity mechanism is available; manual Private Wi-Fi Address settings may be available on macOS 15+."

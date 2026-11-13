@@ -210,7 +210,12 @@ struct RepairConfirmationSheet: View {
 
                 Spacer()
 
-                Label("Single administrator password prompt for steps 4 and 6", systemImage: "lock.fill")
+                Label(
+                    plan.adminStepCount > 1
+                        ? "Single administrator password prompt for steps 4 and 6"
+                        : "Single administrator password prompt for step 6",
+                    systemImage: "lock.fill"
+                )
                     .font(Theme.Typography.metadata)
                     .foregroundStyle(Theme.Colors.warning)
 
