@@ -179,7 +179,7 @@ struct WorkflowResultFormatterTests {
         #expect(steps[3].requiresAdmin == !ShellCommands.isMacSpoofingDisabledForCurrentOS())
         #expect(steps[4].requiresAdmin == true)
         #expect(steps[5].requiresAdmin == false)
-        let lastAdmin = try #require(steps.lastIndex(where: \.requiresAdmin))
+        let lastAdmin = try #require(steps.lastIndex(where: { $0.requiresAdmin }))
         let reset = try #require(steps.firstIndex(where: { $0.id == "resetData" }))
         #expect(lastAdmin < reset)
     }
