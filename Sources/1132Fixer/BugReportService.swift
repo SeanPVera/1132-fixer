@@ -9,7 +9,9 @@ enum BugReportService {
     // that only identifies "a copy of this app": the server must rate-limit it, accept
     // submissions only, and never grant it read access or any other privilege.
     private static let tokenEnvVar = "FIXER_BUG_REPORT_TOKEN"
-    private static let defaultEndpoint = "https://1132-bug-report-production.up.railway.app/api/bug-report"
+    // There is deliberately no built-in fallback endpoint (F-018): a build only reports
+    // bugs to an endpoint its owner configured explicitly (bundled resource, or the
+    // environment in debug builds). Without one, sending fails before any request exists.
     private static let uploadFieldName = "file"
 
     /// Largest diagnostics attachment that is uploaded; longer logs are cut to their most recent part.
@@ -21,7 +23,7 @@ enum BugReportService {
     static let maxServerResponseBytes = 64 * 1_024
 
     /// The endpoint environment variable redirects where the bearer token is sent, so it is
-    /// honored in debug builds only. Release builds use the bundled endpoint or the default.
+    /// honored in debug builds only. Release builds use the bundled endpoint only.
     static var allowsEndpointEnvironmentOverride: Bool {
         #if DEBUG
         return true
@@ -59,35 +61,10 @@ enum BugReportService {
     ) async throws {
         let endpoint = await resolveConfigValue(
             envVar: endpointEnvVar,
-            allowEnvironmentOverride: allowsEndpointEnvironmentOverride,
-            fallback: defaultEndpoint
+            allowEnvironmentOverride: allowsEndpointEnvironmentOverride
         )
         let token = await resolveConfigValue(envVar: tokenEnvVar)
-
-        guard !token.isEmpty else {
-            throw NSError(
-                domain: errorDomain,
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Missing bug report token in env/resource \(tokenEnvVar)."]
-            )
-        }
-
-        guard isValidToken(token) else {
-            throw NSError(
-                domain: errorDomain,
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "The bug report token is not valid."]
-            )
-        }
-
-        // The bearer token is only ever sent over HTTPS.
-        guard let url = validatedEndpointURL(endpoint) else {
-            throw NSError(
-                domain: errorDomain,
-                code: 2,
-                userInfo: [NSLocalizedDescriptionKey: "Invalid bug report endpoint URL. It must be an https:// URL."]
-            )
-        }
+        let (url, _) = try validatedConfiguration(endpoint: endpoint, token: token)
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -144,6 +121,41 @@ enum BugReportService {
     // MARK: - Validation and sanitizing helpers
 
     /// Returns the URL only if it is an `https` URL with a host and no embedded credentials.
+    /// Validates the resolved configuration before any request is constructed. Both an
+    /// explicitly configured HTTPS endpoint and a token are required; there is no default.
+    static func validatedConfiguration(endpoint: String, token: String) throws -> (url: URL, token: String) {
+        guard !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw NSError(
+                domain: errorDomain,
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "Bug reporting is not configured in this build (no \(endpointEnvVar)). Export diagnostics and share them instead."]
+            )
+        }
+        guard !token.isEmpty else {
+            throw NSError(
+                domain: errorDomain,
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Missing bug report token in env/resource \(tokenEnvVar)."]
+            )
+        }
+        guard isValidToken(token) else {
+            throw NSError(
+                domain: errorDomain,
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "The bug report token is not valid."]
+            )
+        }
+        // The bearer token is only ever sent over HTTPS.
+        guard let url = validatedEndpointURL(endpoint) else {
+            throw NSError(
+                domain: errorDomain,
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid bug report endpoint URL. It must be an https:// URL."]
+            )
+        }
+        return (url, token)
+    }
+
     static func validatedEndpointURL(_ value: String) -> URL? {
         guard let url = URL(string: value.trimmingCharacters(in: .whitespacesAndNewlines)),
               url.scheme?.lowercased() == "https",

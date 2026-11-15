@@ -27,6 +27,13 @@ struct PrivilegedTimeoutPolicy: Equatable {
         TimeInterval(authorizationAllowance + watchdogSeconds + settlementAllowance)
     }
 
+    /// Time the root shell gives its own restore traps after the watchdog fires, before it
+    /// force-stops what is left. Kept inside `settlementAllowance` so the bounded cleanup
+    /// finishes before the app-side timeout.
+    var cleanupGraceSeconds: Int {
+        max(1, min(10, settlementAllowance - 5))
+    }
+
     static let network = Self(authorizationAllowance: 180, watchdogSeconds: 85, settlementAllowance: 15)
     static let dns = Self(authorizationAllowance: 180, watchdogSeconds: 55, settlementAllowance: 15)
 }
@@ -39,6 +46,15 @@ enum ZoomStateScope {
         "Library/Preferences/us.zoom.xos.plist",
         "Library/Saved Application State/us.zoom.xos.savedState",
     ]
-    static let removedLogPattern = "Library/Logs/zoom.us.log*"
+    /// Exact log naming contract: `Library/Logs/zoom.us.log` and its numbered rotations
+    /// (`zoom.us.log.1`, `zoom.us.log.2`, ...). Nothing else in `Library/Logs` is touched:
+    /// near-miss names such as `zoom.us.logbook.txt` or `zoom.us.log.dir` are out of scope.
+    /// Matching logs are copied into the backup (under `Logs/`) before they are removed.
+    static let logsRelativeDirectory = "Library/Logs"
+    static let logBaseName = "zoom.us.log"
+    static let backupLogsSubdirectory = "Logs"
+    static var removedLogsDescription: String {
+        "~/\(logsRelativeDirectory)/\(logBaseName) and numbered rotations (\(logBaseName).1, \(logBaseName).2, …)"
+    }
     static var consentPaths: String { backedUpPaths.map { "~/" + $0 }.joined(separator: ", ") }
 }

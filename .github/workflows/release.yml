@@ -95,6 +95,8 @@ jobs:
           FIXER_BUG_REPORT_TOKEN: ${{ secrets.FIXER_BUG_REPORT_TOKEN }}
           APP_BUILD: ${{ github.run_number }}
           NOTARIZE: "1"
+          # Repository settings files must never override CI configuration (F-037).
+          APPLE_DEVELOPER_FILE: /dev/null
         run: ./scripts/build-universal-dmg.sh
 
       - name: Verify and checksum release asset

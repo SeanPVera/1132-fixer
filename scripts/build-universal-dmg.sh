@@ -117,10 +117,42 @@ load_apple_developer_file() {
   done < "$file"
 }
 
+# A committed settings file would let repository content override CI configuration
+# (F-037). The default file must stay untracked; CI passes APPLE_DEVELOPER_FILE=/dev/null.
+if [[ "$APPLE_DEVELOPER_FILE" == "$ROOT_DIR/apple-developer.txt" && -f "$APPLE_DEVELOPER_FILE" ]] \
+  && command -v git >/dev/null 2>&1 \
+  && git -C "$ROOT_DIR" ls-files --error-unmatch -- apple-developer.txt >/dev/null 2>&1; then
+  echo "apple-developer.txt is tracked by git; refusing to load signing settings from repository content." >&2
+  exit 1
+fi
+
 if [[ -f "$APPLE_DEVELOPER_FILE" ]]; then
   echo "==> Loading Apple developer settings from $APPLE_DEVELOPER_FILE"
   load_apple_developer_file "$APPLE_DEVELOPER_FILE"
 fi
+
+# BEGIN parse_keychain_list
+# Parses `security list-keychains` output (F-031). Each non-blank line must be optional
+# indentation, one double-quoted absolute path, and optional trailing whitespace.
+# Whitespace outside the quotes is formatting and is dropped; whitespace inside the
+# quotes is part of the path and is kept exactly. Prints one path per line and fails on
+# any other shape, so an unrecognized list is never written back.
+parse_keychain_list() {
+  local line
+  local re='^[[:space:]]*"(/[^"]*)"[[:space:]]*$'
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ -z "${line//[[:space:]]/}" ]]; then
+      continue
+    fi
+    if [[ "$line" =~ $re ]]; then
+      printf '%s\n' "${BASH_REMATCH[1]}"
+    else
+      return 1
+    fi
+  done
+  return 0
+}
+# END parse_keychain_list
 
 decode_base64_to_file() {
   local destination="$1"
@@ -232,17 +264,31 @@ if [[ -z "$SIGN_IDENTITY" ]]; then
   # keychain password (and the certificate password for `security import -P` below) appear
   # in this process's argument list while each command runs. The keychain password is random,
   # used once, and the keychain is deleted on exit; it cannot unlock anything else.
+  # Capture and validate the user search list before anything is changed, so the exact
+  # original list can be restored on every exit.
+  if ! keychain_listing="$(security list-keychains -d user)"; then
+    echo "Unable to read the user keychain search list; refusing to modify it." >&2
+    exit 1
+  fi
+  if ! keychain_paths="$(printf '%s\n' "$keychain_listing" | parse_keychain_list)"; then
+    echo "Unrecognized keychain search list format; refusing to modify it." >&2
+    exit 1
+  fi
+  while IFS= read -r existing_keychain; do
+    if [[ -n "$existing_keychain" && "$existing_keychain" != "$KEYCHAIN_PATH" ]]; then
+      ORIGINAL_KEYCHAINS+=("$existing_keychain")
+    fi
+  done <<< "$keychain_paths"
+  if [[ "${#ORIGINAL_KEYCHAINS[@]}" -eq 0 ]]; then
+    echo "The user keychain search list is empty; refusing to replace it." >&2
+    exit 1
+  fi
+
   echo "==> Importing signing certificate into temporary keychain"
   rm -f "$KEYCHAIN_PATH"
   security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
   security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
   security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-  while IFS= read -r existing_keychain; do
-    existing_keychain="${existing_keychain//\"/}"
-    if [[ -n "$existing_keychain" ]]; then
-      ORIGINAL_KEYCHAINS+=("$existing_keychain")
-    fi
-  done < <(security list-keychains -d user)
   security import "$CERTIFICATE_P12_FILE" \
     -f pkcs12 \
     -k "$KEYCHAIN_PATH" \

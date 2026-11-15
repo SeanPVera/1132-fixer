@@ -204,25 +204,25 @@ struct ShellCommandsTests {
     @Test func appleScriptDoShellScript() {
         let result = ShellCommands.appleScriptDoShellScript("echo hello", administratorPrivileges: false)
         // "echo hello" encoded in base64 is ZWNobyBoZWxsbw==
-        #expect(result == #"do shell script "/bin/bash -c \"$(/bin/echo 'ZWNobyBoZWxsbw==' | /usr/bin/base64 --decode)\"""#)
+        #expect(result == #"do shell script "/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc -c \"$(/bin/echo 'ZWNobyBoZWxsbw==' | /usr/bin/base64 --decode)\"""#)
     }
 
     @Test func appleScriptDoShellScriptAdmin() {
         let result = ShellCommands.appleScriptDoShellScript("echo hello", administratorPrivileges: true)
-        #expect(result == #"do shell script "/bin/bash -c \"$(/bin/echo 'ZWNobyBoZWxsbw==' | /usr/bin/base64 --decode)\"" with administrator privileges"#)
+        #expect(result == #"do shell script "/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc -c \"$(/bin/echo 'ZWNobyBoZWxsbw==' | /usr/bin/base64 --decode)\"" with administrator privileges"#)
     }
 
     @Test func appleScriptEscapesBackslashes() {
         let result = ShellCommands.appleScriptDoShellScript(#"echo \"test\""#, administratorPrivileges: false)
         // 'echo \"test\"' encoded in base64 is ZWNobyBcInRlc3RcIg==
-        #expect(result == #"do shell script "/bin/bash -c \"$(/bin/echo 'ZWNobyBcInRlc3RcIg==' | /usr/bin/base64 --decode)\"""#)
+        #expect(result == #"do shell script "/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc -c \"$(/bin/echo 'ZWNobyBcInRlc3RcIg==' | /usr/bin/base64 --decode)\"""#)
     }
 
     @Test func appleScriptComplexPayload() {
         let payload = #"echo "hello \n world" 'test'"#
         let result = ShellCommands.appleScriptDoShellScript(payload, administratorPrivileges: true)
         // payload encoded in base64 is ZWNobyAiaGVsbG8gXG4gd29ybGQiICd0ZXN0Jw==
-        #expect(result == #"do shell script "/bin/bash -c \"$(/bin/echo 'ZWNobyAiaGVsbG8gXG4gd29ybGQiICd0ZXN0Jw==' | /usr/bin/base64 --decode)\"" with administrator privileges"#)
+        #expect(result == #"do shell script "/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc -c \"$(/bin/echo 'ZWNobyAiaGVsbG8gXG4gd29ybGQiICd0ZXN0Jw==' | /usr/bin/base64 --decode)\"" with administrator privileges"#)
     }
 
     // MARK: - VPN Detection
@@ -558,6 +558,60 @@ struct ShellCommandsTests {
         #expect(process.terminationStatus == 0, "sandbox-exec rejected the profile: \(details)")
     }
 
+    @Test func zoomSandboxProfileDeniesWritesToReadDeniedCredentialStores() {
+        let profile = testProfile()
+        guard let start = profile.range(of: "(deny file-write*\n", options: .backwards) else {
+            Issue.record("Home write-deny block is missing")
+            return
+        }
+        let writeBlock = String(profile[start.lowerBound...])
+        for rule in [#"(subpath "/Users/tester/.kube")"#, #"(subpath "/Users/tester/.docker")"#, #"(literal "/Users/tester/.netrc")"#] {
+            #expect(writeBlock.contains(rule), "missing write denial \(rule)")
+        }
+    }
+
+    /// F-013: probes the compiled profile against a disposable home. Writes, creates and
+    /// unlinks under credential paths fail; an ordinary file in the same home still works.
+    @Test func zoomSandboxProfileBlocksCredentialWritesInADisposableHome() throws {
+        let fileManager = FileManager.default
+        let sandboxExec = "/usr/bin/sandbox-exec"
+        try #require(fileManager.isExecutableFile(atPath: sandboxExec), "Required sandbox canary cannot run without sandbox-exec")
+        // The fixture home must have no symlinked ancestors (the sandbox matches resolved
+        // paths) and must survive `standardizingPath`, which strips a leading `/private`;
+        // the per-user caches folder satisfies both, unlike the temporary directory.
+        let caches = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Caches")
+        let base = caches.appendingPathComponent("1132-cred-home-" + UUID().uuidString)
+        defer { try? fileManager.removeItem(at: base) }
+        try #require(ShellCommands.normalizedSandboxHome(base.path) == base.path, "Fixture home is not a canonical path")
+        for directory in [".kube", ".docker"] {
+            try fileManager.createDirectory(at: base.appendingPathComponent(directory), withIntermediateDirectories: true)
+        }
+        try Data("original\n".utf8).write(to: base.appendingPathComponent(".netrc"))
+        try Data("original\n".utf8).write(to: base.appendingPathComponent(".kube/config"))
+        let profileURL = base.appendingPathComponent("profile.sb")
+        try ShellCommands.makeZoomSandboxProfile(homeDirectory: base.path).write(to: profileURL, atomically: true, encoding: .utf8)
+
+        func sandboxed(_ script: String) throws -> Int32 {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: sandboxExec)
+            process.arguments = ["-f", profileURL.path, "/bin/sh", "-c", script]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus
+        }
+        let home = ShellCommands.shellSingleQuote(base.path)
+        #expect(try sandboxed("echo pwned > \(home)/.netrc") != 0)
+        #expect(try sandboxed("echo pwned > \(home)/.kube/config") != 0)
+        #expect(try sandboxed("echo new > \(home)/.docker/config.json") != 0)
+        #expect(try sandboxed("rm -f \(home)/.kube/config") != 0)
+        #expect(try String(contentsOf: base.appendingPathComponent(".netrc"), encoding: .utf8) == "original\n")
+        #expect(try String(contentsOf: base.appendingPathComponent(".kube/config"), encoding: .utf8) == "original\n")
+        #expect(!fileManager.fileExists(atPath: base.appendingPathComponent(".docker/config.json").path))
+        #expect(try sandboxed("echo ok > \(home)/ordinary.txt") == 0)
+    }
+
     @Test func stopZoomCommandsClearCaptureHelpers() {
         #expect(ShellCommands.stopZoom.contains(#""caphost""#))
         #expect(ShellCommands.stopZoom.contains(#""CptHost""#))
@@ -773,7 +827,9 @@ struct ShellCommandsTests {
         #expect(cmd.contains("/bin/sleep 30"))
         #expect(cmd.contains("kill -TERM $$"))
         #expect(cmd.contains("trap "))
-        #expect(cmd.hasSuffix("echo hi"))
+        #expect(cmd.contains("(\necho hi\n) &"))
+        #expect(cmd.hasSuffix("exit \"$__1132_body_status\""))
+        #expect(!cmd.contains("__1132_PRIVILEGED_COMPLETE"))
     }
 
     @Test func makeTimeBoundedCommandClampsNonPositiveLimit() {
@@ -987,6 +1043,84 @@ struct ShellCommandsTests {
         #expect(fileManager.fileExists(atPath: backupPath + "/zoom.us/session.db"))
     }
 
+    /// F-026 / F-027 on the real macOS tools: the backup holds every reset target, including
+    /// the contract logs; the reset removes exactly that set and leaves near-matches alone.
+    @Test func backupCoversEveryResetTargetAndResetRemovesOnlyTheContractSet() throws {
+        let fileManager = FileManager.default
+        let home = fileManager.temporaryDirectory.appendingPathComponent("1132-exact-scope-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: home) }
+        func write(_ relative: String, _ text: String) throws {
+            let url = home.appendingPathComponent(relative)
+            try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(text.utf8).write(to: url)
+        }
+        try write("Library/Application Support/zoom.us/data/session.db", "session")
+        try write("Library/Caches/us.zoom.xos/cache.bin", "cache")
+        try write("Library/Logs/zoom.us.log", "log0")
+        try write("Library/Logs/zoom.us.log.1", "log1")
+        for keep in ["zoom.us.log.bak", "zoom.us.logger", "Zoom.us.log.old", "other.log", "zoom.us.log.1.gz"] {
+            try write("Library/Logs/\(keep)", "keep")
+        }
+        try fileManager.createDirectory(at: home.appendingPathComponent("Library/Logs/zoom.us.log.2"), withIntermediateDirectories: true)
+
+        func run(_ script: String) throws -> (Int32, String, String) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/bash")
+            process.arguments = ["-c", script]
+            let out = Pipe(), err = Pipe()
+            process.standardOutput = out
+            process.standardError = err
+            try process.run()
+            let o = out.fileHandleForReading.readDataToEndOfFile()
+            let e = err.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return (process.terminationStatus, String(decoding: o, as: UTF8.self), String(decoding: e, as: UTF8.self))
+        }
+
+        let (backupStatus, backupOut, backupErr) = try run(ShellCommands.makeBackupZoomDataCommand(homeDirectory: home.path))
+        #expect(backupStatus == 0, "backup failed: \(backupErr)")
+        let snapshot = backupOut.trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(fileManager.fileExists(atPath: snapshot + "/zoom.us/data/session.db"))
+        #expect(try String(contentsOfFile: snapshot + "/\(ZoomStateScope.backupLogsSubdirectory)/zoom.us.log", encoding: .utf8) == "log0")
+        #expect(try String(contentsOfFile: snapshot + "/\(ZoomStateScope.backupLogsSubdirectory)/zoom.us.log.1", encoding: .utf8) == "log1")
+        #expect(!fileManager.fileExists(atPath: snapshot + "/\(ZoomStateScope.backupLogsSubdirectory)/zoom.us.log.bak"))
+
+        let (resetStatus, _, resetErr) = try run(ShellCommands.makeResetZoomDataCommand(homeDirectory: home.path, deletePreferencesDomain: false))
+        #expect(resetStatus == 0, "reset failed: \(resetErr)")
+        #expect(!fileManager.fileExists(atPath: home.appendingPathComponent("Library/Application Support/zoom.us").path))
+        #expect(!fileManager.fileExists(atPath: home.appendingPathComponent("Library/Caches/us.zoom.xos").path))
+        #expect(!fileManager.fileExists(atPath: home.appendingPathComponent("Library/Logs/zoom.us.log").path))
+        #expect(!fileManager.fileExists(atPath: home.appendingPathComponent("Library/Logs/zoom.us.log.1").path))
+        for keep in ["zoom.us.log.bak", "zoom.us.logger", "Zoom.us.log.old", "other.log", "zoom.us.log.1.gz", "zoom.us.log.2"] {
+            #expect(fileManager.fileExists(atPath: home.appendingPathComponent("Library/Logs/\(keep)").path), "removed \(keep)")
+        }
+    }
+
+    @Test func resetRefusesBeforeDeletingWhenATargetCannotBeRemoved() throws {
+        let fileManager = FileManager.default
+        let home = fileManager.temporaryDirectory.appendingPathComponent("1132-preflight-\(UUID().uuidString)")
+        let locked = home.appendingPathComponent("Library/Caches/us.zoom.xos/locked")
+        let support = home.appendingPathComponent("Library/Application Support/zoom.us")
+        try fileManager.createDirectory(at: locked, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: support, withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: locked.appendingPathComponent("file"))
+        try Data("x".utf8).write(to: support.appendingPathComponent("session.db"))
+        try fileManager.setAttributes([.posixPermissions: 0o500], ofItemAtPath: locked.path)
+        defer {
+            try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: locked.path)
+            try? fileManager.removeItem(at: home)
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-c", ShellCommands.makeResetZoomDataCommand(homeDirectory: home.path, deletePreferencesDomain: false)]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        #expect(process.terminationStatus != 0)
+        #expect(fileManager.fileExists(atPath: support.appendingPathComponent("session.db").path), "deleted before refusing")
+    }
+
     @Test func backupAndResetCommandsRefuseSymlinkedLibraryParents() throws {
         let fileManager = FileManager.default
         let testRoot = fileManager.temporaryDirectory
@@ -1007,7 +1141,7 @@ struct ShellCommandsTests {
 
         let resetProcess = Process()
         resetProcess.executableURL = URL(fileURLWithPath: "/bin/bash")
-        resetProcess.arguments = ["-c", ShellCommands.makeResetZoomDataCommand(homeDirectory: home.path)]
+        resetProcess.arguments = ["-c", ShellCommands.makeResetZoomDataCommand(homeDirectory: home.path, deletePreferencesDomain: false)]
         try resetProcess.run()
         resetProcess.waitUntilExit()
         #expect(resetProcess.terminationStatus != 0)
@@ -1025,7 +1159,7 @@ struct ShellCommandsTests {
         let cmd = ShellCommands.makeLaunchZoomCommand(zoomBinaryExists: true)
         guard
             let stopRange = cmd.range(of: "\nstop_zoom_processes\n"),
-            let codesignRange = cmd.range(of: #"/usr/bin/codesign --verify --strict -R='anchor apple generic and certificate leaf[subject.OU] = "BJ4HAAB9B3"' "$zoom_app""#),
+            let codesignRange = cmd.range(of: #"/usr/bin/codesign --verify --strict -R='identifier "us.zoom.xos" and anchor apple generic and certificate leaf[subject.OU] = "BJ4HAAB9B3"' "$zoom_app""#),
             let execRange = cmd.range(of: #"/usr/bin/sandbox-exec -f "$profile_path" "$zoom_binary""#)
         else {
             Issue.record("Launch command is missing stop_zoom_processes, codesign re-verification, or sandbox-exec invocation")

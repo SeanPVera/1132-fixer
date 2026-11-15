@@ -75,6 +75,36 @@ struct DiagnosticsCollectorTests {
         #expect(DiagnosticsCollector.redactingHomeDirectory(text, homeDirectory: "/") == text)
     }
 
+    @Test("F-024: home redaction covers case variants and firmlinks but not longer names")
+    func redactingHomeDirectoryCaseVariants() {
+        let text = "a /users/JANE/x b /System/Volumes/Data/Users/jane/y c /Users/janet/z d /Users/jane"
+        let redacted = DiagnosticsCollector.redactingHomeDirectory(text, homeDirectory: "/Users/jane")
+        #expect(redacted == "a ~/x b ~/y c /Users/janet/z d ~")
+    }
+
+    @Test("F-024: other accounts, IPv4 and MAC identifiers are redacted for sharing")
+    func sharingRedactsOtherAccountsAndAddresses() {
+        let text = """
+        cp: /Users/bob/Library/x: Permission denied
+        /Volumes/Backup/Users/Älice/Documents and /USERS/carol
+        shared /Users/Shared/zoom ok; mine /Users/jane/Desktop
+        route 192.168.1.20 via 10.0.0.1 and again 192.168.1.20; loopback 127.0.0.1; version 6.4.10.12345
+        """
+        let safe = DiagnosticsCollector.sanitizedForSharing(text, homeDirectory: "/Users/jane")
+        for leaked in ["bob", "Älice", "carol", "jane", "192.168.1.20", "10.0.0.1"] {
+            #expect(!safe.contains(leaked), "leaked \(leaked)")
+        }
+        #expect(safe.contains("/Users/[user]/Library/x"))
+        #expect(safe.contains("/Volumes/Backup/Users/[user]/Documents"))
+        #expect(safe.contains("/Users/Shared/zoom"))
+        #expect(safe.contains("~/Desktop"))
+        #expect(safe.components(separatedBy: "[IPv4#1]").count == 3)
+        #expect(safe.contains("[IPv4#2]"))
+        #expect(safe.contains("127.0.0.1"))
+        #expect(safe.contains("6.4.10.12345"))
+        #expect(DiagnosticsCollector.sanitizedForSharing(safe, homeDirectory: "/Users/jane") == safe)
+    }
+
     @Test("formatDuration formats correctly")
     func formatDuration() {
         #expect(DiagnosticsCollector.formatDuration(0) == "0h 0m")

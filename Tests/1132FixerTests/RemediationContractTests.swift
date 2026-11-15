@@ -20,12 +20,96 @@ struct RemediationContractTests {
         #expect(PrivilegedTimeoutPolicy.network.processTimeout == 280)
         #expect(PrivilegedTimeoutPolicy.dns.processTimeout == 250)
         for policy in [PrivilegedTimeoutPolicy.network, .dns] {
-            let command = ShellCommands.makePrivilegedCommand(ShellCommands.makeRefreshDNSCommand(), policy: policy)
+            let token = ShellCommands.makePrivilegedRunToken()
+            let command = ShellCommands.makePrivilegedCommand(ShellCommands.makeRefreshDNSCommand(), policy: policy, runToken: token)
             let encoded = command.components(separatedBy: "/bin/echo '")[1].components(separatedBy: "'")[0]
             let script = String(decoding: Data(base64Encoded: encoded)!, as: UTF8.self)
             #expect(script.contains("/bin/sleep \(policy.watchdogSeconds)"))
-            #expect(script.contains("__1132_PRIVILEGED_COMPLETE__="))
+            #expect(script.contains(ShellCommands.privilegedCompletionMarker(runToken: token)))
+            #expect(!script.contains("__1132_PRIVILEGED_COMPLETE__="))
+            #expect(script == ShellCommands.makePrivilegedShellScript(ShellCommands.makeRefreshDNSCommand(), policy: policy, runToken: token))
         }
+    }
+
+    // MARK: F-003 / F-006 / F-007 privileged completion evidence and watchdog
+
+    @Test func runTokensAreFreshAndStrictlyFormatted() {
+        let tokens = (0..<50).map { _ in ShellCommands.makePrivilegedRunToken() }
+        #expect(Set(tokens).count == tokens.count)
+        #expect(tokens.allSatisfy(ShellCommands.isValidPrivilegedRunToken))
+        for bad in ["", "abc", String(repeating: "a", count: 32), String(repeating: "A", count: 31), "0123456789ABCDEF0123456789ABCDE-"] {
+            #expect(!ShellCommands.isValidPrivilegedRunToken(bad))
+        }
+        #expect(ShellCommands.authorizationCancelledSentinel.hasSuffix("=0"))
+        #expect(ShellCommands.authorizationRejectedSentinel.hasSuffix("=0"))
+    }
+
+    @Test func authorizationIsProvenBeforeThePrivilegedScriptIsInvoked() throws {
+        let command = ShellCommands.makePrivilegedCommand("true", policy: .dns, runToken: ShellCommands.makePrivilegedRunToken())
+        let preauth = try #require(command.range(of: #"do shell script "/usr/bin/true" with administrator privileges"#))
+        let rejected = try #require(command.range(of: ShellCommands.authorizationRejectedSentinel))
+        let real = try #require(command.range(of: "/usr/bin/base64 --decode"))
+        #expect(preauth.lowerBound < rejected.lowerBound && rejected.lowerBound < real.lowerBound)
+        #expect(command.contains("/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc -c"))
+    }
+
+    private func runShell(_ script: String) throws -> (status: Int32, stdout: String, seconds: TimeInterval) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["--noprofile", "--norc", "-c", script]
+        let stdout = Pipe()
+        process.standardOutput = stdout
+        process.standardError = FileHandle.nullDevice
+        let started = Date()
+        try process.run()
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (process.terminationStatus, String(decoding: data, as: UTF8.self), Date().timeIntervalSince(started))
+    }
+
+    /// Runs the exact root script, unprivileged, with a 1-second watchdog.
+    @Test func completionMarkerIsPrintedOnlyAfterTheBodyFinishesInTime() throws {
+        let policy = PrivilegedTimeoutPolicy(authorizationAllowance: 1, watchdogSeconds: 1, settlementAllowance: 6)
+        let token = ShellCommands.makePrivilegedRunToken()
+        let marker = ShellCommands.privilegedCompletionMarker(runToken: token)
+
+        let finished = try runShell(ShellCommands.makePrivilegedShellScript("echo body; (exit 3)", policy: .dns, runToken: token))
+        #expect(finished.status == 3)
+        #expect(OperationStatus.value(in: finished.stdout, marker: marker) == 3)
+
+        for body in ["/bin/sleep 20", "trap '' TERM; /bin/sleep 20", "/bin/sleep 20 & wait"] {
+            let killed = try runShell(ShellCommands.makePrivilegedShellScript(body, policy: policy, runToken: token))
+            #expect(killed.status != 0)
+            #expect(!killed.stdout.contains(marker), "marker after forced stop for \(body)")
+            #expect(killed.seconds < 12, "watchdog plus bounded cleanup took \(killed.seconds)s")
+        }
+
+        // A body that prints the marker itself only produces ambiguous (rejected) evidence.
+        let forged = try runShell(ShellCommands.makePrivilegedShellScript("echo \(marker)=0", policy: .dns, runToken: token))
+        #expect(OperationStatus.value(in: forged.stdout, marker: marker) == nil)
+    }
+
+    @Test func watchdogStopsNestedDescendantsAndRunsRestoreTraps() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("1132-watchdog-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let pidFile = directory.appendingPathComponent("grandchild.pid").path
+        let restored = directory.appendingPathComponent("restored").path
+        let body = """
+        trap 'echo restored > \(ShellCommands.shellSingleQuote(restored))' EXIT
+        trap 'exit 1' TERM
+        ( /bin/sleep 30 & echo $! > \(ShellCommands.shellSingleQuote(pidFile)); wait ) &
+        wait
+        """
+        let script = ShellCommands.makeTimeBoundedCommand(body, seconds: 1, cleanupGraceSeconds: 2)
+        let result = try runShell(script)
+        #expect(result.status != 0)
+        #expect(FileManager.default.fileExists(atPath: restored))
+        let pidText = try String(contentsOfFile: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        let pid = try #require(Int32(pidText))
+        let deadline = Date().addingTimeInterval(3)
+        while kill(pid, 0) == 0 && Date() < deadline { usleep(50_000) }
+        #expect(kill(pid, 0) != 0, "grandchild survived the watchdog")
     }
 
     @Test @MainActor func settlementPersistsAcrossAppRelaunchAndClearsOnlyAfterKnownReboot() {
@@ -38,9 +122,15 @@ struct RemediationContractTests {
         #expect(PrivilegedOperationGuard(defaults: defaults, bootIdentifier: "boot-a").requiresSettlement)
         #expect(PrivilegedOperationGuard(defaults: defaults, bootIdentifier: nil).requiresSettlement)
         #expect(!PrivilegedOperationGuard(defaults: defaults, bootIdentifier: "boot-b").requiresSettlement)
+        // F-005: without a reliable boot identity no new privileged work may begin.
         let unknown = PrivilegedOperationGuard(defaults: defaults, bootIdentifier: nil)
-        unknown.begin()
+        #expect(!unknown.canBeginPrivilegedOperation)
+        #expect(!unknown.begin())
+        #expect(!unknown.requiresSettlement)
+        // A legacy "unknown" marker stays blocking even once the boot identity is readable.
+        defaults.set("unknown", forKey: "privilegedOperationPendingBoot")
         #expect(PrivilegedOperationGuard(defaults: defaults, bootIdentifier: "boot-c").requiresSettlement)
+        #expect(PrivilegedOperationGuard(defaults: defaults, bootIdentifier: nil).requiresSettlement)
         unknown.settle(.completed)
         #expect(!unknown.requiresSettlement)
     }
@@ -110,7 +200,9 @@ struct RemediationContractTests {
             #expect(plan.affectedLocations.contains { $0.path.contains("~/" + path) })
         }
         #expect(plan.affectedLocations.first { $0.id == "backup-dir" }?.path == "~/" + ZoomStateScope.backupRelativeRoot)
-        #expect(plan.affectedLocations.first { $0.id == "user-zoom-logs" }?.action.contains("not included in backup") == true)
+        #expect(plan.affectedLocations.first { $0.id == "user-zoom-logs" }?.action.contains("Backed up first") == true)
+        #expect(backup.contains("\(ZoomStateScope.backupLogsSubdirectory)"))
+        #expect(!reset.contains("zoom.us.log*"))
     }
 
     @Test func processSelectorsScopeUserNamesAndPreserveWatchdogChildren() {

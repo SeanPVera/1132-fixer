@@ -40,7 +40,8 @@ protocol ProcessExecuting: Sendable {
 }
 
 /// Runs child processes without a shell, drains stdout and stderr concurrently, and
-/// bounds both execution time and retained output. Cancellation signals the active
+/// bounds both execution time and retained output. Children start from the validated
+/// `ChildProcessEnvironment` allowlist, never from this app's inherited environment. Cancellation signals the active
 /// process tree and waits for exit (or the bounded force-kill grace period) before returning.
 struct BoundedProcessExecutor: ProcessExecuting {
     static let defaultMaxOutputBytes = 512 * 1_024
@@ -54,6 +55,7 @@ struct BoundedProcessExecutor: ProcessExecuting {
         try Task.checkCancellation()
 
         let controller = ProcessController()
+        let environment = ChildProcessEnvironment.current()
         let result = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ProcessExecutionResult, Error>) in
                 let process = Process()
@@ -68,6 +70,9 @@ struct BoundedProcessExecutor: ProcessExecuting {
 
                 process.executableURL = URL(fileURLWithPath: executable)
                 process.arguments = arguments
+                // Never pass this app's environment through: BASH_ENV and similar
+                // variables run code inside the child before the requested command.
+                process.environment = environment
                 process.standardOutput = stdoutPipe
                 process.standardError = stderrPipe
 

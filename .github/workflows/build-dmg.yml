@@ -135,6 +135,8 @@ jobs:
           FIXER_BUG_REPORT_TOKEN: ${{ steps.trust.outputs.trusted == 'true' && secrets.FIXER_BUG_REPORT_TOKEN || '' }}
           NOTARIZE: ${{ steps.signing.outputs.notarize }}
           APP_BUILD: ${{ github.run_number }}
+          # Repository settings files must never override CI configuration (F-037).
+          APPLE_DEVELOPER_FILE: /dev/null
         run: ./scripts/build-universal-dmg.sh
 
       - name: Name the DMG for this commit

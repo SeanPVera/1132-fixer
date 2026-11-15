@@ -33,9 +33,16 @@ final class PrivilegedOperationGuard {
         return defaults.string(forKey: key) != nil
     }
 
+    /// New privileged work needs a reliable boot identity; without one a pending
+    /// marker could never be proven stale, so `begin()` refuses before anything runs.
+    /// A legacy `"unknown"` marker from older versions stays blocking (it is never
+    /// cleared just because the boot identity is readable now).
+    var canBeginPrivilegedOperation: Bool { bootIdentifier != nil }
+
     @discardableResult
     func begin() -> Bool {
-        defaults.set(bootIdentifier ?? "unknown", forKey: key)
+        guard let bootIdentifier else { return false }
+        defaults.set(bootIdentifier, forKey: key)
         lastOutcome = .indeterminate
         return defaults.synchronize()
     }

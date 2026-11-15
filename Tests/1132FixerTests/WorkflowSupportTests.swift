@@ -157,26 +157,31 @@ struct WorkflowResultFormatterTests {
         #expect(!viewModel.canStartZoom)
     }
 
-    @Test func canonicalStepsPlaceValidationCloseZoomAndBackupBeforeAnyMutation() {
+    @Test func canonicalStepsPlaceValidationCloseZoomAndBackupBeforeAnyMutation() throws {
         let steps = RepairStepSpec.canonicalSteps()
         #expect(steps.count == 9)
+        // Every administrator step (network, dns) comes before the destructive reset.
         #expect(steps.map(\.id) == [
             "validate",
             "closeZoom",
             "backup",
             "network",
-            "resetData",
             "dns",
+            "resetData",
             "updaters",
             "mediaAccess",
             "launch",
         ])
+        #expect(steps.map(\.index) == Array(1...9))
         #expect(steps[0].requiresAdmin == false)
         #expect(steps[1].requiresAdmin == false)
         #expect(steps[2].requiresAdmin == false)
         #expect(steps[3].requiresAdmin == !ShellCommands.isMacSpoofingDisabledForCurrentOS())
-        #expect(steps[4].requiresAdmin == false)
-        #expect(steps[5].requiresAdmin == true)
+        #expect(steps[4].requiresAdmin == true)
+        #expect(steps[5].requiresAdmin == false)
+        let lastAdmin = try #require(steps.lastIndex(where: \.requiresAdmin))
+        let reset = try #require(steps.firstIndex(where: { $0.id == "resetData" }))
+        #expect(lastAdmin < reset)
     }
 
     @Test func repairPlanListsSavedApplicationStateAndLogsInAffectedLocations() {
@@ -189,7 +194,9 @@ struct WorkflowResultFormatterTests {
         let logsLoc = plan.affectedLocations.first(where: { $0.id == "user-zoom-logs" })
 
         #expect(dataLoc?.path.contains("~/Library/Saved Application State/us.zoom.xos.savedState") == true)
-        #expect(logsLoc?.path == "~/Library/Logs/zoom.us.log*")
+        #expect(logsLoc?.path == "~/Library/Logs/zoom.us.log and numbered rotations (zoom.us.log.1, zoom.us.log.2, …)")
+        #expect(logsLoc?.action.contains("Backed up first") == true)
+        #expect(logsLoc?.action.contains("Step 6") == true)
     }
 }
 
@@ -300,7 +307,7 @@ struct WorkflowExecutionSemanticsTests {
         let gateSignal = AsyncGate()
         let commandLog = LockedArray<String>()
 
-        let runner: AppViewModel.ProcessExecutor = { stepName, executable, _, _ in
+        let runner: AppViewModel.ProcessExecutor = { stepName, executable, arguments, _ in
             commandLog.append(stepName)
             if stepName == "Backup Zoom state" {
                 return "/Users/tester/Library/Application Support/1132Fixer/Backups/snapshot-current"
@@ -319,7 +326,7 @@ struct WorkflowExecutionSemanticsTests {
             }
             if executable == "/usr/bin/osascript" {
                 await gateSignal.enterAndWait()
-                return "__1132_SPOOF_STATUS__=0\n__1132_DNS_STATUS__=0\n__1132_PRIVILEGED_COMPLETE__=0"
+                return "__1132_SPOOF_STATUS__=0\n__1132_DNS_STATUS__=0\n\(privilegedCompletionLine(for: arguments))"
             }
             return "ok"
         }
@@ -594,4 +601,16 @@ private actor AsyncGate {
         releaseWaiter?.resume()
         releaseWaiter = nil
     }
+}
+
+/// Echoes this run's completion marker, read from the privileged command the app built.
+func privilegedCompletionLine(for arguments: [String]) -> String {
+    let command = arguments.last ?? ""
+    guard let encoded = command.components(separatedBy: "/bin/echo '").dropFirst().first?.components(separatedBy: "'").first,
+          let data = Data(base64Encoded: encoded),
+          let script = String(data: data, encoding: .utf8),
+          let range = script.range(of: "__1132_PRIVILEGED_COMPLETE_[0-9A-F]{32}__", options: .regularExpression) else {
+        return ""
+    }
+    return String(script[range]) + "=0"
 }

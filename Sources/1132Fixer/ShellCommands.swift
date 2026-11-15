@@ -93,51 +93,157 @@ enum ShellCommands {
         return "\"\(escaped)\""
     }
 
+    /// The command runs under `/usr/bin/env -i` with only a fixed system `PATH`, and bash
+    /// skips its startup files, so no inherited `BASH_ENV`/`ENV`/function export can run
+    /// code before the requested command (the same rule `ChildProcessEnvironment` applies
+    /// to direct children). Root commands here need no other environment.
     static func appleScriptDoShellScript(_ command: String, administratorPrivileges: Bool) -> String {
         let base64Command = Data(command.utf8).base64EncodedString()
         let privilegeClause = administratorPrivileges ? " with administrator privileges" : ""
-        return "do shell script \"/bin/bash -c \\\"$(/bin/echo '\(base64Command)' | /usr/bin/base64 --decode)\\\"\"\(privilegeClause)"
+        return "do shell script \"/usr/bin/env -i PATH=\(ChildProcessEnvironment.fixedPath) /bin/bash --noprofile --norc -c \\\"$(/bin/echo '\(base64Command)' | /usr/bin/base64 --decode)\\\"\"\(privilegeClause)"
     }
 
     /// Wraps a script that will run with administrator privileges so it stops itself after
     /// `seconds`. Killing `osascript` from the app cannot reach a root-owned shell, so the
-    /// privileged script carries its own watchdog: a background timer that sends SIGTERM to
-    /// the script's shell (`$$`), cancelled by an EXIT trap when the script finishes in time.
-    /// The limit should be a little shorter than the app-side timeout.
-    static func makeTimeBoundedCommand(_ command: String, seconds: Int) -> String {
+    /// privileged script carries its own watchdog.
+    ///
+    /// The command body runs as a background job that the top-level shell `wait`s for.
+    /// `wait` is interrupted by the watchdog's SIGTERM, so the deadline holds even while
+    /// the body is in a long foreground command (bash defers traps until a foreground
+    /// child exits, which let a slow `dscacheutil` outlive the old watchdog). Cleanup is
+    /// bounded: the body's process tree is snapshotted and sent SIGTERM once, given
+    /// `cleanupGraceSeconds` to run its own restore traps, then sent SIGKILL. Each owned
+    /// PID is signalled from one cleanup pass and cleared afterwards.
+    ///
+    /// When `completionMarker` is given, the top-level shell prints
+    /// `<marker>=<status>` only after the body exited on its own and was reaped before the
+    /// deadline. The body never prints it, so a body that was interrupted, timed out or
+    /// force-stopped cannot produce a completion marker, and the caller keeps the
+    /// operation unsettled rather than reporting a clean finish.
+    static func makeTimeBoundedCommand(
+        _ command: String,
+        seconds: Int,
+        cleanupGraceSeconds: Int = 5,
+        completionMarker: String? = nil
+    ) -> String {
         let limit = max(seconds, 1)
+        let grace = max(cleanupGraceSeconds, 1)
+        let graceTicks = grace * 5
+        let completionLine = completionMarker.map {
+            "printf '\\n%s=%s\\n' \(shellSingleQuote($0)) \"$__1132_body_status\""
+        } ?? ":"
         return """
         ( trap '/bin/kill "$__1132_timer" 2>/dev/null; exit 0' TERM; { exec /bin/sleep \(limit); } & __1132_timer=$!; wait "$__1132_timer" && /bin/kill -TERM $$ ) >/dev/null 2>&1 &
         __1132_watchdog=$!
+        __1132_body_pid=""
+        __1132_cleanup_done=0
+        __1132_collect_tree() {
+          local __1132_child
+          for __1132_child in $(/usr/bin/pgrep -P "$1" 2>/dev/null); do
+            __1132_collect_tree "$__1132_child"
+          done
+          printf '%s\\n' "$1"
+        }
         __1132_cleanup_watchdog() {
-          if [ -n "${__1132_subshell_pid:-}" ]; then
-            /bin/kill -TERM "$__1132_subshell_pid" 2>/dev/null || true
-            wait "$__1132_subshell_pid" 2>/dev/null || true
-          fi
+          [ "$__1132_cleanup_done" -eq 0 ] || return 0
+          __1132_cleanup_done=1
           /usr/bin/pkill -P "$__1132_watchdog" 2>/dev/null
           /bin/kill "$__1132_watchdog" 2>/dev/null
+          if [ -n "$__1132_body_pid" ] && /bin/kill -0 "$__1132_body_pid" 2>/dev/null; then
+            __1132_tree="$(__1132_collect_tree "$__1132_body_pid")"
+            for __1132_pid in $__1132_tree; do /bin/kill -TERM "$__1132_pid" 2>/dev/null; done
+            __1132_ticks=0
+            while /bin/kill -0 "$__1132_body_pid" 2>/dev/null && [ "$__1132_ticks" -lt \(graceTicks) ]; do
+              /bin/sleep 0.2
+              __1132_ticks=$((__1132_ticks + 1))
+            done
+            if /bin/kill -0 "$__1132_body_pid" 2>/dev/null; then
+              __1132_tree="$(__1132_collect_tree "$__1132_body_pid") $__1132_tree"
+              for __1132_pid in $__1132_tree; do /bin/kill -KILL "$__1132_pid" 2>/dev/null; done
+              echo "Cleanup did not finish within \(grace)s; the remaining processes were force-stopped." >&2
+            fi
+            wait "$__1132_body_pid" 2>/dev/null
+          fi
+          __1132_body_pid=""
+          __1132_tree=""
         }
-        trap '/usr/bin/pkill -P "$__1132_watchdog" 2>/dev/null; /bin/kill "$__1132_watchdog" 2>/dev/null; __1132_cleanup_watchdog' EXIT
+        trap '__1132_cleanup_watchdog' EXIT
         trap 'exit 143' HUP INT TERM
+        (
         \(command)
+        ) &
+        __1132_body_pid=$!
+        wait "$__1132_body_pid"
+        __1132_body_status=$?
+        __1132_body_pid=""
+        \(completionLine)
+        exit "$__1132_body_status"
         """
     }
 
     // MARK: - Command Strings
 
-    static func makePrivilegedCommand(_ command: String, policy: PrivilegedTimeoutPolicy) -> String {
-        let authorizedScript = appleScriptDoShellScript(makeTimeBoundedCommand("""
-        \(command)
-        __1132_completion_status=$?
-        printf '\\n__1132_PRIVILEGED_COMPLETE__=%s\\n' "$__1132_completion_status"
-        exit "$__1132_completion_status"
-        """, seconds: policy.watchdogSeconds), administratorPrivileges: true)
+    /// Returned by the privileged AppleScript when the administrator prompt was cancelled.
+    static let authorizationCancelledSentinel = "__1132_AUTH_CANCELLED__=0"
+    /// Returned when administrator authorization failed before the privileged command was
+    /// invoked (for example, a wrong password). Proven pre-execution: see `makePrivilegedCommand`.
+    static let authorizationRejectedSentinel = "__1132_AUTH_REJECTED__=0"
+
+    /// A random per-run token; only output carrying this run's token can settle the run.
+    static func makePrivilegedRunToken() -> String {
+        UUID().uuidString.replacingOccurrences(of: "-", with: "")
+    }
+
+    static func isValidPrivilegedRunToken(_ token: String) -> Bool {
+        token.utf8.count == 32 && token.utf8.allSatisfy { (48...57).contains($0) || (65...70).contains($0) }
+    }
+
+    /// The completion marker for one run. A stale marker from another run, the legacy
+    /// unbound marker, or text that merely mentions the marker name cannot settle it.
+    static func privilegedCompletionMarker(runToken: String) -> String {
+        "__1132_PRIVILEGED_COMPLETE_\(runToken)__"
+    }
+
+    /// The root shell script carried by `makePrivilegedCommand` (before AppleScript
+    /// encoding). Exposed so tests can run the exact script unprivileged.
+    static func makePrivilegedShellScript(_ command: String, policy: PrivilegedTimeoutPolicy, runToken: String) -> String {
+        makeTimeBoundedCommand(
+            command,
+            seconds: policy.watchdogSeconds,
+            cleanupGraceSeconds: policy.cleanupGraceSeconds,
+            completionMarker: privilegedCompletionMarker(runToken: runToken)
+        )
+    }
+
+    /// Builds the privileged AppleScript.
+    ///
+    /// Authorization is obtained first with a no-op (`/usr/bin/true`) in its own `try`
+    /// block. If that fails, the real command was never invoked, so the script returns an
+    /// exact sentinel (`=0`, matching the caller's strict comparison) and the caller can
+    /// settle the run as not started. AppleScript keeps the granted authorization for the
+    /// rest of this `osascript` process, so the real command does not prompt again. Any
+    /// failure after that point is treated as indeterminate by the caller unless this
+    /// run's completion marker is present.
+    static func makePrivilegedCommand(_ command: String, policy: PrivilegedTimeoutPolicy, runToken: String) -> String {
+        precondition(isValidPrivilegedRunToken(runToken), "Privileged run token must be 32 uppercase hex digits")
+        let authorizedScript = appleScriptDoShellScript(
+            makePrivilegedShellScript(command, policy: policy, runToken: runToken),
+            administratorPrivileges: true
+        )
         return """
+        try
+            do shell script "/usr/bin/true" with administrator privileges
+        on error __1132_message number __1132_number
+            if __1132_number is -128 then
+                return "\(authorizationCancelledSentinel)"
+            end if
+            return "\(authorizationRejectedSentinel)"
+        end try
         try
             \(authorizedScript)
         on error __1132_message number __1132_number
             if __1132_number is -128 then
-                return "__1132_AUTH_CANCELLED__=0"
+                return "\(authorizationCancelledSentinel)"
             end if
             error __1132_message number __1132_number
         end try
@@ -224,10 +330,10 @@ enum ShellCommands {
 
     /// Runs the unprivileged Zoom data reset and reports `__1132_RESET_STATUS__=<n>` on its
     /// last line. Always exits 0 so the caller can read the sentinel instead of an error.
-    static func makeResetZoomDataWithStatusCommand(homeDirectory: String) -> String {
+    static func makeResetZoomDataWithStatusCommand(homeDirectory: String, deletePreferencesDomain: Bool = true) -> String {
         """
         (
-        \(makeResetZoomDataCommand(homeDirectory: homeDirectory))
+        \(makeResetZoomDataCommand(homeDirectory: homeDirectory, deletePreferencesDomain: deletePreferencesDomain))
         )
         reset_status=$?
         printf '\n__1132_RESET_STATUS__=%s\n' "$reset_status"
@@ -252,11 +358,54 @@ enum ShellCommands {
         return standardized
     }
 
+    /// Prints, one per line, the Zoom log files covered by the exact naming contract in
+    /// `ZoomStateScope` (`zoom.us.log` and `zoom.us.log.<digits>`) that are regular files
+    /// or symbolic links (a link is removed, never followed). Backup and reset share this
+    /// function, so every log the reset removes was copied into the backup first.
+    /// Matching names of any other type are reported on stderr and left alone.
+    static let zoomLogCandidatesFunction = #"""
+    __1132_zoom_log_candidates() {
+      __1132_logs_dir="$1"
+      [ -d "$__1132_logs_dir" ] || return 0
+      for __1132_log in "$__1132_logs_dir"/zoom.us.log "$__1132_logs_dir"/zoom.us.log.*; do
+        [ -e "$__1132_log" ] || [ -L "$__1132_log" ] || continue
+        __1132_log_name="${__1132_log##*/}"
+        case "$__1132_log_name" in
+          zoom.us.log) ;;
+          zoom.us.log.*)
+            __1132_log_suffix="${__1132_log_name#zoom.us.log.}"
+            case "$__1132_log_suffix" in
+              ''|*[!0-9]*) continue ;;
+            esac
+            ;;
+          *) continue ;;
+        esac
+        if [ -L "$__1132_log" ] || [ -f "$__1132_log" ]; then
+          printf '%s\n' "$__1132_log"
+        else
+          printf 'Note: leaving %s in place; it is not a regular log file.\n' "$__1132_log" >&2
+        fi
+      done
+    }
+    """#
+
     /// Clears Zoom's local state. Runs as the current user (no administrator privileges):
     /// every path is inside the user's own home directory, and running `rm -rf` and
     /// `defaults delete` as root could leave root-owned files in `~/Library`.
-    static func makeResetZoomDataCommand(homeDirectory: String) -> String {
+    ///
+    /// The cleanup set is decided and checked before anything is deleted: the four
+    /// backed-up paths plus the contract-named log files. If any of them cannot be
+    /// removed (an unwritable parent, or a directory inside the state that this user
+    /// cannot empty), the script refuses with "Nothing was deleted" instead of deleting
+    /// part of the state and then failing.
+    ///
+    /// `deletePreferencesDomain` exists for disposable fixtures only: `defaults` talks to
+    /// the per-user preferences daemon, which does not honor the `HOME` override.
+    static func makeResetZoomDataCommand(homeDirectory: String, deletePreferencesDomain: Bool = true) -> String {
         let home = shellSingleQuote(homeDirectory)
+        let preferencesStep = deletePreferencesDomain
+            ? #"HOME="$home" /usr/bin/defaults delete us.zoom.xos >/dev/null 2>&1 || true"#
+            : ": # preferences-domain deletion disabled for this fixture"
         return """
         home=\(home)
         while [ "${home%/}" != "$home" ] && [ -n "${home%/}" ]; do home="${home%/}"; done
@@ -276,46 +425,127 @@ enum ShellCommands {
           echo "Reset Zoom data: home directory resolves to the filesystem root; refusing to delete anything." >&2
           exit 1
         fi
-        for parent_dir in \
-          "$home_physical/Library" \
-          "$home_physical/Library/Application Support" \
-          "$home_physical/Library/Caches" \
-          "$home_physical/Library/Preferences" \
-          "$home_physical/Library/Logs" \
+        for parent_dir in \\
+          "$home_physical/Library" \\
+          "$home_physical/Library/Application Support" \\
+          "$home_physical/Library/Caches" \\
+          "$home_physical/Library/Preferences" \\
+          "$home_physical/Library/Logs" \\
           "$home_physical/Library/Saved Application State"; do
           if [ -L "$parent_dir" ]; then
             echo "Reset Zoom data: refusing to traverse symbolic link at '$parent_dir'." >&2
             exit 1
           fi
         done
+        \(zoomLogCandidatesFunction)
+        uid="$(/usr/bin/id -u)"
 
         zoom_data="$home_physical/\(ZoomStateScope.backedUpPaths[0])"
         zoom_cache="$home_physical/\(ZoomStateScope.backedUpPaths[1])"
         zoom_prefs="$home_physical/\(ZoomStateScope.backedUpPaths[2])"
-        zoom_logs="$home_physical/Library/Logs/zoom.us.log"
         zoom_saved_state="$home_physical/\(ZoomStateScope.backedUpPaths[3])"
+        zoom_logs_dir="$home_physical/\(ZoomStateScope.logsRelativeDirectory)"
+
+        # Preflight: refuse before deleting anything when part of the set cannot be removed.
+        preflight_failed=0
+        refuse_reset() {
+          echo "Reset Zoom data: $1 Nothing was deleted." >&2
+          preflight_failed=1
+        }
+        for path in "$zoom_data" "$zoom_cache" "$zoom_prefs" "$zoom_saved_state"; do
+          [ -e "$path" ] || [ -L "$path" ] || continue
+          parent="${path%/*}"
+          if [ ! -w "$parent" ] || [ ! -x "$parent" ]; then
+            refuse_reset "'$parent' is not writable by this user."
+            continue
+          fi
+          if [ -d "$path" ] && [ ! -L "$path" ]; then
+            if ! blocked="$(/usr/bin/find "$path" -type d \\( ! -user "$uid" -o ! -perm -u=rwx \\) -print -quit 2>/dev/null)"; then
+              refuse_reset "'$path' could not be fully inspected."
+            elif [ -n "$blocked" ]; then
+              refuse_reset "'$blocked' cannot be emptied by this user."
+            fi
+          fi
+        done
+        if ! log_targets="$(__1132_zoom_log_candidates "$zoom_logs_dir")"; then
+          refuse_reset "Zoom log files could not be listed."
+        fi
+        if [ -n "$log_targets" ] && { [ ! -w "$zoom_logs_dir" ] || [ ! -x "$zoom_logs_dir" ]; }; then
+          refuse_reset "'$zoom_logs_dir' is not writable by this user."
+        fi
+        if [ "$preflight_failed" -ne 0 ]; then
+          exit 1
+        fi
 
         reset_failed=0
         /bin/rm -rf "$zoom_data" "$zoom_cache" "$zoom_prefs" "$zoom_saved_state" || reset_failed=1
-        /bin/rm -f "$zoom_logs"* || reset_failed=1
-        HOME="$home" /usr/bin/defaults delete us.zoom.xos >/dev/null 2>&1 || true
+        if [ -n "$log_targets" ]; then
+          while IFS= read -r log_path; do
+            /bin/rm -f "$log_path" || reset_failed=1
+          done <<< "$log_targets"
+        fi
+        \(preferencesStep)
 
         remaining="$reset_failed"
         for path in "$zoom_data" "$zoom_cache" "$zoom_prefs" "$zoom_saved_state"; do
-          if [ -e "$path" ]; then
+          if [ -e "$path" ] || [ -L "$path" ]; then
             echo "Warning: Could not remove $path" >&2
             remaining=1
           fi
         done
-
-        if /bin/ls "$zoom_logs"* >/dev/null 2>&1; then
-          echo "Warning: Could not remove Zoom log files matching $zoom_logs*" >&2
+        leftover_logs="$(__1132_zoom_log_candidates "$zoom_logs_dir" 2>/dev/null)"
+        if [ -n "$leftover_logs" ]; then
+          echo "Warning: Could not remove Zoom log files: $leftover_logs" >&2
           remaining=1
         fi
 
         exit "$remaining"
         """
     }
+
+    /// Removes `.incomplete.*` staging directories left behind by an interrupted backup.
+    /// Age alone is not treated as proof that a backup was abandoned:
+    /// - Staging created by this version carries `.1132fixer-staging` (owner PID, boot
+    ///   session, start time). It is removed only when it is at least an hour old and its
+    ///   owner is provably gone: a different boot session, or a dead PID in this one.
+    /// - Older staging without metadata is removed only when nothing inside it has
+    ///   changed for seven days. Each backup is bounded to minutes, so such a directory
+    ///   cannot belong to an active backup.
+    /// Only real directories directly inside the backup root are considered; symbolic
+    /// links are never followed or removed. Expects `backup_root` and `boot_session`.
+    static let abandonedStagingCleanupFunction = #"""
+    __1132_prune_abandoned_staging() {
+      __1132_now="$(/bin/date +%s)"
+      for __1132_stale in "$backup_root"/.incomplete.*; do
+        [ -d "$__1132_stale" ] || continue
+        [ ! -L "$__1132_stale" ] || continue
+        case "${__1132_stale##*/}" in
+          .incomplete.?*) ;;
+          *) continue ;;
+        esac
+        __1132_meta="$__1132_stale/.1132fixer-staging"
+        if [ -f "$__1132_meta" ] && [ ! -L "$__1132_meta" ]; then
+          __1132_started="$(/usr/bin/sed -n 's/^started_epoch=\([0-9][0-9]*\)$/\1/p' "$__1132_meta" | /usr/bin/head -n 1)"
+          __1132_owner="$(/usr/bin/sed -n 's/^pid=\([0-9][0-9]*\)$/\1/p' "$__1132_meta" | /usr/bin/head -n 1)"
+          __1132_boot="$(/usr/bin/sed -n 's/^boot=\(.*\)$/\1/p' "$__1132_meta" | /usr/bin/head -n 1)"
+          [ -n "$__1132_started" ] || continue
+          [ $((__1132_now - __1132_started)) -ge 3600 ] || continue
+          if [ "$__1132_boot" = "$boot_session" ]; then
+            [ -n "$__1132_owner" ] || continue
+            if /bin/kill -0 "$__1132_owner" 2>/dev/null; then
+              continue
+            fi
+          fi
+        else
+          if ! __1132_recent="$(/usr/bin/find "$__1132_stale" -mtime -7 -print -quit 2>/dev/null)"; then
+            continue
+          fi
+          [ -z "$__1132_recent" ] || continue
+        fi
+        /bin/rm -rf "$__1132_stale"
+      done
+    }
+    """#
 
     /// Copies Zoom's local state aside before it is cleared, keeping only the most
     /// recent `retainedBackupCount` snapshots. Without pruning, every run left another
@@ -356,6 +586,7 @@ enum ShellCommands {
           "$home_physical/Library/Application Support" \
           "$home_physical/Library/Caches" \
           "$home_physical/Library/Preferences" \
+          "$home_physical/Library/Logs" \
           "$home_physical/Library/Saved Application State"; do
           if [ -L "$parent_dir" ]; then
             printf 'Backup Zoom data: refusing to traverse symbolic link at %s\n' "$parent_dir" >&2
@@ -377,6 +608,11 @@ enum ShellCommands {
             ;;
         esac
 
+        \(abandonedStagingCleanupFunction)
+        \(zoomLogCandidatesFunction)
+        boot_session="$(/usr/sbin/sysctl -n kern.bootsessionuuid 2>/dev/null || true)"
+        __1132_prune_abandoned_staging
+
         staging_dir="$(/usr/bin/mktemp -d "$backup_root/.incomplete.XXXXXX")" || exit 1
         backup_complete=0
         cleanup_backup() {
@@ -389,23 +625,52 @@ enum ShellCommands {
         /bin/chmod 700 "$staging_dir" || exit 1
 
         backup_started="$(/bin/date +%s)"
+        # Ownership record that lets a later run tell an abandoned staging directory
+        # from one that another backup is still writing.
+        printf 'format=1\\npid=%s\\nboot=%s\\nstarted_epoch=%s\\n' "$$" "$boot_session" "$backup_started" \
+          > "$staging_dir/.1132fixer-staging" || exit 1
         backup_failed=0
+        included=""
         for src in \(ZoomStateScope.backedUpPaths.map { "\"$home_physical/\($0)\"" }.joined(separator: " ")); do
-          [ -e "$src" ] || continue
-          if ! /bin/cp -a "$src" "$staging_dir/" 2>/dev/null; then
+          [ -e "$src" ] || [ -L "$src" ] || continue
+          if /bin/cp -a "$src" "$staging_dir/" 2>/dev/null; then
+            included="${included}included=${src#"$home_physical"/}
+        "
+          else
             printf 'Could not back up %s\\n' "$src" >&2
             backup_failed=1
           fi
         done
+        # The reset removes exactly these contract-named logs, so they are backed up too.
+        if ! log_targets="$(__1132_zoom_log_candidates "$home_physical/\(ZoomStateScope.logsRelativeDirectory)")"; then
+          printf 'Could not list Zoom log files for backup\\n' >&2
+          backup_failed=1
+        fi
+        if [ -n "$log_targets" ]; then
+          if /bin/mkdir -p "$staging_dir/\(ZoomStateScope.backupLogsSubdirectory)"; then
+            while IFS= read -r log_path; do
+              if /bin/cp -a "$log_path" "$staging_dir/\(ZoomStateScope.backupLogsSubdirectory)/" 2>/dev/null; then
+                included="${included}included=${log_path#"$home_physical"/}
+        "
+              else
+                printf 'Could not back up %s\\n' "$log_path" >&2
+                backup_failed=1
+              fi
+            done <<< "$log_targets"
+          else
+            backup_failed=1
+          fi
+        fi
         # A failed backup must stop the caller before anything is deleted.
         if [ "$backup_failed" -ne 0 ]; then
           exit 1
         fi
 
         backup_finished="$(/bin/date +%s)"
-        printf 'format=1\\nstarted_epoch=%s\\nfinished_epoch=%s\\nduration_seconds=%s\\n' \
-          "$backup_started" "$backup_finished" "$((backup_finished - backup_started))" \
+        printf 'format=2\\nstarted_epoch=%s\\nfinished_epoch=%s\\nduration_seconds=%s\\n%s' \
+          "$backup_started" "$backup_finished" "$((backup_finished - backup_started))" "$included" \
           > "$staging_dir/backup-manifest.txt" || exit 1
+        /bin/rm -f "$staging_dir/.1132fixer-staging"
         : > "$staging_dir/.1132fixer-backup"
 
         # Publish only a fully copied snapshot. The rename is atomic because staging and
@@ -800,10 +1065,17 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
     /// stops the sandboxed session from reinstating the updater agents the workflow
     /// just unloaded. This lasts only as long as the sandboxed process: the agent
     /// files are untouched, so Zoom still updates outside this app.
+    ///
+    /// Credential stores that are read-denied are write-denied too (F-013): `.kube`,
+    /// `.docker` and `.netrc` hold cluster, registry and host credentials that Zoom never
+    /// needs to read or write. Each was reviewed individually; history files are
+    /// read-denied for privacy but are not credentials, so they are not added here.
     private static let deniedHomeWriteSubpaths = [
         ".ssh",
         ".gnupg",
         ".aws",
+        ".kube",
+        ".docker",
         ".config",
         "Applications",
         "Library/LaunchAgents",
@@ -811,6 +1083,7 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
     ]
 
     private static let deniedHomeWriteLiterals = [
+        ".netrc",
         ".zshrc",
         ".zprofile",
         ".zshenv",
@@ -1182,8 +1455,8 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
         echo "Launch mode: persistentSandbox"
         stop_zoom_processes
         zoom_app=\(quotedAppPath)
-        if [ ! -x /usr/bin/codesign ] || ! /usr/bin/codesign --verify --strict -R='anchor apple generic and certificate leaf[subject.OU] = "BJ4HAAB9B3"' "$zoom_app" >/dev/null 2>&1; then
-          echo "Error: Fresh Zoom Team-ID-pinned signature verification failed; refusing to launch $zoom_binary." >&2
+        if [ ! -x /usr/bin/codesign ] || ! /usr/bin/codesign --verify --strict -R=\(shellSingleQuote(ZoomBundleVerifier.makeRequirement())) "$zoom_app" >/dev/null 2>&1; then
+          echo "Error: Fresh Zoom signature verification (Team ID and us.zoom.xos identifier) failed; refusing to launch $zoom_binary." >&2
           exit 1
         fi
         /usr/bin/sandbox-exec -f "$profile_path" "$zoom_binary" >/dev/null 2>&1 &
