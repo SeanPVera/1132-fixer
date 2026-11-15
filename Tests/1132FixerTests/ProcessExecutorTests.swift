@@ -5,12 +5,15 @@ import Testing
 @Suite("BoundedProcessExecutor")
 struct ProcessExecutorTests {
     private let executor = BoundedProcessExecutor()
+    // These checks assert I/O semantics, not process-launch speed. Loaded hosted
+    // runners can spend several seconds scheduling the process and pipe readers.
+    private let ioTimeout: TimeInterval = 10
 
     @Test func capturesStandardOutputAndError() async throws {
         let result = try await executor.run(
             executable: "/bin/bash",
             arguments: ["-c", "printf out; printf err >&2"],
-            timeout: 2,
+            timeout: ioTimeout,
             maxOutputBytes: 1_024
         )
 
@@ -24,7 +27,7 @@ struct ProcessExecutorTests {
         let result = try await executor.run(
             executable: "/bin/bash",
             arguments: ["-c", "printf failure >&2; exit 7"],
-            timeout: 2,
+            timeout: ioTimeout,
             maxOutputBytes: 1_024
         )
 
@@ -36,7 +39,7 @@ struct ProcessExecutorTests {
         let result = try await executor.run(
             executable: "/bin/bash",
             arguments: ["-c", "/usr/bin/yes x | /usr/bin/head -n 100000; printf newest"],
-            timeout: 3,
+            timeout: ioTimeout,
             maxOutputBytes: 2_048
         )
 
