@@ -111,7 +111,9 @@ enum ShellCommands {
     /// `wait` is interrupted by the watchdog's SIGTERM, so the deadline holds even while
     /// the body is in a long foreground command (bash defers traps until a foreground
     /// child exits, which let a slow `dscacheutil` outlive the old watchdog). Cleanup is
-    /// bounded: the body's process tree is snapshotted and sent SIGTERM once, given
+    /// bounded: the body's process tree is snapshotted and sent SIGTERM once, parents
+    /// before children (so a shell's restore trap is already pending when the command it
+    /// is waiting on ends, instead of the shell resuming and clearing its traps), given
     /// `cleanupGraceSeconds` to run its own restore traps, then sent SIGKILL. Each owned
     /// PID is signalled from one cleanup pass and cleared afterwards.
     ///
@@ -139,10 +141,10 @@ enum ShellCommands {
         __1132_cleanup_done=0
         __1132_collect_tree() {
           local __1132_child
+          printf '%s\\n' "$1"
           for __1132_child in $(/usr/bin/pgrep -P "$1" 2>/dev/null); do
             __1132_collect_tree "$__1132_child"
           done
-          printf '%s\\n' "$1"
         }
         __1132_cleanup_watchdog() {
           [ "$__1132_cleanup_done" -eq 0 ] || return 0

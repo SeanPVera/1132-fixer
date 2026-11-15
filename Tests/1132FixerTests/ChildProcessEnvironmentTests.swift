@@ -69,8 +69,9 @@ struct ChildProcessEnvironmentTests {
         let probeName = "probe-" + UUID().uuidString
         let marker = directory.appendingPathComponent("ran")
         let probe = directory.appendingPathComponent("probe.sh")
-        // Only reacts to this test's own `$0`, so unrelated bash children are unaffected.
-        try Data("case \"$0\" in \(probeName)) echo ran >> \(ShellCommands.shellSingleQuote(marker.path)) ;; esac\n".utf8).write(to: probe)
+        // Only reacts to this test's own command string, so unrelated bash children are
+        // unaffected (bash 3.2 has not set `$0` yet when it sources BASH_ENV).
+        try Data("case \"$BASH_EXECUTION_STRING\" in *\(probeName)*) echo ran >> \(ShellCommands.shellSingleQuote(marker.path)) ;; esac\n".utf8).write(to: probe)
 
         let previous = getenv("BASH_ENV").map { String(cString: $0) }
         setenv("BASH_ENV", probe.path, 1)
@@ -80,14 +81,14 @@ struct ChildProcessEnvironmentTests {
 
         let control = Process()
         control.executableURL = URL(fileURLWithPath: "/bin/bash")
-        control.arguments = ["-c", ":", probeName]
+        control.arguments = ["-c", ": \(probeName)"]
         try control.run()
         control.waitUntilExit()
         #expect(fileManager.fileExists(atPath: marker.path), "positive control: inherited BASH_ENV should run")
         try? fileManager.removeItem(at: marker)
 
         let result = try await BoundedProcessExecutor().run(
-            executable: "/bin/bash", arguments: ["-c", ":", probeName], timeout: 10, maxOutputBytes: 4_096
+            executable: "/bin/bash", arguments: ["-c", ": \(probeName)"], timeout: 10, maxOutputBytes: 4_096
         )
         #expect(result.exitCode == 0)
         #expect(!fileManager.fileExists(atPath: marker.path), "BASH_ENV ran inside an executor child")
