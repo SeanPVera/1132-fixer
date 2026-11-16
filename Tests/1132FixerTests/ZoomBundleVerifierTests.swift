@@ -140,14 +140,4 @@ struct ZoomBundleVerifierTests {
         }
     }
 
-    @Test func validatedAppPathRequiresZoomBundleName() throws {
-        let root = try makeFakeBundle()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let app = root.appendingPathComponent("zoom.us.app").path
-        #expect(ZoomLocation.validatedAppPath(app) == app)
-
-        let renamed = root.appendingPathComponent("Other.app")
-        try FileManager.default.moveItem(at: root.appendingPathComponent("zoom.us.app"), to: renamed)
-        #expect(ZoomLocation.validatedAppPath(renamed.path) == nil)
-    }
 }

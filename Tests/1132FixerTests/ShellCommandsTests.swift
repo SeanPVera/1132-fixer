@@ -26,259 +26,6 @@ struct ShellCommandsTests {
 
     // MARK: - MAC Address Validation
 
-    @Test func validMACAddress() {
-        #expect(ShellCommands.isValidMACAddress("02:ab:cd:ef:12:34"))
-        #expect(ShellCommands.isValidMACAddress("AA:BB:CC:DD:EE:FF"))
-    }
-
-    @Test func invalidMACAddress() {
-        #expect(!ShellCommands.isValidMACAddress(""))
-        #expect(!ShellCommands.isValidMACAddress("not-a-mac"))
-        #expect(!ShellCommands.isValidMACAddress("02:ab:cd:ef:12"))
-        #expect(!ShellCommands.isValidMACAddress("02:ab:cd:ef:12:34:56"))
-        #expect(!ShellCommands.isValidMACAddress("02-ab-cd-ef-12-34"))
-        #expect(!ShellCommands.isValidMACAddress("GG:HH:II:JJ:KK:LL"))
-    }
-
-    @Test func generateRandomMACAddress() throws {
-        let mac = try ShellCommands.generateRandomMACAddress()
-        #expect(ShellCommands.isValidMACAddress(mac))
-
-        let firstByte = UInt8(mac.prefix(2), radix: 16)!
-        #expect(firstByte & 0x02 != 0, "Locally administered bit should be set")
-        #expect(firstByte & 0x01 == 0, "Unicast bit should be clear")
-    }
-
-    @Test func generatedMACsAreRandom() throws {
-        let mac1 = try ShellCommands.generateRandomMACAddress()
-        let mac2 = try ShellCommands.generateRandomMACAddress()
-        #expect(mac1 != mac2)
-    }
-
-    // MARK: - Interface Name Validation
-
-    @Test func safeInterfaceNames() {
-        #expect(ShellCommands.isSafeInterfaceName("en0"))
-        #expect(ShellCommands.isSafeInterfaceName("en1"))
-        #expect(ShellCommands.isSafeInterfaceName("bridge0"))
-    }
-
-    @Test func unsafeInterfaceNames() {
-        #expect(!ShellCommands.isSafeInterfaceName(""))
-        #expect(!ShellCommands.isSafeInterfaceName("en 0"))
-        #expect(!ShellCommands.isSafeInterfaceName("en0;rm"))
-        #expect(!ShellCommands.isSafeInterfaceName("en0|cat"))
-        #expect(!ShellCommands.isSafeInterfaceName("../etc"))
-    }
-
-    // MARK: - Parse Default Route
-
-    @Test func parseDefaultRouteInterface() throws {
-        let output = """
-           route to: default
-        destination: default
-               mask: default
-            gateway: 192.168.1.1
-          interface: en0
-              flags: <UP,GATEWAY,DONE,STATIC,PRCLONING,GLOBAL>
-        """
-        let device = try ShellCommands.parseDefaultRouteInterface(from: output)
-        #expect(device == "en0")
-    }
-
-    @Test func parseDefaultRouteNoInterface() {
-        let output = "route: writing to routing socket: not in table"
-        #expect(throws: (any Error).self) {
-            try ShellCommands.parseDefaultRouteInterface(from: output)
-        }
-    }
-
-    @Test func parseDefaultRouteVPNInterface() {
-        let output = """
-           route to: default
-          interface: utun0
-        """
-        #expect(throws: (any Error).self) {
-            try ShellCommands.parseDefaultRouteInterface(from: output)
-        }
-    }
-
-    // MARK: - Parse Hardware Ports
-
-    @Test func parseHardwarePorts() {
-        let output = """
-        Hardware Port: Wi-Fi
-        Device: en0
-        Ethernet Address: aa:bb:cc:dd:ee:ff
-
-        Hardware Port: Thunderbolt Ethernet Slot 1
-        Device: en1
-        Ethernet Address: 11:22:33:44:55:66
-        """
-        let result = ShellCommands.parseHardwarePorts(from: output)
-        #expect(result["en0"] == "Wi-Fi")
-        #expect(result["en1"] == "Thunderbolt Ethernet Slot 1")
-    }
-
-    @Test func parseHardwarePortsEmpty() {
-        let result = ShellCommands.parseHardwarePorts(from: "")
-        #expect(result.isEmpty)
-    }
-
-    // MARK: - Classify Interface
-
-    @Test func classifyWiFi() throws {
-        let kind = try ShellCommands.classifySupportedInterface(hardwarePortName: "Wi-Fi")
-        #expect(kind == .wifi)
-    }
-
-    @Test func classifyEthernet() throws {
-        let kind = try ShellCommands.classifySupportedInterface(hardwarePortName: "Thunderbolt Ethernet Slot 1")
-        #expect(kind == .ethernet)
-    }
-
-    @Test func classifyUSBLANAsEthernet() throws {
-        let kind = try ShellCommands.classifySupportedInterface(hardwarePortName: "USB 10/100/1000 LAN")
-        #expect(kind == .ethernet)
-    }
-
-    @Test func classifyUnsupported() {
-        #expect(throws: (any Error).self) {
-            try ShellCommands.classifySupportedInterface(hardwarePortName: "Bluetooth PAN")
-        }
-    }
-
-    // MARK: - Parse Network Service Order
-
-    @Test func parseNetworkServiceOrder() {
-        let output = """
-        (1) Wi-Fi
-        (Hardware Port: Wi-Fi, Device: en0)
-
-        (2) Thunderbolt Ethernet Slot 1
-        (Hardware Port: Thunderbolt Ethernet Slot 1, Device: en1)
-        """
-        let result = ShellCommands.parseNetworkServiceOrder(from: output)
-        #expect(result["en0"] == "Wi-Fi")
-        #expect(result["en1"] == "Thunderbolt Ethernet Slot 1")
-    }
-
-    @Test func parseNetworkServiceOrderSkipsDisabledServices() {
-        // Real `networksetup -listnetworkserviceorder` output marks disabled services with "(*)".
-        let output = """
-        An asterisk (*) denotes that a network service is disabled.
-        (1) Wi-Fi
-        (Hardware Port: Wi-Fi, Device: en0)
-
-        (*) USB 10/100/1000 LAN
-        (Hardware Port: USB 10/100/1000 LAN, Device: en5)
-
-        (3) Thunderbolt Bridge
-        (Hardware Port: Thunderbolt Bridge, Device: bridge0)
-        """
-        let result = ShellCommands.parseNetworkServiceOrder(from: output)
-        #expect(result["en0"] == "Wi-Fi")
-        #expect(result["bridge0"] == "Thunderbolt Bridge")
-        #expect(result["en5"] == nil)
-        #expect(result.count == 2)
-    }
-
-    @Test func parseNetworkServiceOrderKeepsServiceNamesThatStartWithAsterisk() {
-        let output = """
-        (1) *Office Network
-        (Hardware Port: Ethernet, Device: en6)
-        """
-        #expect(ShellCommands.parseNetworkServiceOrder(from: output)["en6"] == "*Office Network")
-    }
-
-    @Test func parseNetworkServiceOrderHandlesParenthesesInHardwarePortName() {
-        let output = """
-        (1) Dock Ethernet
-        (Hardware Port: Dock (Gigabit), Device: en7)
-        """
-        #expect(ShellCommands.parseNetworkServiceOrder(from: output)["en7"] == "Dock Ethernet")
-    }
-
-    // MARK: - AppleScript Generation
-
-    @Test func appleScriptDoShellScript() {
-        let result = ShellCommands.appleScriptDoShellScript("echo hello", administratorPrivileges: false)
-        // "echo hello" encoded in base64 is ZWNobyBoZWxsbw==
-        #expect(result == #"do shell script "/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc -c \"$(/bin/echo 'ZWNobyBoZWxsbw==' | /usr/bin/base64 --decode)\"""#)
-    }
-
-    @Test func appleScriptDoShellScriptAdmin() {
-        let result = ShellCommands.appleScriptDoShellScript("echo hello", administratorPrivileges: true)
-        #expect(result == #"do shell script "/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc -c \"$(/bin/echo 'ZWNobyBoZWxsbw==' | /usr/bin/base64 --decode)\"" with administrator privileges"#)
-    }
-
-    @Test func appleScriptEscapesBackslashes() {
-        let result = ShellCommands.appleScriptDoShellScript(#"echo \"test\""#, administratorPrivileges: false)
-        // 'echo \"test\"' encoded in base64 is ZWNobyBcInRlc3RcIg==
-        #expect(result == #"do shell script "/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc -c \"$(/bin/echo 'ZWNobyBcInRlc3RcIg==' | /usr/bin/base64 --decode)\"""#)
-    }
-
-    @Test func appleScriptComplexPayload() {
-        let payload = #"echo "hello \n world" 'test'"#
-        let result = ShellCommands.appleScriptDoShellScript(payload, administratorPrivileges: true)
-        // payload encoded in base64 is ZWNobyAiaGVsbG8gXG4gd29ybGQiICd0ZXN0Jw==
-        #expect(result == #"do shell script "/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc -c \"$(/bin/echo 'ZWNobyAiaGVsbG8gXG4gd29ybGQiICd0ZXN0Jw==' | /usr/bin/base64 --decode)\"" with administrator privileges"#)
-    }
-
-    // MARK: - VPN Detection
-
-    @Test func vpnDetection() {
-        #expect(throws: (any Error).self) { try ShellCommands.ensureVPNIsNotActive(interfaceName: "utun0") }
-        #expect(throws: (any Error).self) { try ShellCommands.ensureVPNIsNotActive(interfaceName: "ppp0") }
-        #expect(throws: (any Error).self) { try ShellCommands.ensureVPNIsNotActive(interfaceName: "ipsec0") }
-        try! ShellCommands.ensureVPNIsNotActive(interfaceName: "en0")
-        try! ShellCommands.ensureVPNIsNotActive(interfaceName: "en1")
-    }
-
-    // MARK: - Spoof Command Generation
-
-    @Test func makeSpoofCommand() {
-        let cmd = ShellCommands.makeSpoofCommand(device: "en0", spoofedMAC: "02:ab:cd:ef:12:34", networkService: "Wi-Fi")
-        #expect(cmd.contains("ifconfig"))
-        #expect(cmd.contains("'en0'"))
-        #expect(cmd.contains("'02:ab:cd:ef:12:34'"))
-        #expect(cmd.contains("networksetup"))
-        #expect(cmd.contains("'Wi-Fi'"))
-        #expect(cmd.contains("trap restore_network EXIT"))
-        #expect(cmd.contains("Could not re-enable the active network service"))
-    }
-
-    @Test func networkRecoveryCommandsAlwaysAttemptToRestoreConnectivity() {
-        let legacy = ShellCommands.makeSpoofCommand(
-            device: "en0",
-            spoofedMAC: "02:ab:cd:ef:12:34",
-            networkService: "Office Wi-Fi"
-        )
-        #expect(legacy.contains("restore_network"))
-        #expect(legacy.contains("networksetup -setnetworkserviceenabled 'Office Wi-Fi' on"))
-    }
-
-    @Test func combinedPrivilegedCommandsConsolidateNetworkAndDNSIntoSingleAdminScript() {
-        let spoofAndDNS = ShellCommands.makeSpoofAndDNSCommand(
-            device: "en0",
-            spoofedMAC: "02:ab:cd:ef:12:34",
-            networkService: "Ethernet",
-            includeDNSFlush: true
-        )
-        #expect(spoofAndDNS.contains("ifconfig 'en0' lladdr '02:ab:cd:ef:12:34'"))
-        #expect(spoofAndDNS.contains("__1132_SPOOF_STATUS__="))
-        #expect(!spoofAndDNS.contains("exit \"$spoof_status\""))
-        #expect(spoofAndDNS.contains("dscacheutil -flushcache"))
-        #expect(spoofAndDNS.contains("__1132_DNS_STATUS__="))
-    }
-
-    @Test func makeVerifyMACCommand() {
-        let cmd = ShellCommands.makeVerifyMACCommand(device: "en0")
-        #expect(cmd.contains("ifconfig"))
-        #expect(cmd.contains("'en0'"))
-        #expect(cmd.contains("ether"))
-    }
-
     @Test func makeResetZoomDataCommandUsesProvidedHome() {
         let cmd = ShellCommands.makeResetZoomDataCommand(homeDirectory: "/Users/test user")
         #expect(cmd.contains("home='/Users/test user'"))
@@ -293,71 +40,7 @@ struct ShellCommandsTests {
         #expect(cmd.contains("refusing to delete anything"))
     }
 
-    // MARK: - Backup Pruning
-
-    @Test func retentionSkipsOversizedCandidateWithoutChargingItsSizeOrCount() async throws {
-        let fileManager = FileManager.default
-        let home = fileManager.temporaryDirectory.appendingPathComponent("1132-retention-" + UUID().uuidString)
-        defer { try? fileManager.removeItem(at: home) }
-        let root = home.appendingPathComponent(ZoomStateScope.backupRelativeRoot)
-        let large = root.appendingPathComponent("snapshot-large")
-        let small = root.appendingPathComponent("snapshot-small")
-        for path in [large, small] { try fileManager.createDirectory(at: path, withIntermediateDirectories: true) }
-        try Data(repeating: 120, count: 2_097_152).write(to: large.appendingPathComponent("payload"))
-        try Data(repeating: 120, count: 16_384).write(to: small.appendingPathComponent("payload"))
-        try fileManager.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -60)], ofItemAtPath: large.path)
-        try fileManager.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -120)], ofItemAtPath: small.path)
-        let script = ShellCommands.makeBackupZoomDataCommand(homeDirectory: home.path, retainedBackupCount: 2, retainedBackupMegabytes: 1)
-        let result = try await BoundedProcessExecutor().run(executable: "/bin/bash", arguments: ["-c", script], timeout: 15)
-        #expect(result.exitCode == 0)
-        #expect(!fileManager.fileExists(atPath: large.path))
-        #expect(fileManager.fileExists(atPath: small.path))
-        let current = URL(fileURLWithPath: result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines))
-        #expect(BackupStore.isManagedBackupURL(current, rootURL: root))
-    }
-
-    @Test func backupCommandUsesUniquePrivateSnapshotsAndCleansPartialCopies() {
-        let cmd = ShellCommands.makeBackupZoomDataCommand()
-        #expect(cmd.contains(#"/usr/bin/mktemp -d "$backup_root/.incomplete.XXXXXX""#))
-        #expect(cmd.contains("cleanup_backup"))
-        #expect(cmd.contains(#"[ "$backup_complete" -ne 1 ]"#))
-        #expect(cmd.contains(#": > "$staging_dir/.1132fixer-backup""#))
-    }
-
-    @Test func backupCommandEchoesOnlyTheBackupPath() {
-        // AppViewModel consumes stdout as the backup path. Error messages go to stderr.
-        let cmd = ShellCommands.makeBackupZoomDataCommand()
-        let echoLines = cmd.split(separator: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { $0.hasPrefix("echo ") && !$0.contains(">&2") }
-        #expect(echoLines == [#"echo "$backup_dir""#])
-    }
-
-    @Test func backupCommandUsesTheProvidedHomeAndAtomicStaging() {
-        let cmd = ShellCommands.makeBackupZoomDataCommand(homeDirectory: "/Users/test user's home")
-        #expect(cmd.contains(#"home='/Users/test user'\''s home'"#))
-        #expect(!cmd.contains(#"$HOME/Library"#))
-        #expect(cmd.contains(#"mktemp -d "$backup_root/.incomplete.XXXXXX""#))
-        #expect(cmd.contains(#"/bin/mv "$staging_dir" "$backup_dir""#))
-        #expect(cmd.contains("backup-manifest.txt"))
-        #expect(cmd.contains("trap cleanup_backup EXIT"))
-    }
-
-    // MARK: - Updaters
-
-    @Test func stopZoomUpdatersDoesNotPersistentlyDisableUpdates() {
-        // `launchctl disable` survives reboots and is never undone, which would leave
-        // Zoom permanently without security updates.
-        #expect(!ShellCommands.stopZoomUpdaters.contains("launchctl disable"))
-        #expect(ShellCommands.stopZoomUpdaters.contains("launchctl bootout"))
-        // Clears any override left behind by older versions of the app.
-        #expect(ShellCommands.stopZoomUpdaters.contains("launchctl enable"))
-    }
-
-    @Test func stopZoomUpdatersUsesValidDomainTargets() {
-        // "user" without a UID is not a valid launchctl domain target.
-        #expect(ShellCommands.stopZoomUpdaters.contains(#"for domain in "gui/$uid" "user/$uid"; do"#))
-    }
+    // MARK: - Sandbox Profile
 
     @Test func zoomSandboxProfileAllowsCameraAndMicrophone() {
         #expect(testProfile().contains("(allow device-camera)"))
@@ -492,9 +175,8 @@ struct ShellCommandsTests {
     @Test func zoomSandboxProfileDeniesWritesToPersistenceAndBackupPaths() {
         let profile = testProfile()
         #expect(profile.contains("(deny file-write*"))
-        // Stops the sandboxed session from reinstating the updater agents the
-        // workflow just unloaded, and from tampering with this app's own backups
-        // of Zoom's previous identity.
+        // Stops the sandboxed session from installing login agents and from
+        // tampering with backups left by earlier versions of this app.
         #expect(profile.contains(#"(subpath "/Users/tester/Library/LaunchAgents")"#))
         #expect(profile.contains(#"(subpath "/Library/LaunchDaemons")"#))
     }
@@ -759,44 +441,6 @@ struct ShellCommandsTests {
 
     // MARK: - Network Identity Strategy
 
-    @Test func reconnectCommandsDoNotUseBlindPostReconnectDelays() {
-        let legacy = ShellCommands.makeSpoofCommand(
-            device: "en0",
-            spoofedMAC: "02:ab:cd:ef:12:34",
-            networkService: "Wi-Fi"
-        )
-        #expect(!legacy.hasSuffix("/bin/sleep 2"))
-    }
-
-    @Test func networkReadinessIsBoundedAndChecksInterfaceAndRoute() {
-        let cmd = ShellCommands.makeNetworkReadinessCommand(
-            device: "en0",
-            maxAttempts: 7,
-            intervalSeconds: 2
-        )
-        #expect(cmd.contains("attempt"))
-        #expect(cmd.contains(#"[ "$attempt" -lt 7 ]"#))
-        #expect(cmd.contains(#"ifconfig "$device""#))
-        #expect(cmd.contains("status: active"))
-        #expect(cmd.contains("route -n get default"))
-        #expect(cmd.contains("/bin/sleep 2"))
-        #expect(cmd.contains("exit 1"))
-    }
-
-    @Test func networkReadinessQuotesTheInterface() {
-        let cmd = ShellCommands.makeNetworkReadinessCommand(device: "en0; touch /tmp/nope")
-        #expect(cmd.contains(#"device='en0; touch /tmp/nope'"#))
-    }
-
-    @Test func normalizedMACAddressRejectsUnverifiedOutput() {
-        #expect(ShellCommands.normalizedMACAddress(" 02:AB:CD:EF:12:34\n") == "02:ab:cd:ef:12:34")
-        #expect(ShellCommands.normalizedMACAddress("") == nil)
-        #expect(ShellCommands.normalizedMACAddress("not-a-mac") == nil)
-        #expect(ShellCommands.normalizedMACAddress("02:ab:cd:ef:12:34 extra") == nil)
-    }
-
-    // MARK: - Custom Zoom Location
-
     @Test func zoomBinaryPathIsDerivedFromAppBundlePath() {
         #expect(ShellCommands.zoomBinaryPath(forAppPath: "/Applications/zoom.us.app")
             == "/Applications/zoom.us.app/Contents/MacOS/zoom.us")
@@ -821,53 +465,6 @@ struct ShellCommandsTests {
     }
 
     // MARK: - Time-bounded privileged commands
-
-    @Test func makeTimeBoundedCommandAddsWatchdogAndKeepsCommand() {
-        let cmd = ShellCommands.makeTimeBoundedCommand("echo hi", seconds: 30)
-        #expect(cmd.contains("/bin/sleep 30"))
-        #expect(cmd.contains("kill -TERM $$"))
-        #expect(cmd.contains("trap "))
-        #expect(cmd.contains("(\necho hi\n) &"))
-        #expect(cmd.hasSuffix("exit \"$__1132_body_status\""))
-        #expect(!cmd.contains("__1132_PRIVILEGED_COMPLETE"))
-    }
-
-    @Test func makeTimeBoundedCommandClampsNonPositiveLimit() {
-        #expect(ShellCommands.makeTimeBoundedCommand("true", seconds: 0).contains("/bin/sleep 1;"))
-    }
-
-    @Test func timeBoundedCommandSurvivesAppleScriptEncoding() throws {
-        let command = ShellCommands.makeTimeBoundedCommand("echo hi", seconds: 5)
-        let script = ShellCommands.appleScriptDoShellScript(command, administratorPrivileges: true)
-        #expect(script.hasPrefix("do shell script \""))
-        #expect(script.hasSuffix("\" with administrator privileges"))
-        // The command travels base64-encoded, so its quotes and `$` need no AppleScript escaping.
-        let start = try #require(script.range(of: "echo '"))
-        let end = try #require(script.range(of: "' | /usr/bin/base64"))
-        let encoded = String(script[start.upperBound..<end.lowerBound])
-        let decoded = try #require(Data(base64Encoded: encoded).flatMap { String(data: $0, encoding: .utf8) })
-        #expect(decoded == command)
-    }
-
-    // MARK: - Reset split (unprivileged data removal, privileged DNS flush only)
-
-    @Test func privilegedCommandOnlyFlushesDNS() {
-        let cmd = ShellCommands.makeRefreshDNSCommand()
-        #expect(cmd.contains("dscacheutil -flushcache"))
-        #expect(cmd.contains("killall -HUP mDNSResponder"))
-        #expect(cmd.contains("__1132_DNS_STATUS__"))
-        #expect(!cmd.contains("rm "))
-        #expect(!cmd.contains("defaults delete"))
-    }
-
-    @Test func resetWithStatusKeepsSentinelAndDoesNotFlushDNS() {
-        let cmd = ShellCommands.makeResetZoomDataWithStatusCommand(homeDirectory: "/Users/test")
-        #expect(cmd.contains("home='/Users/test'"))
-        #expect(cmd.contains("__1132_RESET_STATUS__"))
-        #expect(!cmd.contains("__1132_DNS_STATUS__"))
-        #expect(!cmd.contains("dscacheutil"))
-        #expect(cmd.contains("defaults delete us.zoom.xos"))
-    }
 
     @Test func resetCommandGuardsHomeBeforeAnyDeletion() {
         let cmd = ShellCommands.makeResetZoomDataCommand(homeDirectory: "/Users/test")
@@ -894,62 +491,6 @@ struct ShellCommandsTests {
         #expect(!ShellCommands.isSafeHomeDirectory("/Users/test/../other"))
     }
 
-    // MARK: - Backup
-
-    @Test func backupCommandIsPrivateAndFailsOnError() {
-        let cmd = ShellCommands.makeBackupZoomDataCommand()
-        #expect(cmd.contains("umask 077"))
-        #expect(cmd.contains("chmod 700"))
-        #expect(cmd.contains("exit 1"))
-        #expect(cmd.contains("backup_failed=1"))
-        #expect(!cmd.contains(#"cp -a "$src" "$backup_dir/" 2>/dev/null || true"#))
-    }
-
-    @Test func backupCommandCreatesACompleteSnapshotInATemporaryHome() throws {
-        let fileManager = FileManager.default
-        let testRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("1132 backup tests \(UUID().uuidString)")
-        let home = testRoot.appendingPathComponent("home with spaces")
-        let zoomData = home.appendingPathComponent("Library/Application Support/zoom.us")
-        try fileManager.createDirectory(at: zoomData, withIntermediateDirectories: true)
-        try Data("session".utf8).write(to: zoomData.appendingPathComponent("state.txt"))
-        defer { try? fileManager.removeItem(at: testRoot) }
-
-        let process = Process()
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = ["-c", ShellCommands.makeBackupZoomDataCommand(homeDirectory: home.path)]
-        process.standardOutput = stdout
-        process.standardError = stderr
-        try process.run()
-        let output = stdout.fileHandleForReading.readDataToEndOfFile()
-        let error = stderr.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        let errorText = String(decoding: error, as: UTF8.self)
-        #expect(process.terminationStatus == 0, "Backup command failed: \(errorText)")
-        let backupPath = String(decoding: output, as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        #expect(fileManager.fileExists(atPath: backupPath + "/zoom.us/state.txt"))
-        #expect(fileManager.fileExists(atPath: backupPath + "/backup-manifest.txt"))
-
-        let backupRoot = home.appendingPathComponent("Library/Application Support/1132Fixer/Backups")
-        let entries = try fileManager.contentsOfDirectory(atPath: backupRoot.path)
-        #expect(entries.count == 1)
-        #expect(!entries.contains { $0.hasPrefix(".incomplete.") })
-    }
-
-    // MARK: - Machine Architecture
-
-    @Test func machineArchitecture() {
-        let arch = ShellCommands.machineArchitecture()
-        #expect(!arch.isEmpty)
-        #expect(arch == "arm64" || arch == "x86_64")
-    }
-
-    // MARK: - Security Audit Regressions (WP-1 through WP-4)
-
     @Test func appConfigurationMetadataPointsToForkAndGatesDebugEnvironment() {
         #expect(AppConfiguration.repositoryURL.absoluteString == "https://github.com/SeanPVera/1132-fixer")
         #expect(AppConfiguration.websiteURL.absoluteString == "https://1132-fixer.xyz")
@@ -959,141 +500,6 @@ struct ShellCommandsTests {
         #else
         #expect(AppConfiguration.allowsDebugEnvironmentOverrides == false)
         #endif
-    }
-
-    @Test func timeBoundedCommandTriggersRecoveryTrapInSubshellOnTimeout() throws {
-        let fileManager = FileManager.default
-        let markerURL = fileManager.temporaryDirectory
-            .appendingPathComponent("1132-watchdog-recovery-\(UUID().uuidString)")
-        defer { try? fileManager.removeItem(at: markerURL) }
-
-        let subshellBody = """
-        (
-          __1132_step_pid=""
-          run_step() { "$@" & __1132_step_pid=$!; wait "$__1132_step_pid"; }
-          restore_network() {
-            [ -n "${__1132_step_pid:-}" ] && /bin/kill -TERM "$__1132_step_pid" 2>/dev/null || true
-            echo "restored" > \(ShellCommands.shellSingleQuote(markerURL.path))
-          }
-          trap restore_network EXIT
-          trap 'exit 1' HUP INT TERM
-          run_step /bin/sleep 10
-          trap - EXIT HUP INT TERM
-        ) &
-        __1132_subshell_pid=$!
-        wait "$__1132_subshell_pid"
-        """
-        let bounded = ShellCommands.makeTimeBoundedCommand(subshellBody, seconds: 1)
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = ["-c", bounded]
-        try process.run()
-        process.waitUntilExit()
-
-        let markerContent = (try? String(contentsOf: markerURL, encoding: .utf8))?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        #expect(markerContent == "restored")
-        #expect(process.terminationStatus != 0)
-    }
-
-    @Test func backupCommandPreservesNewestSnapshotEvenWhenFutureDatedSnapshotExists() throws {
-        let fileManager = FileManager.default
-        let testRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("1132-future-prune-\(UUID().uuidString)")
-        let home = testRoot.appendingPathComponent("home")
-        let zoomData = home.appendingPathComponent("Library/Application Support/zoom.us")
-        let backupRoot = home.appendingPathComponent("Library/Application Support/1132Fixer/Backups")
-        let futureSnapshot = backupRoot.appendingPathComponent("snapshot-2099-01-01T00-00-00Z-future")
-        try fileManager.createDirectory(at: zoomData, withIntermediateDirectories: true)
-        try fileManager.createDirectory(at: futureSnapshot, withIntermediateDirectories: true)
-        try Data("active-session".utf8).write(to: zoomData.appendingPathComponent("session.db"))
-        try Data("future".utf8).write(to: futureSnapshot.appendingPathComponent(".1132fixer-backup"))
-        try fileManager.setAttributes(
-            [.modificationDate: Date.distantFuture],
-            ofItemAtPath: futureSnapshot.path
-        )
-        defer { try? fileManager.removeItem(at: testRoot) }
-
-        let process = Process()
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [
-            "-c",
-            ShellCommands.makeBackupZoomDataCommand(
-                homeDirectory: home.path,
-                retainedBackupCount: 1,
-                retainedBackupMegabytes: 2_048
-            )
-        ]
-        process.standardOutput = stdout
-        process.standardError = stderr
-        try process.run()
-        let output = stdout.fileHandleForReading.readDataToEndOfFile()
-        let error = stderr.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        let errorText = String(decoding: error, as: UTF8.self)
-        #expect(process.terminationStatus == 0, "Backup command failed: \(errorText)")
-        let backupPath = String(decoding: output, as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let backupURL = URL(fileURLWithPath: backupPath, isDirectory: true)
-        #expect(BackupStore.isManagedBackupURL(backupURL, rootURL: backupRoot))
-        #expect(fileManager.fileExists(atPath: backupPath + "/zoom.us/session.db"))
-    }
-
-    /// F-026 / F-027 on the real macOS tools: the backup holds every reset target, including
-    /// the contract logs; the reset removes exactly that set and leaves near-matches alone.
-    @Test func backupCoversEveryResetTargetAndResetRemovesOnlyTheContractSet() throws {
-        let fileManager = FileManager.default
-        let home = fileManager.temporaryDirectory.appendingPathComponent("1132-exact-scope-\(UUID().uuidString)")
-        defer { try? fileManager.removeItem(at: home) }
-        func write(_ relative: String, _ text: String) throws {
-            let url = home.appendingPathComponent(relative)
-            try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try Data(text.utf8).write(to: url)
-        }
-        try write("Library/Application Support/zoom.us/data/session.db", "session")
-        try write("Library/Caches/us.zoom.xos/cache.bin", "cache")
-        try write("Library/Logs/zoom.us.log", "log0")
-        try write("Library/Logs/zoom.us.log.1", "log1")
-        for keep in ["zoom.us.log.bak", "zoom.us.logger", "Zoom.us.log.old", "other.log", "zoom.us.log.1.gz"] {
-            try write("Library/Logs/\(keep)", "keep")
-        }
-        try fileManager.createDirectory(at: home.appendingPathComponent("Library/Logs/zoom.us.log.2"), withIntermediateDirectories: true)
-
-        func run(_ script: String) throws -> (Int32, String, String) {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/bash")
-            process.arguments = ["-c", script]
-            let out = Pipe(), err = Pipe()
-            process.standardOutput = out
-            process.standardError = err
-            try process.run()
-            let o = out.fileHandleForReading.readDataToEndOfFile()
-            let e = err.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            return (process.terminationStatus, String(decoding: o, as: UTF8.self), String(decoding: e, as: UTF8.self))
-        }
-
-        let (backupStatus, backupOut, backupErr) = try run(ShellCommands.makeBackupZoomDataCommand(homeDirectory: home.path))
-        #expect(backupStatus == 0, "backup failed: \(backupErr)")
-        let snapshot = backupOut.trimmingCharacters(in: .whitespacesAndNewlines)
-        #expect(fileManager.fileExists(atPath: snapshot + "/zoom.us/data/session.db"))
-        #expect(try String(contentsOfFile: snapshot + "/\(ZoomStateScope.backupLogsSubdirectory)/zoom.us.log", encoding: .utf8) == "log0")
-        #expect(try String(contentsOfFile: snapshot + "/\(ZoomStateScope.backupLogsSubdirectory)/zoom.us.log.1", encoding: .utf8) == "log1")
-        #expect(!fileManager.fileExists(atPath: snapshot + "/\(ZoomStateScope.backupLogsSubdirectory)/zoom.us.log.bak"))
-
-        let (resetStatus, _, resetErr) = try run(ShellCommands.makeResetZoomDataCommand(homeDirectory: home.path, deletePreferencesDomain: false))
-        #expect(resetStatus == 0, "reset failed: \(resetErr)")
-        #expect(!fileManager.fileExists(atPath: home.appendingPathComponent("Library/Application Support/zoom.us").path))
-        #expect(!fileManager.fileExists(atPath: home.appendingPathComponent("Library/Caches/us.zoom.xos").path))
-        #expect(!fileManager.fileExists(atPath: home.appendingPathComponent("Library/Logs/zoom.us.log").path))
-        #expect(!fileManager.fileExists(atPath: home.appendingPathComponent("Library/Logs/zoom.us.log.1").path))
-        for keep in ["zoom.us.log.bak", "zoom.us.logger", "Zoom.us.log.old", "other.log", "zoom.us.log.1.gz", "zoom.us.log.2"] {
-            #expect(fileManager.fileExists(atPath: home.appendingPathComponent("Library/Logs/\(keep)").path), "removed \(keep)")
-        }
     }
 
     @Test func resetRefusesBeforeDeletingWhenATargetCannotBeRemoved() throws {
@@ -1121,7 +527,44 @@ struct ShellCommandsTests {
         #expect(fileManager.fileExists(atPath: support.appendingPathComponent("session.db").path), "deleted before refusing")
     }
 
-    @Test func backupAndResetCommandsRefuseSymlinkedLibraryParents() throws {
+    @Test func resetRemovesOnlyTheContractSet() throws {
+        let fileManager = FileManager.default
+        let home = fileManager.temporaryDirectory.appendingPathComponent("1132-exact-scope-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: home) }
+        func write(_ relative: String, _ text: String) throws {
+            let url = home.appendingPathComponent(relative)
+            try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(text.utf8).write(to: url)
+        }
+        try write("Library/Application Support/zoom.us/data/session.db", "session")
+        try write("Library/Caches/us.zoom.xos/cache.bin", "cache")
+        try write("Library/Logs/zoom.us.log", "log0")
+        try write("Library/Logs/zoom.us.log.1", "log1")
+        for keep in ["zoom.us.log.bak", "zoom.us.logger", "Zoom.us.log.old", "other.log", "zoom.us.log.1.gz"] {
+            try write("Library/Logs/\(keep)", "keep")
+        }
+        try fileManager.createDirectory(at: home.appendingPathComponent("Library/Logs/zoom.us.log.2"), withIntermediateDirectories: true)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-c", ShellCommands.makeResetZoomDataCommand(homeDirectory: home.path, deletePreferencesDomain: false)]
+        let err = Pipe()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = err
+        try process.run()
+        let errText = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0, "reset failed: \(errText)")
+        #expect(!fileManager.fileExists(atPath: home.appendingPathComponent("Library/Application Support/zoom.us").path))
+        #expect(!fileManager.fileExists(atPath: home.appendingPathComponent("Library/Caches/us.zoom.xos").path))
+        #expect(!fileManager.fileExists(atPath: home.appendingPathComponent("Library/Logs/zoom.us.log").path))
+        #expect(!fileManager.fileExists(atPath: home.appendingPathComponent("Library/Logs/zoom.us.log.1").path))
+        for keep in ["zoom.us.log.bak", "zoom.us.logger", "Zoom.us.log.old", "other.log", "zoom.us.log.1.gz", "zoom.us.log.2"] {
+            #expect(fileManager.fileExists(atPath: home.appendingPathComponent("Library/Logs/\(keep)").path), "removed \(keep)")
+        }
+    }
+
+    @Test func resetRefusesSymlinkedLibraryParents() throws {
         let fileManager = FileManager.default
         let testRoot = fileManager.temporaryDirectory
             .appendingPathComponent("1132-symlink-guard-\(UUID().uuidString)")
@@ -1142,17 +585,12 @@ struct ShellCommandsTests {
         let resetProcess = Process()
         resetProcess.executableURL = URL(fileURLWithPath: "/bin/bash")
         resetProcess.arguments = ["-c", ShellCommands.makeResetZoomDataCommand(homeDirectory: home.path, deletePreferencesDomain: false)]
+        resetProcess.standardOutput = FileHandle.nullDevice
+        resetProcess.standardError = FileHandle.nullDevice
         try resetProcess.run()
         resetProcess.waitUntilExit()
         #expect(resetProcess.terminationStatus != 0)
         #expect(fileManager.fileExists(atPath: sentinel.path))
-
-        let backupProcess = Process()
-        backupProcess.executableURL = URL(fileURLWithPath: "/bin/bash")
-        backupProcess.arguments = ["-c", ShellCommands.makeBackupZoomDataCommand(homeDirectory: home.path)]
-        try backupProcess.run()
-        backupProcess.waitUntilExit()
-        #expect(backupProcess.terminationStatus != 0)
     }
 
     @Test func launchCommandReverifiesCodesignAfterStoppingZoomAndBeforeSandboxExec() {
