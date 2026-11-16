@@ -72,7 +72,7 @@ class NativeAcceptanceTests(unittest.TestCase):
                 self.assertTrue(self.errors())
 
     def test_duplicate_missing_and_unknown_ids_block(self):
-        for ids in ([GATE.REQUIRED_CHECKS[0]] * 8, list(GATE.REQUIRED_CHECKS[:-1]), list(GATE.REQUIRED_CHECKS) + ["unexpected"]):
+        for ids in ([GATE.REQUIRED_CHECKS[0]] * len(GATE.REQUIRED_CHECKS), list(GATE.REQUIRED_CHECKS[:-1]), list(GATE.REQUIRED_CHECKS) + ["unexpected"]):
             document = copy.deepcopy(self.document)
             document["checks"] = [{"id": value, "status": "pass", "records": []} for value in ids]
             self.assertTrue(GATE.validate(document, self.root))

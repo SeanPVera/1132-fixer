@@ -65,7 +65,7 @@ jobs:
           if [[ "$trusted" == true ]]; then
             echo "Selected commit is reachable from origin/main; release credentials may be used."
           else
-            echo "::warning::Selected commit is not reachable from origin/main. Building ad-hoc without signing, notarization, or bug-report credentials."
+            echo "::warning::Selected commit is not reachable from origin/main. Building ad-hoc without signing or notarization credentials."
           fi
 
       - name: Toolchain versions
@@ -131,8 +131,6 @@ jobs:
           APPLE_ID: ${{ steps.trust.outputs.trusted == 'true' && secrets.APPLE_ID || '' }}
           APPLE_PASSWORD: ${{ steps.trust.outputs.trusted == 'true' && secrets.APPLE_PASSWORD || '' }}
           APPLE_TEAM_ID: ${{ steps.trust.outputs.trusted == 'true' && secrets.APPLE_TEAM_ID || '' }}
-          FIXER_BUG_REPORT_ENDPOINT: ${{ steps.trust.outputs.trusted == 'true' && secrets.FIXER_BUG_REPORT_ENDPOINT || '' }}
-          FIXER_BUG_REPORT_TOKEN: ${{ steps.trust.outputs.trusted == 'true' && secrets.FIXER_BUG_REPORT_TOKEN || '' }}
           NOTARIZE: ${{ steps.signing.outputs.notarize }}
           APP_BUILD: ${{ github.run_number }}
           # Repository settings files must never override CI configuration (F-037).

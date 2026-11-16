@@ -11,8 +11,6 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION_FILE="$ROOT_DIR/VERSION"
 APPLE_DEVELOPER_FILE="${APPLE_DEVELOPER_FILE:-$ROOT_DIR/apple-developer.txt}"
 MIN_MACOS_FILE="$ROOT_DIR/MIN_MACOS_VERSION"
-BUG_REPORT_ENDPOINT_RESOURCE_FILE="$ROOT_DIR/Sources/1132Fixer/Resources/FIXER_BUG_REPORT_ENDPOINT"
-BUG_REPORT_TOKEN_RESOURCE_FILE="$ROOT_DIR/Sources/1132Fixer/Resources/FIXER_BUG_REPORT_TOKEN"
 DIST_DIR="$ROOT_DIR/dist"
 ENTITLEMENTS_FILE="$ROOT_DIR/Sources/1132Fixer/1132Fixer.entitlements"
 TEMP_BUILD_ROOT="$ROOT_DIR/.build/universal"
@@ -22,8 +20,6 @@ UNIVERSAL_DIR="$TEMP_BUILD_ROOT/merged"
 APP_BUNDLE_DIR="$DIST_DIR/$APP_NAME.app"
 APP_VERSION="${APP_VERSION:-}"
 APP_BUILD="${APP_BUILD:-1}"
-FIXER_BUG_REPORT_ENDPOINT="${FIXER_BUG_REPORT_ENDPOINT:-}"
-FIXER_BUG_REPORT_TOKEN="${FIXER_BUG_REPORT_TOKEN:-}"
 # Determine minimum macOS version from environment or config file to avoid
 # duplicating the value defined elsewhere (e.g., in Package.swift).
 MIN_MACOS="${MIN_MACOS:-}"
@@ -99,7 +95,7 @@ load_apple_developer_file() {
     key="${key%"${key##*[![:space:]]}"}"
 
     case "$key" in
-      APPLE_ID|APPLE_PASSWORD|APPLE_TEAM_ID|APPLE_CERTIFICATE|APPLE_CERTIFICATE_PASSWORD|NOTARY_PROFILE|SIGN_IDENTITY|FIXER_BUG_REPORT_ENDPOINT|FIXER_BUG_REPORT_TOKEN)
+      APPLE_ID|APPLE_PASSWORD|APPLE_TEAM_ID|APPLE_CERTIFICATE|APPLE_CERTIFICATE_PASSWORD|NOTARY_PROFILE|SIGN_IDENTITY)
         ;;
       *)
         echo "==> Ignoring unsupported key '$key' in $file" >&2
@@ -169,30 +165,12 @@ decode_base64_to_file() {
   exit 1
 }
 
-BUG_REPORT_ENDPOINT_BACKUP_FILE=""
-BUG_REPORT_TOKEN_BACKUP_FILE=""
-# "1" if the resource file existed before this build, "0" if it did not (empty = not checked yet).
-BUG_REPORT_ENDPOINT_EXISTED=""
-BUG_REPORT_TOKEN_EXISTED=""
 CERTIFICATE_P12_FILE=""
 KEYCHAIN_PATH=""
 KEYCHAIN_PASSWORD=""
 SIGN_IDENTITY_HASH=""
 ORIGINAL_KEYCHAINS=()
-cleanup_bug_report_resources() {
-  if [[ -n "$BUG_REPORT_ENDPOINT_BACKUP_FILE" && -f "$BUG_REPORT_ENDPOINT_BACKUP_FILE" ]]; then
-    cp "$BUG_REPORT_ENDPOINT_BACKUP_FILE" "$BUG_REPORT_ENDPOINT_RESOURCE_FILE"
-    rm -f "$BUG_REPORT_ENDPOINT_BACKUP_FILE"
-  elif [[ "$BUG_REPORT_ENDPOINT_EXISTED" == "0" ]]; then
-    # The file was created by this build; do not leave the embedded value in the source tree.
-    rm -f "$BUG_REPORT_ENDPOINT_RESOURCE_FILE"
-  fi
-  if [[ -n "$BUG_REPORT_TOKEN_BACKUP_FILE" && -f "$BUG_REPORT_TOKEN_BACKUP_FILE" ]]; then
-    cp "$BUG_REPORT_TOKEN_BACKUP_FILE" "$BUG_REPORT_TOKEN_RESOURCE_FILE"
-    rm -f "$BUG_REPORT_TOKEN_BACKUP_FILE"
-  elif [[ "$BUG_REPORT_TOKEN_EXISTED" == "0" ]]; then
-    rm -f "$BUG_REPORT_TOKEN_RESOURCE_FILE"
-  fi
+cleanup_build_secrets() {
   if [[ -n "$CERTIFICATE_P12_FILE" && -f "$CERTIFICATE_P12_FILE" ]]; then
     rm -f "$CERTIFICATE_P12_FILE"
   fi
@@ -207,42 +185,12 @@ cleanup_bug_report_resources() {
 # command replace it, so a fatal error could still report success.
 on_build_exit() {
   local status=$?
-  cleanup_bug_report_resources
+  cleanup_build_secrets
   exit "$status"
 }
 trap on_build_exit EXIT
 
-if [[ -f "$BUG_REPORT_ENDPOINT_RESOURCE_FILE" ]]; then
-  BUG_REPORT_ENDPOINT_EXISTED="1"
-  BUG_REPORT_ENDPOINT_BACKUP_FILE="$(mktemp -t fixer-bug-report-endpoint-backup.XXXXXX)"
-  cp "$BUG_REPORT_ENDPOINT_RESOURCE_FILE" "$BUG_REPORT_ENDPOINT_BACKUP_FILE"
-else
-  BUG_REPORT_ENDPOINT_EXISTED="0"
-fi
-
-if [[ -f "$BUG_REPORT_TOKEN_RESOURCE_FILE" ]]; then
-  BUG_REPORT_TOKEN_EXISTED="1"
-  BUG_REPORT_TOKEN_BACKUP_FILE="$(mktemp -t fixer-bug-report-token-backup.XXXXXX)"
-  cp "$BUG_REPORT_TOKEN_RESOURCE_FILE" "$BUG_REPORT_TOKEN_BACKUP_FILE"
-else
-  BUG_REPORT_TOKEN_EXISTED="0"
-fi
-
-if [[ -n "$FIXER_BUG_REPORT_ENDPOINT" ]]; then
-  echo "==> Embedding FIXER_BUG_REPORT_ENDPOINT into app resources for this build"
-  printf '%s\n' "$FIXER_BUG_REPORT_ENDPOINT" > "$BUG_REPORT_ENDPOINT_RESOURCE_FILE"
-fi
-
-if [[ -n "$FIXER_BUG_REPORT_TOKEN" ]]; then
-  echo "==> Embedding FIXER_BUG_REPORT_TOKEN into app resources for this build"
-  printf '%s\n' "$FIXER_BUG_REPORT_TOKEN" > "$BUG_REPORT_TOKEN_RESOURCE_FILE"
-fi
-# Expand with ${arr[@]+...}: macOS bash 3.2 treats an empty array as unbound under set -u.
-resource_args=()
-if [[ "$SIGN_IDENTITY" != "-" ]]; then
-  resource_args+=(--require-bug-report)
-fi
-python3 "$ROOT_DIR/scripts/validate-resources.py" "$ROOT_DIR/Sources/1132Fixer/Resources" ${resource_args[@]+"${resource_args[@]}"}
+python3 "$ROOT_DIR/scripts/validate-resources.py" "$ROOT_DIR/Sources/1132Fixer/Resources"
 
 rm -rf "$DIST_DIR" "$TEMP_BUILD_ROOT"
 mkdir -p "$DIST_DIR" "$UNIVERSAL_DIR"
@@ -371,7 +319,7 @@ if [[ -d "$ARM64_RELEASE_DIR/$EXPECTED_RESOURCE_BUNDLE" ]]; then
   cp -R "$ARM64_RELEASE_DIR/$EXPECTED_RESOURCE_BUNDLE" "$APP_BUNDLE_DIR/Contents/Resources/"
 fi
 for resource_bundle in "$ARM64_RELEASE_DIR/$EXPECTED_RESOURCE_BUNDLE" "$X64_RELEASE_DIR/$EXPECTED_RESOURCE_BUNDLE" "$APP_BUNDLE_DIR/Contents/Resources/$EXPECTED_RESOURCE_BUNDLE"; do
-  python3 "$ROOT_DIR/scripts/validate-resources.py" "$resource_bundle" ${resource_args[@]+"${resource_args[@]}"}
+  python3 "$ROOT_DIR/scripts/validate-resources.py" "$resource_bundle"
 done
 
 # Use the project's Info.plist as the authoritative source, then patch in
@@ -425,7 +373,7 @@ echo "==> Signing app bundle ($SIGN_IDENTITY)"
 codesign --force --deep --options runtime --identifier "$BUNDLE_ID" --entitlements "$ENTITLEMENTS_FILE" --sign "${SIGN_IDENTITY_HASH:-$SIGN_IDENTITY}" "${codesign_args[@]}" "$APP_BUNDLE_DIR"
 codesign --verify --strict --verbose=2 "$APP_BUNDLE_DIR"
 echo "==> Entitlements embedded in signature:"
-codesign -d --entitlements :- "$APP_BUNDLE_DIR" 2>/dev/null | grep -iE 'camera|audio-input|apple-events' || echo "WARNING: camera/mic entitlements not found after signing"
+codesign -d --entitlements :- "$APP_BUNDLE_DIR" 2>/dev/null | grep -iE 'camera|audio-input' || echo "WARNING: camera/mic entitlements not found after signing"
 
 echo "==> Creating DMG"
 rm -f "$DMG_PATH"

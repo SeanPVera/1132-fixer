@@ -1,7 +1,5 @@
 import importlib.util
 from pathlib import Path
-import subprocess
-import sys
 import tempfile
 import unittest
 
@@ -21,63 +19,44 @@ class PackagedResourceTests(unittest.TestCase):
         directory = self.bundle / "Contents/Resources" if structured else self.bundle
         directory.mkdir(parents=True)
         (directory / "AppIcon.png").write_bytes((ROOT / "Sources/1132Fixer/Resources/AppIcon.png").read_bytes())
-        (directory / "FIXER_BUG_REPORT_ENDPOINT").write_text("https://example.invalid/report\n")
-        (directory / "FIXER_BUG_REPORT_TOKEN").write_text("fixture-write-only-token\n")
         return directory
 
     def test_flat_bundle_passes(self):
         self.fixture()
-        RESOURCES.validate(self.bundle, True)
+        RESOURCES.validate(self.bundle)
 
     def test_structured_bundle_passes(self):
         self.fixture(structured=True)
-        RESOURCES.validate(self.bundle, True)
+        RESOURCES.validate(self.bundle)
 
-    def test_missing_empty_and_invalid_resources_fail(self):
-        directory = self.fixture()
-        for name in ["AppIcon.png", "FIXER_BUG_REPORT_ENDPOINT", "FIXER_BUG_REPORT_TOKEN"]:
-            path = directory / name
-            original = path.read_bytes()
-            for value in [None, b"", b"\xffinvalid"]:
-                with self.subTest(name=name, value=value):
-                    if value is None:
-                        path.unlink()
-                    else:
-                        path.write_bytes(value)
-                    with self.assertRaises((ValueError, OSError, UnicodeError)):
-                        RESOURCES.validate(self.bundle, True)
-                    path.write_bytes(original)
+    def test_missing_empty_and_invalid_icon_fail(self):
+        path = self.fixture() / "AppIcon.png"
+        original = path.read_bytes()
+        for value in [None, b"", b"\xffinvalid"]:
+            with self.subTest(value=value):
+                if value is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(value)
+                with self.assertRaises((ValueError, OSError)):
+                    RESOURCES.validate(self.bundle)
+                path.write_bytes(original)
 
-    def test_invalid_endpoint_and_control_characters_fail_without_values_in_output(self):
-        directory = self.fixture()
-        for endpoint in ["http://example.invalid", "https:///missing-host", "https://user:pass@example.invalid"]:
-            (directory / "FIXER_BUG_REPORT_ENDPOINT").write_text(endpoint)
-            with self.assertRaises(ValueError):
-                RESOURCES.validate(self.bundle, True)
-        (directory / "FIXER_BUG_REPORT_ENDPOINT").write_text("https://example.invalid/report")
-        secret = "DO-NOT-PRINT\r\nHeader: injected"
-        (directory / "FIXER_BUG_REPORT_TOKEN").write_text(secret)
-        result = subprocess.run([sys.executable, str(ROOT / "scripts/validate-resources.py"), str(self.bundle), "--require-bug-report"], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 1)
-        self.assertNotIn("DO-NOT-PRINT", result.stdout + result.stderr)
-
-    def test_ambiguous_layout_and_symlinked_resource_fail(self):
+    def test_ambiguous_layout_and_symlinked_icon_fail(self):
         directory = self.fixture()
         structured = self.bundle / "Contents/Resources"
         structured.mkdir(parents=True)
         (structured / "AppIcon.png").write_bytes((directory / "AppIcon.png").read_bytes())
         with self.assertRaises(ValueError):
-            RESOURCES.validate(self.bundle, True)
+            RESOURCES.validate(self.bundle)
         (structured / "AppIcon.png").unlink()
-        path = directory / "FIXER_BUG_REPORT_TOKEN"
-        path.unlink()
-        path.symlink_to(directory / "FIXER_BUG_REPORT_ENDPOINT")
+        icon = directory / "AppIcon.png"
+        real = directory / "real.png"
+        icon.rename(real)
+        icon.symlink_to(real)
         with self.assertRaises(ValueError):
-            RESOURCES.validate(self.bundle, True)
+            RESOURCES.validate(self.bundle)
 
-    def test_adhoc_fixture_does_not_require_distribution_credentials(self):
-        directory = self.fixture()
-        (directory / "FIXER_BUG_REPORT_TOKEN").unlink()
-        RESOURCES.validate(self.bundle, False)
-        with self.assertRaises(ValueError):
-            RESOURCES.validate(self.bundle, True)
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Validate either SwiftPM bundle layout without printing configuration values."""
+"""Validate the packaged app icon in either SwiftPM bundle layout."""
 import argparse
 from pathlib import Path
 import struct
-import unicodedata
-from urllib.parse import urlsplit
 import zlib
 
 
@@ -49,33 +47,16 @@ def validate_png(path):
         raise ValueError("Invalid AppIcon.png image data") from error
 
 
-def config_value(bundle, name):
-    path = resource_path(bundle, name)
-    if path.stat().st_size > 16_384:
-        raise ValueError(f"Oversized configuration resource: {name}")
-    value = path.read_text(encoding="utf-8").strip()
-    if not value or any(unicodedata.category(c) == "Cc" for c in value):
-        raise ValueError(f"Invalid configuration resource: {name}")
-    return value
-
-
-def validate(bundle, require_bug_report=False):
+def validate(bundle):
     validate_png(resource_path(bundle, "AppIcon.png"))
-    if require_bug_report:
-        endpoint = config_value(bundle, "FIXER_BUG_REPORT_ENDPOINT")
-        url = urlsplit(endpoint)
-        if url.scheme.lower() != "https" or not url.hostname or url.username is not None or url.password is not None:
-            raise ValueError("Invalid bug-report endpoint configuration")
-        config_value(bundle, "FIXER_BUG_REPORT_TOKEN")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("bundle", type=Path)
-    parser.add_argument("--require-bug-report", action="store_true")
     args = parser.parse_args()
     try:
-        validate(args.bundle, args.require_bug_report)
+        validate(args.bundle)
     except (ValueError, OSError, UnicodeError):
         parser.exit(1, "Required packaged resources are missing, ambiguous, empty, or invalid.\n")
     print("Packaged resource validation passed.")
