@@ -24,19 +24,8 @@ enum PackagedResources {
         return nil
     }
 
-    static func configurationValue(named name: String) -> String? {
-        guard let url = resourceURL(named: name),
-              let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-              size > 0, size <= 16_384,
-              let value = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-        return value.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    static func hasUsableBugReportConfiguration() -> Bool {
-        guard let endpoint = configurationValue(named: "FIXER_BUG_REPORT_ENDPOINT"),
-              BugReportService.validatedEndpointURL(endpoint) != nil,
-              let token = configurationValue(named: "FIXER_BUG_REPORT_TOKEN"),
-              BugReportService.isValidToken(token), resourceURL(named: "AppIcon.png") != nil else { return false }
-        return true
+    /// Native mounted-artifact canary: the packaged app can find its icon resource.
+    static func hasRequiredResources() -> Bool {
+        resourceURL(named: "AppIcon.png") != nil
     }
 }

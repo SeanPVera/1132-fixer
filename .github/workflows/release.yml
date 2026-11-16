@@ -73,11 +73,9 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          FIXER_BUG_REPORT_ENDPOINT: ${{ secrets.FIXER_BUG_REPORT_ENDPOINT }}
-          FIXER_BUG_REPORT_TOKEN: ${{ secrets.FIXER_BUG_REPORT_TOKEN }}
         run: |
           set -euo pipefail
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID FIXER_BUG_REPORT_ENDPOINT FIXER_BUG_REPORT_TOKEN; do
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
             if [[ -z "${!name}" ]]; then
               echo "Required release secret $name is not configured." >&2
               exit 1
@@ -91,8 +89,6 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          FIXER_BUG_REPORT_ENDPOINT: ${{ secrets.FIXER_BUG_REPORT_ENDPOINT }}
-          FIXER_BUG_REPORT_TOKEN: ${{ secrets.FIXER_BUG_REPORT_TOKEN }}
           APP_BUILD: ${{ github.run_number }}
           NOTARIZE: "1"
           # Repository settings files must never override CI configuration (F-037).

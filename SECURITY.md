@@ -15,21 +15,6 @@ Security fixes will be released as soon as possible in a new version.
 
 ## Known Design Limits
 
-### The bug report token is not a secret
-
-Releases embed a bearer token (`FIXER_BUG_REPORT_TOKEN`) into the app bundle at
-build time. Anyone who downloads a release can read that value straight out of
-`Contents/Resources/`, so it does **not** authenticate anything — it only
-identifies the client build.
-
-The bug report endpoint must therefore treat every caller as untrusted: rate
-limiting and abuse controls belong on the server, and the token must not grant
-any capability beyond submitting a report. Rotating it invalidates older app
-versions but never makes the value confidential.
-
-Please do not file this as a vulnerability; it is a known property of shipping a
-client-side credential.
-
 ### The Zoom sandbox profile is a denylist, not a deny-by-default sandbox
 
 Zoom is launched through `sandbox-exec` with a profile whose base is
@@ -49,19 +34,18 @@ The user's keychain files remain accessible because macOS's Security framework
 reads the database and writes lock/temporary files from the client process.
 Blocking these files prevents Zoom from using the login keychain at startup.
 Keychain item access still follows macOS unlock requirements and access controls;
-the repair does not delete, reset, or unlock keychains. System keychains remain
+the reset does not delete, reset, or unlock keychains. System keychains remain
 readable for Keychain and trust operations, but direct writes to them are denied.
 
 Anything not named in the profile is still allowed. Treat it as identity and
 privacy containment for the Zoom session, not as a general confinement boundary
 for untrusted code.
 
-### Elevated privileges
+### No elevated privileges
 
-The app requests administrator access for two operations only: flushing system
-DNS caches, and changing network interface settings on the macOS versions where
-that still works. Clearing Zoom's local state runs unprivileged, since every path
-it touches is inside the user's own home directory.
+The app never requests administrator access. Clearing Zoom's local state runs as
+the current user, since every path it touches is inside the user's own home
+directory.
 
 ## Reporting a Vulnerability
 

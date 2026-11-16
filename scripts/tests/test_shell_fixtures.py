@@ -20,44 +20,6 @@ class ShellFixtureTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
 
-    def retention(self, count=5, cap_kb=1024):
-        start = SOURCE.index('        (\n          cd "$backup_root"')
-        end = SOURCE.index('\n\n        if [ ! -d "$backup_dir"', start)
-        script = textwrap.dedent(SOURCE[start:end])
-        script = script.replace(r"\(firstStaleEntry - 1)", str(count)).replace(r"\(maximumKilobytes)", str(cap_kb))
-        self.assertNotIn(r"\(", script)
-        env = dict(os.environ, backup_root=str(self.root), current_snapshot="snapshot-current")
-        subprocess.run(["/bin/bash", "-c", script], env=env, check=True, capture_output=True, text=True)
-
-    def snapshot(self, name, size, mtime):
-        path = self.root / name
-        path.mkdir()
-        (path / "payload").write_bytes(b"x" * size)
-        os.utime(path, (mtime, mtime))
-        return path
-
-    def test_oversized_rejected_candidate_does_not_evict_older_small_snapshot(self):
-        current = self.snapshot("snapshot-current", 16_384, 30)
-        oversized = self.snapshot("snapshot-large", 2_097_152, 20)
-        small = self.snapshot("snapshot-small", 16_384, 10)
-        self.retention(count=2)
-        self.assertTrue(current.exists())
-        self.assertFalse(oversized.exists())
-        self.assertTrue(small.exists())
-
-    def test_current_snapshot_survives_when_it_alone_exceeds_cap(self):
-        current = self.snapshot("snapshot-current", 2_097_152, 30)
-        older = self.snapshot("snapshot-small", 16_384, 10)
-        self.retention()
-        self.assertTrue(current.exists())
-        self.assertFalse(older.exists())
-
-    def test_retained_count_counts_current_snapshot(self):
-        self.snapshot("snapshot-current", 10, 30)
-        old = self.snapshot("snapshot-older", 10, 10)
-        self.retention(count=1)
-        self.assertFalse(old.exists())
-
     def stop_script(self):
         start = SOURCE.index('    static let stopZoom = #"""') + len('    static let stopZoom = #"""\n')
         end = SOURCE.index('    """#', start)
@@ -107,11 +69,6 @@ class ShellFixtureTests(unittest.TestCase):
         finally:
             external.terminate()
             external.wait(timeout=5)
-
-    def test_watchdog_parent_selectors_are_unchanged(self):
-        watchdog = SOURCE[SOURCE.index("static func makeTimeBoundedCommand"):SOURCE.index("// MARK: - Command Strings")]
-        self.assertIn('/usr/bin/pkill -P "$__1132_watchdog"', watchdog)
-        self.assertNotIn("pkill -u", watchdog)
 
     def test_no_unexpanded_interpolations_in_shutdown_script(self):
         self.assertNotRegex(self.stop_script(), re.escape(r"\("))

@@ -23,7 +23,7 @@ compiled successfully and then exposed two two-second process-I/O test limits
 under host contention. The three I/O-semantics tests now allow ten seconds;
 production executor deadlines, the dedicated 0.1-second timeout test and the
 four-second cancellation assertion remain unchanged. This corrects a test
-scheduling assumption and does not count as privileged process-lifecycle proof.
+scheduling assumption.
 The corrected tests passed all four platform jobs in
 [CI run 43428981062](https://github.com/SeanPVera/1132-fixer/actions/runs/43428981062)
 at `17ad7cc4a2eb0be67e9a508f20945e25ff4f743a`, including debug/release builds
@@ -42,10 +42,8 @@ checks also passed. It is not notarized or approved for public distribution.
 ## Real-Mac procedure
 
 Use a disposable account or VM, fixture state and an approved test Zoom account.
-No reset of a normal user account or mutation of a live production interface is
-authorized by these instructions. Administrator/network experiments need a
-separately authorized isolated environment. Test both repair and sandbox-only
-launch. Do not infer sandbox provenance from another process with the same name.
+No reset of a normal user account is authorized by these instructions. Test both
+Reset & Launch and Launch Zoom. Do not infer sandbox provenance from another process with the same name.
 
 1. Check out the candidate, initialize its pinned submodule, and record
    `git rev-parse HEAD`, `sw_vers`, `uname -m`, Xcode/Swift versions and the signed
@@ -68,14 +66,13 @@ launch. Do not infer sandbox provenance from another process with the same name.
 
 | Manifest ID | Required observation |
 |---|---|
-| `zoom-startup-sso` | Actual signed Zoom starts under the required sandbox; login and SSO complete; repair and launch-only results describe observed behavior. |
+| `zoom-startup-sso` | Actual signed Zoom starts under the required sandbox; login and SSO complete; Reset & Launch and Launch Zoom results describe observed behavior. |
 | `camera-microphone-keychain` | Actual camera capture, microphone capture/playback and disposable keychain access work; record TCC/helper attribution and both launcher/Zoom prompts. |
-| `privileged-lifecycle` | Ordinary/delayed authorization, true authorization cancellation, watchdog expiry and restoration, root descendant settlement, UI stop, two instances, crash/relaunch and reboot behavior. Unknown completion prevents further mutation and launch. |
 | `launch-provenance` | Track the launched child/UID/executable through actual Zoom startup; process replacement, PID uncertainty, foreign-user Zoom and failed final pinned signature cannot establish success. |
-| `macos-13` | Real startup, repair/launch-only, media/keychain and failure boundaries on macOS 13, with native Intel and native Apple silicon records. |
+| `macos-13` | Real startup, Reset & Launch and Launch Zoom, media/keychain and failure boundaries on macOS 13, with native Intel and native Apple silicon records. |
 | `macos-14` | The same supported behavior on macOS 14, with native Intel and native Apple silicon records. |
 | `rosetta` | Apple silicon executing x86_64 through Rosetta; accurate hardware/execution capability and the same sandbox, media and failure boundaries. |
-| `ui-accessibility` | Startup and real workflow results at narrow/regular window sizes; warnings/failures/backup provenance, keyboard operation and VoiceOver labels match execution. |
+| `ui-accessibility` | Startup and real workflow results at narrow/regular window sizes; warnings/failures, keyboard operation and VoiceOver labels match execution. |
 
 Each record has this shape (replace every placeholder with an actual observation):
 
@@ -142,9 +139,7 @@ Useful owner settings pages:
 Enter credentials directly into `release-signing` environment secrets, never in
 chat, source files or logs: `APPLE_CERTIFICATE` (base64 Developer ID Application
 .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_PASSWORD` (app-specific),
-`APPLE_TEAM_ID`, `FIXER_BUG_REPORT_ENDPOINT` and `FIXER_BUG_REPORT_TOKEN`. All seven
-are required before the signing build. The public app token is a write-only,
-low-trust report credential, not an authentication boundary.
+and `APPLE_TEAM_ID`. All five are required before the signing build.
 
 Only after native acceptance and owner protections pass, authorize production
 signing/notarization and verify the exact candidate. Existing mounted-DMG checks

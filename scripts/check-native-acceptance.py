@@ -13,7 +13,7 @@ import re
 import subprocess
 
 REQUIRED_CHECKS = (
-    "zoom-startup-sso", "camera-microphone-keychain", "privileged-lifecycle",
+    "zoom-startup-sso", "camera-microphone-keychain",
     "launch-provenance", "macos-13", "macos-14", "rosetta", "ui-accessibility",
 )
 RELEASE_INPUTS = (

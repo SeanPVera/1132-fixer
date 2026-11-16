@@ -1,62 +1,43 @@
 import Foundation
 import Darwin
 
-/// Resolves the Zoom application location, allowing the user to select a custom
-/// path when Zoom is not installed in the default `/Applications` location.
-///
-/// Sandbox-mode launch behavior is unchanged: the resolved binary is always run
-/// through `sandbox-exec`. Only the location of the `zoom.us.app` bundle is
-/// configurable.
+/// Finds the Zoom app. Only the two standard install locations are checked; the
+/// resolved binary is always run through `sandbox-exec`.
 enum ZoomLocation {
-    private static let defaultsKey = "customZoomAppPath"
+    static let candidateAppPaths = [
+        ShellCommands.defaultZoomAppPath,
+        (NSHomeDirectory() as NSString).appendingPathComponent("Applications/zoom.us.app"),
+    ]
 
-    static var defaultAppPath: String { ShellCommands.defaultZoomAppPath }
-
-    /// The user-selected `zoom.us.app` bundle path, if one has been chosen.
-    static var customAppPath: String? {
-        get {
-            let value = UserDefaults.standard.string(forKey: defaultsKey)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return (value?.isEmpty == false) ? value : nil
-        }
-        set {
-            let defaults = UserDefaults.standard
-            if let path = newValue?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty {
-                defaults.set(path, forKey: defaultsKey)
-            } else {
-                defaults.removeObject(forKey: defaultsKey)
-            }
-        }
+    /// The first standard location that contains the Zoom executable, else `/Applications`.
+    static var appPath: String {
+        candidateAppPaths.first {
+            FileManager.default.isExecutableFile(atPath: ShellCommands.zoomBinaryPath(forAppPath: $0))
+        } ?? ShellCommands.defaultZoomAppPath
     }
 
-    /// The `zoom.us.app` bundle path currently in effect (custom if set, else default).
-    static var appPath: String { customAppPath ?? defaultAppPath }
-
-    /// The Zoom executable path currently in effect.
-    static var binaryPath: String { ShellCommands.zoomBinaryPath(forAppPath: appPath) }
-
-    /// Whether a usable Zoom executable exists at the currently-effective location.
-    static var isInstalled: Bool { FileManager.default.fileExists(atPath: binaryPath) }
-
-    /// Validates that a chosen bundle path is a `zoom.us.app` containing the Zoom
-    /// executable. Returns the normalized bundle path, or `nil` if invalid.
-    ///
-    /// This is a cheap structural check. The code signature is verified separately by
-    /// `ZoomBundleVerifier`, both when a location is chosen and again right before launch.
-    static func validatedAppPath(_ selectedPath: String) -> String? {
-        let path = selectedPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !path.isEmpty else { return nil }
-        guard ZoomBundleVerifier.hasZoomBundleName(path) else { return nil }
-        let binary = ShellCommands.zoomBinaryPath(forAppPath: path)
-        guard FileManager.default.fileExists(atPath: binary) else { return nil }
-        return path
+    static var isInstalled: Bool {
+        FileManager.default.isExecutableFile(atPath: ShellCommands.zoomBinaryPath(forAppPath: appPath))
     }
+}
+
+/// The Zoom state the reset clears, relative to the user's home directory.
+enum ZoomStateScope {
+    static let statePaths = [
+        "Library/Application Support/zoom.us",
+        "Library/Caches/us.zoom.xos",
+        "Library/Preferences/us.zoom.xos.plist",
+        "Library/Saved Application State/us.zoom.xos.savedState",
+    ]
+    /// Exact log naming contract: `Library/Logs/zoom.us.log` and its numbered rotations
+    /// (`zoom.us.log.1`, `zoom.us.log.2`, ...). Nothing else in `Library/Logs` is touched.
+    static let logsRelativeDirectory = "Library/Logs"
 }
 
 enum ShellCommands {
     static let bashPath = "/bin/bash"
-    static let osascriptPath = "/usr/bin/osascript"
     static let defaultZoomAppPath = "/Applications/zoom.us.app"
+
 
     static func currentUserProcessArguments(name: String) -> [String] {
         ["-u", String(getuid()), "-x", NSRegularExpression.escapedPattern(for: name)]
@@ -93,165 +74,10 @@ enum ShellCommands {
         return "\"\(escaped)\""
     }
 
-    /// The command runs under `/usr/bin/env -i` with only a fixed system `PATH`, and bash
-    /// skips its startup files, so no inherited `BASH_ENV`/`ENV`/function export can run
-    /// code before the requested command (the same rule `ChildProcessEnvironment` applies
-    /// to direct children). Root commands here need no other environment.
-    static func appleScriptDoShellScript(_ command: String, administratorPrivileges: Bool) -> String {
-        let base64Command = Data(command.utf8).base64EncodedString()
-        let privilegeClause = administratorPrivileges ? " with administrator privileges" : ""
-        return "do shell script \"/usr/bin/env -i PATH=\(ChildProcessEnvironment.fixedPath) /bin/bash --noprofile --norc -c \\\"$(/bin/echo '\(base64Command)' | /usr/bin/base64 --decode)\\\"\"\(privilegeClause)"
-    }
+    // MARK: - Close and Reset Zoom
 
-    /// Wraps a script that will run with administrator privileges so it stops itself after
-    /// `seconds`. Killing `osascript` from the app cannot reach a root-owned shell, so the
-    /// privileged script carries its own watchdog.
-    ///
-    /// The command body runs as a background job that the top-level shell `wait`s for.
-    /// `wait` is interrupted by the watchdog's SIGTERM, so the deadline holds even while
-    /// the body is in a long foreground command (bash defers traps until a foreground
-    /// child exits, which let a slow `dscacheutil` outlive the old watchdog). Cleanup is
-    /// bounded: the body's process tree is snapshotted and sent SIGTERM once, parents
-    /// before children (so a shell's restore trap is already pending when the command it
-    /// is waiting on ends, instead of the shell resuming and clearing its traps), given
-    /// `cleanupGraceSeconds` to run its own restore traps, then sent SIGKILL. Each owned
-    /// PID is signalled from one cleanup pass and cleared afterwards.
-    ///
-    /// When `completionMarker` is given, the top-level shell prints
-    /// `<marker>=<status>` only after the body exited on its own and was reaped before the
-    /// deadline. The body never prints it, so a body that was interrupted, timed out or
-    /// force-stopped cannot produce a completion marker, and the caller keeps the
-    /// operation unsettled rather than reporting a clean finish.
-    static func makeTimeBoundedCommand(
-        _ command: String,
-        seconds: Int,
-        cleanupGraceSeconds: Int = 5,
-        completionMarker: String? = nil
-    ) -> String {
-        let limit = max(seconds, 1)
-        let grace = max(cleanupGraceSeconds, 1)
-        let graceTicks = grace * 5
-        let completionLine = completionMarker.map {
-            "printf '\\n%s=%s\\n' \(shellSingleQuote($0)) \"$__1132_body_status\""
-        } ?? ":"
-        return """
-        ( trap '/bin/kill "$__1132_timer" 2>/dev/null; exit 0' TERM; { exec /bin/sleep \(limit); } & __1132_timer=$!; wait "$__1132_timer" && /bin/kill -TERM $$ ) >/dev/null 2>&1 &
-        __1132_watchdog=$!
-        __1132_body_pid=""
-        __1132_cleanup_done=0
-        __1132_collect_tree() {
-          local __1132_child
-          printf '%s\\n' "$1"
-          for __1132_child in $(/usr/bin/pgrep -P "$1" 2>/dev/null); do
-            __1132_collect_tree "$__1132_child"
-          done
-        }
-        __1132_cleanup_watchdog() {
-          [ "$__1132_cleanup_done" -eq 0 ] || return 0
-          __1132_cleanup_done=1
-          /usr/bin/pkill -P "$__1132_watchdog" 2>/dev/null
-          /bin/kill "$__1132_watchdog" 2>/dev/null
-          if [ -n "$__1132_body_pid" ] && /bin/kill -0 "$__1132_body_pid" 2>/dev/null; then
-            __1132_tree="$(__1132_collect_tree "$__1132_body_pid")"
-            for __1132_pid in $__1132_tree; do /bin/kill -TERM "$__1132_pid" 2>/dev/null; done
-            __1132_ticks=0
-            while /bin/kill -0 "$__1132_body_pid" 2>/dev/null && [ "$__1132_ticks" -lt \(graceTicks) ]; do
-              /bin/sleep 0.2
-              __1132_ticks=$((__1132_ticks + 1))
-            done
-            if /bin/kill -0 "$__1132_body_pid" 2>/dev/null; then
-              __1132_tree="$(__1132_collect_tree "$__1132_body_pid") $__1132_tree"
-              for __1132_pid in $__1132_tree; do /bin/kill -KILL "$__1132_pid" 2>/dev/null; done
-              echo "Cleanup did not finish within \(grace)s; the remaining processes were force-stopped." >&2
-            fi
-            wait "$__1132_body_pid" 2>/dev/null
-          fi
-          __1132_body_pid=""
-          __1132_tree=""
-        }
-        trap '__1132_cleanup_watchdog' EXIT
-        trap 'exit 143' HUP INT TERM
-        (
-        \(command)
-        ) &
-        __1132_body_pid=$!
-        wait "$__1132_body_pid"
-        __1132_body_status=$?
-        __1132_body_pid=""
-        \(completionLine)
-        exit "$__1132_body_status"
-        """
-    }
-
-    // MARK: - Command Strings
-
-    /// Returned by the privileged AppleScript when the administrator prompt was cancelled.
-    static let authorizationCancelledSentinel = "__1132_AUTH_CANCELLED__=0"
-    /// Returned when administrator authorization failed before the privileged command was
-    /// invoked (for example, a wrong password). Proven pre-execution: see `makePrivilegedCommand`.
-    static let authorizationRejectedSentinel = "__1132_AUTH_REJECTED__=0"
-
-    /// A random per-run token; only output carrying this run's token can settle the run.
-    static func makePrivilegedRunToken() -> String {
-        UUID().uuidString.replacingOccurrences(of: "-", with: "")
-    }
-
-    static func isValidPrivilegedRunToken(_ token: String) -> Bool {
-        token.utf8.count == 32 && token.utf8.allSatisfy { (48...57).contains($0) || (65...70).contains($0) }
-    }
-
-    /// The completion marker for one run. A stale marker from another run, the legacy
-    /// unbound marker, or text that merely mentions the marker name cannot settle it.
-    static func privilegedCompletionMarker(runToken: String) -> String {
-        "__1132_PRIVILEGED_COMPLETE_\(runToken)__"
-    }
-
-    /// The root shell script carried by `makePrivilegedCommand` (before AppleScript
-    /// encoding). Exposed so tests can run the exact script unprivileged.
-    static func makePrivilegedShellScript(_ command: String, policy: PrivilegedTimeoutPolicy, runToken: String) -> String {
-        makeTimeBoundedCommand(
-            command,
-            seconds: policy.watchdogSeconds,
-            cleanupGraceSeconds: policy.cleanupGraceSeconds,
-            completionMarker: privilegedCompletionMarker(runToken: runToken)
-        )
-    }
-
-    /// Builds the privileged AppleScript.
-    ///
-    /// Authorization is obtained first with a no-op (`/usr/bin/true`) in its own `try`
-    /// block. If that fails, the real command was never invoked, so the script returns an
-    /// exact sentinel (`=0`, matching the caller's strict comparison) and the caller can
-    /// settle the run as not started. AppleScript keeps the granted authorization for the
-    /// rest of this `osascript` process, so the real command does not prompt again. Any
-    /// failure after that point is treated as indeterminate by the caller unless this
-    /// run's completion marker is present.
-    static func makePrivilegedCommand(_ command: String, policy: PrivilegedTimeoutPolicy, runToken: String) -> String {
-        precondition(isValidPrivilegedRunToken(runToken), "Privileged run token must be 32 uppercase hex digits")
-        let authorizedScript = appleScriptDoShellScript(
-            makePrivilegedShellScript(command, policy: policy, runToken: runToken),
-            administratorPrivileges: true
-        )
-        return """
-        try
-            do shell script "/usr/bin/true" with administrator privileges
-        on error __1132_message number __1132_number
-            if __1132_number is -128 then
-                return "\(authorizationCancelledSentinel)"
-            end if
-            return "\(authorizationRejectedSentinel)"
-        end try
-        try
-            \(authorizedScript)
-        on error __1132_message number __1132_number
-            if __1132_number is -128 then
-                return "\(authorizationCancelledSentinel)"
-            end if
-            error __1132_message number __1132_number
-        end try
-        """
-    }
-
+    /// Closes Zoom and its capture helpers for the current user only, and exits 1 if any
+    /// of them is still running afterwards so nothing is deleted under a live Zoom.
     static let stopZoom = #"""
     uid="$(/usr/bin/id -u)"
     zoom_processes=("zoom[.]us" "caphost" "CptHost")
@@ -280,68 +106,6 @@ enum ShellCommands {
     fi
     """#
 
-    /// Stops Zoom's updaters for the current login session only.
-    ///
-    /// This must stay non-persistent: `launchctl disable` survives reboots and nothing in
-    /// this app would ever undo it, which would leave Zoom without security updates (it also
-    /// requires root, so it silently failed in practice). `pkill` and `launchctl bootout`
-    /// only unload the jobs until the next login.
-    ///
-    /// The final loop clears any "disabled" override that earlier 1132 Fixer versions left
-    /// behind with `launchctl disable`, so users upgrading from those versions get their
-    /// updaters back. `launchctl enable` only removes the override; it does not start the job.
-    static let stopZoomUpdaters = #"""
-    uid="$(/usr/bin/id -u)"
-    stopped=""
-
-    for proc in zAutoUpdate zPTUpdaterUI ZoomUpdater; do
-      if /usr/bin/pkill -u "$uid" -x "$proc" 2>/dev/null; then
-        stopped="$stopped $proc"
-      fi
-    done
-
-    for domain in "gui/$uid" "user/$uid"; do
-      for label in us.zoom.zAutoUpdate us.zoom.ZoomUpdater us.zoom.zPTUpdaterUI; do
-        /bin/launchctl bootout "$domain" "/Library/LaunchAgents/$label.plist" 2>/dev/null || true
-        /bin/launchctl bootout "$domain" "$HOME/Library/LaunchAgents/$label.plist" 2>/dev/null || true
-      done
-    done
-
-    for label in us.zoom.zAutoUpdate us.zoom.ZoomUpdater us.zoom.zPTUpdaterUI; do
-      /bin/launchctl enable "gui/$uid/$label" 2>/dev/null || true
-    done
-
-    if [ -n "$stopped" ]; then
-      echo "Stopped Zoom updater processes:$stopped"
-    else
-      echo "No Zoom updater processes were running."
-    fi
-    echo "Updater agents unloaded for this login session only; they are not disabled and macOS restores them at the next login."
-    """#
-
-    /// The privileged part of the reset: flushing the system DNS cache is the only step
-    /// that needs administrator rights. Reports `__1132_DNS_STATUS__=<n>` on its last line.
-    static func makeRefreshDNSCommand() -> String {
-        """
-        /usr/bin/dscacheutil -flushcache
-        dns_status=$?
-        /usr/bin/killall -HUP mDNSResponder || dns_status=$?
-        printf '\n__1132_DNS_STATUS__=%s\n' "$dns_status"
-        """
-    }
-
-    /// Runs the unprivileged Zoom data reset and reports `__1132_RESET_STATUS__=<n>` on its
-    /// last line. Always exits 0 so the caller can read the sentinel instead of an error.
-    static func makeResetZoomDataWithStatusCommand(homeDirectory: String, deletePreferencesDomain: Bool = true) -> String {
-        """
-        (
-        \(makeResetZoomDataCommand(homeDirectory: homeDirectory, deletePreferencesDomain: deletePreferencesDomain))
-        )
-        reset_status=$?
-        printf '\n__1132_RESET_STATUS__=%s\n' "$reset_status"
-        """
-    }
-
     /// Whether `path` is acceptable as the base for the `rm -rf` of Zoom's state: non-empty,
     /// absolute, and not the filesystem root. (The generated script re-checks this, and that
     /// the directory exists, before deleting anything.)
@@ -362,8 +126,7 @@ enum ShellCommands {
 
     /// Prints, one per line, the Zoom log files covered by the exact naming contract in
     /// `ZoomStateScope` (`zoom.us.log` and `zoom.us.log.<digits>`) that are regular files
-    /// or symbolic links (a link is removed, never followed). Backup and reset share this
-    /// function, so every log the reset removes was copied into the backup first.
+    /// or symbolic links (a link is removed, never followed).
     /// Matching names of any other type are reported on stderr and left alone.
     static let zoomLogCandidatesFunction = #"""
     __1132_zoom_log_candidates() {
@@ -396,7 +159,7 @@ enum ShellCommands {
     /// `defaults delete` as root could leave root-owned files in `~/Library`.
     ///
     /// The cleanup set is decided and checked before anything is deleted: the four
-    /// backed-up paths plus the contract-named log files. If any of them cannot be
+    /// Zoom state paths plus the contract-named log files. If any of them cannot be
     /// removed (an unwritable parent, or a directory inside the state that this user
     /// cannot empty), the script refuses with "Nothing was deleted" instead of deleting
     /// part of the state and then failing.
@@ -442,10 +205,10 @@ enum ShellCommands {
         \(zoomLogCandidatesFunction)
         uid="$(/usr/bin/id -u)"
 
-        zoom_data="$home_physical/\(ZoomStateScope.backedUpPaths[0])"
-        zoom_cache="$home_physical/\(ZoomStateScope.backedUpPaths[1])"
-        zoom_prefs="$home_physical/\(ZoomStateScope.backedUpPaths[2])"
-        zoom_saved_state="$home_physical/\(ZoomStateScope.backedUpPaths[3])"
+        zoom_data="$home_physical/\(ZoomStateScope.statePaths[0])"
+        zoom_cache="$home_physical/\(ZoomStateScope.statePaths[1])"
+        zoom_prefs="$home_physical/\(ZoomStateScope.statePaths[2])"
+        zoom_saved_state="$home_physical/\(ZoomStateScope.statePaths[3])"
         zoom_logs_dir="$home_physical/\(ZoomStateScope.logsRelativeDirectory)"
 
         # Preflight: refuse before deleting anything when part of the set cannot be removed.
@@ -505,515 +268,6 @@ enum ShellCommands {
         """
     }
 
-    /// Removes `.incomplete.*` staging directories left behind by an interrupted backup.
-    /// Age alone is not treated as proof that a backup was abandoned:
-    /// - Staging created by this version carries `.1132fixer-staging` (owner PID, boot
-    ///   session, start time). It is removed only when it is at least an hour old and its
-    ///   owner is provably gone: a different boot session, or a dead PID in this one.
-    /// - Older staging without metadata is removed only when nothing inside it has
-    ///   changed for seven days. Each backup is bounded to minutes, so such a directory
-    ///   cannot belong to an active backup.
-    /// Only real directories directly inside the backup root are considered; symbolic
-    /// links are never followed or removed. Expects `backup_root` and `boot_session`.
-    static let abandonedStagingCleanupFunction = #"""
-    __1132_prune_abandoned_staging() {
-      __1132_now="$(/bin/date +%s)"
-      for __1132_stale in "$backup_root"/.incomplete.*; do
-        [ -d "$__1132_stale" ] || continue
-        [ ! -L "$__1132_stale" ] || continue
-        case "${__1132_stale##*/}" in
-          .incomplete.?*) ;;
-          *) continue ;;
-        esac
-        __1132_meta="$__1132_stale/.1132fixer-staging"
-        if [ -f "$__1132_meta" ] && [ ! -L "$__1132_meta" ]; then
-          __1132_started="$(/usr/bin/sed -n 's/^started_epoch=\([0-9][0-9]*\)$/\1/p' "$__1132_meta" | /usr/bin/head -n 1)"
-          __1132_owner="$(/usr/bin/sed -n 's/^pid=\([0-9][0-9]*\)$/\1/p' "$__1132_meta" | /usr/bin/head -n 1)"
-          __1132_boot="$(/usr/bin/sed -n 's/^boot=\(.*\)$/\1/p' "$__1132_meta" | /usr/bin/head -n 1)"
-          [ -n "$__1132_started" ] || continue
-          [ $((__1132_now - __1132_started)) -ge 3600 ] || continue
-          if [ "$__1132_boot" = "$boot_session" ]; then
-            [ -n "$__1132_owner" ] || continue
-            if /bin/kill -0 "$__1132_owner" 2>/dev/null; then
-              continue
-            fi
-          fi
-        else
-          if ! __1132_recent="$(/usr/bin/find "$__1132_stale" -mtime -7 -print -quit 2>/dev/null)"; then
-            continue
-          fi
-          [ -z "$__1132_recent" ] || continue
-        fi
-        /bin/rm -rf "$__1132_stale"
-      done
-    }
-    """#
-
-    /// Copies Zoom's local state aside before it is cleared, keeping only the most
-    /// recent `retainedBackupCount` snapshots. Without pruning, every run left another
-    /// full copy of Zoom's Application Support and Caches on disk forever.
-    static func makeBackupZoomDataCommand(
-        homeDirectory: String = NSHomeDirectory(),
-        retainedBackupCount: Int = 5,
-        retainedBackupMegabytes: Int = 2_048
-    ) -> String {
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-            .replacingOccurrences(of: ":", with: "-")
-        let firstStaleEntry = max(retainedBackupCount, 1) + 1
-        let maximumKilobytes = max(retainedBackupMegabytes, 1) * 1_024
-        let home = shellSingleQuote(homeDirectory)
-        return """
-        # Backups hold Zoom session data: keep them private to the current user.
-        umask 077
-        home=\(home)
-        while [ "${home%/}" != "$home" ] && [ -n "${home%/}" ]; do home="${home%/}"; done
-        case "$home" in
-          /*) ;;
-          *)
-            echo "Backup Zoom data: home directory '$home' is not an absolute path; refusing to continue." >&2
-            exit 1
-            ;;
-        esac
-        if [ "$home" = "/" ] || [ "${home%/}" = "" ] || [ ! -d "$home" ]; then
-          echo "Backup Zoom data: home directory '$home' is not a usable directory; refusing to continue." >&2
-          exit 1
-        fi
-        home_physical="$(cd -P "$home" 2>/dev/null && /bin/pwd -P)" || exit 1
-        if [ "$home_physical" = "/" ]; then
-          echo "Backup Zoom data: home directory resolves to the filesystem root; refusing to continue." >&2
-          exit 1
-        fi
-        for parent_dir in \
-          "$home_physical/Library" \
-          "$home_physical/Library/Application Support" \
-          "$home_physical/Library/Caches" \
-          "$home_physical/Library/Preferences" \
-          "$home_physical/Library/Logs" \
-          "$home_physical/Library/Saved Application State"; do
-          if [ -L "$parent_dir" ]; then
-            printf 'Backup Zoom data: refusing to traverse symbolic link at %s\n' "$parent_dir" >&2
-            exit 1
-          fi
-        done
-
-        backup_root="$home_physical/\(ZoomStateScope.backupRelativeRoot)"
-        if ! /bin/mkdir -p "$backup_root" || ! /bin/chmod 700 "$backup_root"; then
-          printf 'Could not create the private backup folder at %s\\n' "$backup_root" >&2
-          exit 1
-        fi
-        backup_root_physical="$(cd -P "$backup_root" 2>/dev/null && /bin/pwd -P)" || exit 1
-        case "$backup_root_physical" in
-          "$home_physical"/*) backup_root="$backup_root_physical" ;;
-          *)
-            printf 'Backup root resolves outside the home directory: %s\\n' "$backup_root_physical" >&2
-            exit 1
-            ;;
-        esac
-
-        \(abandonedStagingCleanupFunction)
-        \(zoomLogCandidatesFunction)
-        boot_session="$(/usr/sbin/sysctl -n kern.bootsessionuuid 2>/dev/null || true)"
-        __1132_prune_abandoned_staging
-
-        staging_dir="$(/usr/bin/mktemp -d "$backup_root/.incomplete.XXXXXX")" || exit 1
-        backup_complete=0
-        cleanup_backup() {
-          if [ "$backup_complete" -ne 1 ] && [ -n "${staging_dir:-}" ]; then
-            /bin/rm -rf "$staging_dir"
-          fi
-        }
-        trap cleanup_backup EXIT
-        trap 'exit 130' HUP INT TERM
-        /bin/chmod 700 "$staging_dir" || exit 1
-
-        backup_started="$(/bin/date +%s)"
-        # Ownership record that lets a later run tell an abandoned staging directory
-        # from one that another backup is still writing.
-        printf 'format=1\\npid=%s\\nboot=%s\\nstarted_epoch=%s\\n' "$$" "$boot_session" "$backup_started" \
-          > "$staging_dir/.1132fixer-staging" || exit 1
-        backup_failed=0
-        included=""
-        for src in \(ZoomStateScope.backedUpPaths.map { "\"$home_physical/\($0)\"" }.joined(separator: " ")); do
-          [ -e "$src" ] || [ -L "$src" ] || continue
-          if /bin/cp -a "$src" "$staging_dir/" 2>/dev/null; then
-            included="${included}included=${src#"$home_physical"/}
-        "
-          else
-            printf 'Could not back up %s\\n' "$src" >&2
-            backup_failed=1
-          fi
-        done
-        # The reset removes exactly these contract-named logs, so they are backed up too.
-        if ! log_targets="$(__1132_zoom_log_candidates "$home_physical/\(ZoomStateScope.logsRelativeDirectory)")"; then
-          printf 'Could not list Zoom log files for backup\\n' >&2
-          backup_failed=1
-        fi
-        if [ -n "$log_targets" ]; then
-          if /bin/mkdir -p "$staging_dir/\(ZoomStateScope.backupLogsSubdirectory)"; then
-            while IFS= read -r log_path; do
-              if /bin/cp -a "$log_path" "$staging_dir/\(ZoomStateScope.backupLogsSubdirectory)/" 2>/dev/null; then
-                included="${included}included=${log_path#"$home_physical"/}
-        "
-              else
-                printf 'Could not back up %s\\n' "$log_path" >&2
-                backup_failed=1
-              fi
-            done <<< "$log_targets"
-          else
-            backup_failed=1
-          fi
-        fi
-        # A failed backup must stop the caller before anything is deleted.
-        if [ "$backup_failed" -ne 0 ]; then
-          exit 1
-        fi
-
-        backup_finished="$(/bin/date +%s)"
-        printf 'format=2\\nstarted_epoch=%s\\nfinished_epoch=%s\\nduration_seconds=%s\\n%s' \
-          "$backup_started" "$backup_finished" "$((backup_finished - backup_started))" "$included" \
-          > "$staging_dir/backup-manifest.txt" || exit 1
-        /bin/rm -f "$staging_dir/.1132fixer-staging"
-        : > "$staging_dir/.1132fixer-backup"
-
-        # Publish only a fully copied snapshot. The rename is atomic because staging and
-        # final directories live under the same backup root.
-        unique_suffix="${staging_dir##*.incomplete.}"
-        current_snapshot="snapshot-\(timestamp)-$unique_suffix"
-        backup_dir="$backup_root/$current_snapshot"
-        /bin/mv "$staging_dir" "$backup_dir" || exit 1
-        backup_complete=1
-        staging_dir=""
-        trap - EXIT HUP INT TERM
-
-        # Keep the newest snapshot even if it alone is large. Older snapshots are
-        # pruned by both count and aggregate size. The second pattern includes the
-        # timestamp-only directories written by releases before 1.8.
-        (
-          cd "$backup_root" || exit 0
-          snapshot_index=1
-          current_kb="$(/usr/bin/du -sk "$current_snapshot" 2>/dev/null | /usr/bin/awk '{print $1}')"
-          case "$current_kb" in
-            ''|*[!0-9]*) current_kb=0 ;;
-          esac
-          total_kb="$current_kb"
-          { /bin/ls -1dt snapshot-* 20??-* 2>/dev/null || true; } | while IFS= read -r stale; do
-            [ "$stale" = "$current_snapshot" ] && continue
-            case "$stale" in
-              snapshot-*|20??-*) ;;
-              *) continue ;;
-            esac
-            [ ! -L "$stale" ] || continue
-            [ -d "$stale" ] || continue
-            size_kb="$(/usr/bin/du -sk "$stale" 2>/dev/null | /usr/bin/awk '{print $1}')"
-            case "$size_kb" in
-              ''|*[!0-9]*) size_kb=0 ;;
-            esac
-            candidate_kb=$((total_kb + size_kb))
-            if [ "$snapshot_index" -ge \(firstStaleEntry - 1) ] || [ "$candidate_kb" -gt \(maximumKilobytes) ]; then
-              /bin/rm -rf "$backup_root/$stale"
-            else
-              snapshot_index=$((snapshot_index + 1))
-              total_kb="$candidate_kb"
-            fi
-          done
-        )
-
-        if [ ! -d "$backup_dir" ] || [ -L "$backup_dir" ] || [ ! -f "$backup_dir/.1132fixer-backup" ]; then
-          printf 'Backup snapshot is missing after retention pruning: %s\n' "$backup_dir" >&2
-          exit 1
-        fi
-
-        echo "$backup_dir"
-        """
-    }
-
-    // MARK: - MAC Address
-
-    static func generateRandomMACAddress() throws -> String {
-        var bytes = (0..<6).map { _ in UInt8.random(in: 0...255) }
-        bytes[0] = (bytes[0] | 0x02) & 0xFE // locally administered + unicast
-
-        let mac = bytes.map { String(format: "%02x", $0) }.joined(separator: ":")
-        guard isValidMACAddress(mac) else {
-            throw AppError.general("Generate MAC address: Failed to generate a valid MAC address.")
-        }
-        return mac
-    }
-
-    static func isValidMACAddress(_ value: String) -> Bool {
-        let pattern = #"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$"#
-        return value.range(of: pattern, options: .regularExpression) != nil
-    }
-
-    // MARK: - Interface Validation
-
-    static func isSafeInterfaceName(_ value: String) -> Bool {
-        let pattern = #"^[a-zA-Z0-9]+$"#
-        return value.range(of: pattern, options: .regularExpression) != nil
-    }
-
-    // MARK: - Network Parsing
-
-    enum InterfaceKind: String {
-        case wifi = "Wi-Fi"
-        case ethernet = "Ethernet"
-    }
-
-    struct InterfaceInfo {
-        let device: String
-        let hardwarePort: String
-        let networkService: String
-        let kind: InterfaceKind
-    }
-
-    static func parseDefaultRouteInterface(from output: String) throws -> String {
-        var foundInterface: String?
-        var parseError: Error?
-
-        output.enumerateLines { rawLine, stop in
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
-            guard line.hasPrefix("interface:") else { return }
-
-            let value = line.dropFirst("interface:".count).trimmingCharacters(in: .whitespaces)
-            guard isSafeInterfaceName(value) else {
-                parseError = AppError.general("Detect active network interface: Invalid interface name '\(value)'.")
-                stop = true
-                return
-            }
-
-            do {
-                try ensureVPNIsNotActive(interfaceName: value)
-                foundInterface = value
-            } catch {
-                parseError = error
-            }
-            stop = true
-        }
-
-        if let parseError {
-            throw parseError
-        }
-
-        if let foundInterface {
-            return foundInterface
-        }
-
-        throw AppError.general("Detect active network interface: No default route interface was found. Make sure you are connected to Wi-Fi or Ethernet. If you just disconnected a VPN, wait a few seconds for your connection to restore and try again.")
-    }
-
-    static func ensureVPNIsNotActive(interfaceName: String) throws {
-        let normalized = interfaceName.lowercased()
-        let vpnPrefixes = ["utun", "ipsec", "ppp", "tun", "tap"]
-
-        if vpnPrefixes.contains(where: normalized.hasPrefix) {
-            throw AppError.general("""
-VPN detected on interface '\(interfaceName)'. \
-MAC spoofing cannot work while a VPN is active because the VPN tunnel hides your real network interface. \
-Turn off your VPN, wait a few seconds for your normal connection to restore, and run Start Zoom again.
-""")
-        }
-    }
-
-    static func parseHardwarePorts(from output: String) -> [String: String] {
-        var result: [String: String] = [:]
-        var currentHardwarePort: String?
-
-        output.enumerateLines { rawLine, _ in
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
-
-            if line.hasPrefix("Hardware Port:") {
-                currentHardwarePort = String(line.dropFirst("Hardware Port:".count)).trimmingCharacters(in: .whitespaces)
-                return
-            }
-
-            if line.hasPrefix("Device:"), let hardwarePort = currentHardwarePort {
-                let device = String(line.dropFirst("Device:".count)).trimmingCharacters(in: .whitespaces)
-                if isSafeInterfaceName(device) {
-                    result[device] = hardwarePort
-                }
-            }
-        }
-
-        return result
-    }
-
-    static func classifySupportedInterface(hardwarePortName: String) throws -> InterfaceKind {
-        let normalized = hardwarePortName.lowercased()
-
-        if normalized.contains("wi-fi") || normalized.contains("wifi") {
-            return .wifi
-        }
-        if normalized.contains("ethernet") {
-            return .ethernet
-        }
-        if normalized.contains("usb") && normalized.contains("lan") {
-            return .ethernet
-        }
-
-        throw AppError.general("Detect active network interface: Active interface '\(hardwarePortName)' is not supported. Only Wi-Fi and Ethernet are supported.")
-    }
-
-    /// Parses `networksetup -listnetworkserviceorder`. Disabled services are listed as
-    /// `(*) Name` (enabled ones as `(1) Name`) and are left out of the result.
-    static func parseNetworkServiceOrder(from output: String) -> [String: String] {
-        var result: [String: String] = [:]
-        var pendingServiceName: String?
-
-        let pattern = #"\(Hardware Port: .*?, Device: ([^)]+)\)"#
-        let regex = try? NSRegularExpression(pattern: pattern)
-
-        output.enumerateLines { rawLine, _ in
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
-            guard !line.isEmpty else { return }
-
-            // Check the hardware-port line first: a port name such as "Foo (bar)" contains ")"
-            // and must not be mistaken for a "(n) Service" line.
-            if line.hasPrefix("(Hardware Port:") {
-                guard let serviceName = pendingServiceName, let regex else { return }
-                let nsLine = line as NSString
-                let range = NSRange(location: 0, length: nsLine.length)
-                guard let match = regex.firstMatch(in: line, options: [], range: range), match.numberOfRanges > 1 else { return }
-
-                let deviceRange = match.range(at: 1)
-                guard deviceRange.location != NSNotFound else { return }
-
-                let device = nsLine.substring(with: deviceRange).trimmingCharacters(in: .whitespaces)
-                if isSafeInterfaceName(device) {
-                    result[device] = serviceName
-                }
-                return
-            }
-
-            if line.hasPrefix("("), let closingParen = line.firstIndex(of: ")"), line.index(after: closingParen) < line.endIndex {
-                // The marker is "(1)", "(2)", ... for enabled services and "(*)" for disabled ones.
-                let marker = line[line.startIndex...closingParen]
-                let nameStart = line.index(after: closingParen)
-                let serviceName = line[nameStart...].trimmingCharacters(in: .whitespaces)
-                if !serviceName.isEmpty && marker != "(*)" {
-                    pendingServiceName = serviceName
-                } else {
-                    pendingServiceName = nil
-                }
-            }
-        }
-
-        return result
-    }
-
-    // MARK: - System Checks
-
-    static func machineArchitecture() -> String {
-        var systemInfo = utsname()
-        uname(&systemInfo)
-        let mirror = Mirror(reflecting: systemInfo.machine)
-        let values = mirror.children.compactMap { child -> UInt8? in
-            guard let value = child.value as? Int8, value != 0 else { return nil }
-            return UInt8(value)
-        }
-        return String(bytes: values, encoding: .ascii) ?? "unknown"
-    }
-
-    static func isMacSpoofingDisabledForCurrentOS() -> Bool {
-        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 14
-    }
-
-    // MARK: - MAC Spoof Command
-
-    static func makeSpoofCommand(device: String, spoofedMAC: String, networkService: String) -> String {
-        let setMACCommand = "(/sbin/ifconfig \(shellSingleQuote(device)) lladdr \(shellSingleQuote(spoofedMAC)) || /sbin/ifconfig \(shellSingleQuote(device)) ether \(shellSingleQuote(spoofedMAC)))"
-        let interfaceDownCommand = "/sbin/ifconfig \(shellSingleQuote(device)) down"
-        let interfaceUpCommand = "/sbin/ifconfig \(shellSingleQuote(device)) up"
-        let disableServiceCommand = "/usr/sbin/networksetup -setnetworkserviceenabled \(shellSingleQuote(networkService)) off"
-        let enableServiceCommand = "/usr/sbin/networksetup -setnetworkserviceenabled \(shellSingleQuote(networkService)) on"
-        let sleepShort = "/bin/sleep 1"
-
-        let macAttempt = "(\(interfaceDownCommand) && \(sleepShort) && \(setMACCommand)) 2>/dev/null || true"
-        return """
-        (
-          __1132_step_pid=""
-          run_step() { "$@" & __1132_step_pid=$!; wait "$__1132_step_pid"; }
-          restore_network() {
-            [ -n "${__1132_step_pid:-}" ] && /bin/kill -TERM "$__1132_step_pid" 2>/dev/null || true
-            \(interfaceUpCommand) >/dev/null 2>&1 || true
-            \(enableServiceCommand) >/dev/null 2>&1 || true
-          }
-          trap restore_network EXIT
-          trap 'exit 1' HUP INT TERM
-          \(macAttempt) & __1132_step_pid=$!; wait "$__1132_step_pid" || true
-          if ! run_step \(interfaceUpCommand); then
-            echo "Could not bring the active network interface back up." >&2
-            exit 1
-          fi
-          run_step \(sleepShort)
-          run_step \(disableServiceCommand) 2>/dev/null || true
-          run_step \(sleepShort)
-          if ! run_step \(enableServiceCommand); then
-            echo "Could not re-enable the active network service." >&2
-            exit 1
-          fi
-          trap - EXIT HUP INT TERM
-        ) &
-        __1132_subshell_pid=$!
-        wait "$__1132_subshell_pid"
-        """
-    }
-
-    /// Combines legacy MAC spoofing, network service cycling, and DNS cache flushing
-    /// into a single privileged script so the user is prompted for an administrator
-    /// password only once during the workflow.
-    static func makeSpoofAndDNSCommand(
-        device: String,
-        spoofedMAC: String,
-        networkService: String,
-        includeDNSFlush: Bool = true
-    ) -> String {
-        let spoof = makeSpoofCommand(device: device, spoofedMAC: spoofedMAC, networkService: networkService)
-        guard includeDNSFlush else { return spoof }
-        return """
-        \(spoof)
-        spoof_status=$?
-        __1132_subshell_pid=""
-        printf '\n__1132_SPOOF_STATUS__=%s\n' "$spoof_status"
-        \(makeRefreshDNSCommand())
-        """
-    }
-
-    static func makeVerifyMACCommand(device: String) -> String {
-        "/sbin/ifconfig \(shellSingleQuote(device)) | /usr/bin/awk '/^[[:space:]]*ether /{print $2; exit}'"
-    }
-
-    /// Waits until the changed interface is active and owns the default route. This replaces
-    /// optimistic post-reconnect delays with an outcome-based, bounded readiness check.
-    static func makeNetworkReadinessCommand(
-        device: String,
-        maxAttempts: Int = 15,
-        intervalSeconds: Int = 1
-    ) -> String {
-        let attempts = max(maxAttempts, 1)
-        let interval = max(intervalSeconds, 1)
-        let quotedDevice = shellSingleQuote(device)
-        return """
-        device=\(quotedDevice)
-        attempt=0
-        while [ "$attempt" -lt \(attempts) ]; do
-          if /sbin/ifconfig "$device" 2>/dev/null | /usr/bin/grep -q 'status: active' && \
-             /sbin/route -n get default 2>/dev/null | /usr/bin/awk -v expected="$device" '$1 == "interface:" && $2 == expected { found=1 } END { exit(found ? 0 : 1) }'; then
-            echo "Network ready on $device."
-            exit 0
-          fi
-          /bin/sleep \(interval)
-          attempt=$((attempt + 1))
-        done
-        echo "Network did not become ready on $device after \(attempts) checks." >&2
-        exit 1
-        """
-    }
-
-    static func normalizedMACAddress(_ output: String) -> String? {
-        let value = output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return isValidMACAddress(value) ? value : nil
-    }
-
     // MARK: - Launch Zoom
 
     // Zoom must stay inside sandbox-exec for this app. Do not replace this
@@ -1029,9 +283,9 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
     /// sandboxed session, so without these rules Zoom would inherit this app's
     /// standing when it reaches for TCC-protected data.
     ///
-    /// `Application Support/1132Fixer` holds this app's own backups of Zoom's
-    /// previous local state — readable, that is a copy of the very identity the
-    /// workflow just cleared.
+    /// `Application Support/1132Fixer` may still hold backups of Zoom's previous local
+    /// state made by earlier versions of this app — readable, that is a copy of the very
+    /// identity the reset just cleared.
     private static let deniedHomeReadSubpaths = [
         ".ssh",
         ".gnupg",
@@ -1064,9 +318,8 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
     ]
 
     /// Home-relative directories Zoom is denied write access to. `Library/LaunchAgents`
-    /// stops the sandboxed session from reinstating the updater agents the workflow
-    /// just unloaded. This lasts only as long as the sandboxed process: the agent
-    /// files are untouched, so Zoom still updates outside this app.
+    /// stops the sandboxed session from installing login agents. This lasts only as long
+    /// as the sandboxed process: existing agent files are untouched.
     ///
     /// Credential stores that are read-denied are write-denied too (F-013): `.kube`,
     /// `.docker` and `.netrc` hold cluster, registry and host credentials that Zoom never
@@ -1346,7 +599,7 @@ Turn off your VPN, wait a few seconds for your normal connection to restore, and
     }
 
     /// Builds a non-mutating command that compiles the exact profile used for Zoom.
-    /// The repair workflow runs this before closing Zoom, backing up, or changing state.
+    /// Both actions run this before closing Zoom or deleting anything.
     static func makeSandboxProfileValidationCommand(
         homeDirectory: String = NSHomeDirectory()
     ) -> String {

@@ -42,9 +42,5 @@
 	<string>1132 Fixer needs camera access so Zoom can use your camera when launched in sandbox mode.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>1132 Fixer needs microphone access so Zoom can use your microphone when launched in sandbox mode.</string>
-	<key>NSAppleEventsUsageDescription</key>
-	<string>1132 Fixer uses AppleScript to request administrator authorization for supported network changes and DNS cache flushing.</string>
-	<key>NSSystemAdministrationUsageDescription</key>
-	<string>1132 Fixer requests administrator access only for supported network changes and system DNS cache flushing. Zoom file backup and reset run as your user account.</string>
 </dict>
 </plist>

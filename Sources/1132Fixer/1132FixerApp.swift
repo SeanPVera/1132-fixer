@@ -8,13 +8,12 @@ struct Fixer1132App: App {
 
     init() {
         if CommandLine.arguments.contains("--check-packaged-resources") {
-            // Native mounted-artifact canary: use the same lookup as report submission.
-            exit(PackagedResources.hasUsableBugReportConfiguration() ? 0 : 1)
+            // Native mounted-artifact canary: use the same lookup the app uses at runtime.
+            exit(PackagedResources.hasRequiredResources() ? 0 : 1)
         }
         // SwiftPM executables are not app bundles and have no main bundle ID.
         // Disable automatic tabbing so AppKit does not try to index tabs by bundle identifier.
         NSWindow.allowsAutomaticWindowTabbing = false
-
     }
 
     private static var requestedWindowSize: CGSize {
