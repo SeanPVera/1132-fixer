@@ -226,6 +226,102 @@ struct UpdateCheckerTests {
             #expect(error is DecodingError)
         }
     }
+
+    // MARK: F-046 byte, redirect and canonical-link policy
+
+    private static func releaseJSON(tag: String = "v1.2.3", htmlURL: String? = nil, padding: Int = 0) -> Data {
+        let link = htmlURL ?? "https://github.com/SeanPVera/1132-fixer/releases/tag/\(tag)"
+        let body = String(repeating: "x", count: padding)
+        return Data(#"{"tag_name":"\#(tag)","html_url":"\#(link)","body":"\#(body)","draft":false,"prerelease":false}"#.utf8)
+    }
+
+    @Test func oversizedResponseIsRefused() async {
+        defer { MockURLProtocol.requestHandler = nil }
+        let session = makeSession()
+        MockURLProtocol.requestHandler = { request in
+            (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+             Self.releaseJSON(padding: UpdateChecker.maxResponseBytes + 1))
+        }
+        do {
+            _ = try await UpdateChecker.fetchLatestRelease(session: session)
+            Issue.record("Oversized response was accepted")
+        } catch let error as NSError {
+            #expect(error.domain == UpdateChecker.errorDomain)
+            #expect(error.code == 3)
+        }
+    }
+
+    @Test func canonicalLinkIsBuiltLocallyFromTheValidatedTag() async throws {
+        defer { MockURLProtocol.requestHandler = nil }
+        let session = makeSession()
+        // A trusted-looking but non-canonical html_url (different release path) is not used.
+        MockURLProtocol.requestHandler = { request in
+            (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+             Self.releaseJSON(tag: "v2.0.1", htmlURL: "https://github.com/SeanPVera/1132-fixer/releases/download/v2.0.1/other.dmg"))
+        }
+        let info = try await UpdateChecker.fetchLatestRelease(session: session)
+        #expect(info.htmlURL.absoluteString == "https://github.com/SeanPVera/1132-fixer/releases/tag/v2.0.1")
+    }
+
+    @Test(arguments: ["v1.2.3/../../x", "v1.2.3?x=1", "1.2", "v1.2.3#frag", "v1.2.3 ", ""])
+    func malformedTagsCannotProduceALink(tag: String) async {
+        defer { MockURLProtocol.requestHandler = nil }
+        let session = makeSession()
+        MockURLProtocol.requestHandler = { request in
+            (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+             Self.releaseJSON(tag: tag, htmlURL: "https://github.com/SeanPVera/1132-fixer/releases/tag/v1.2.3"))
+        }
+        do {
+            _ = try await UpdateChecker.fetchLatestRelease(session: session)
+            Issue.record("Malformed tag produced a release link")
+        } catch let error as NSError {
+            #expect(error.domain == UpdateChecker.errorDomain)
+            #expect(error.code == 2)
+        }
+    }
+
+    @Test func crossHostRedirectIsNeverAccepted() async {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RedirectingURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        do {
+            _ = try await UpdateChecker.fetchLatestRelease(session: session)
+            Issue.record("A response reached through a cross-host redirect was accepted")
+        } catch {
+            // Either the redirect was declined (3xx is not success) or the final host check refused it.
+        }
+    }
+
+    @Test func redirectPolicyAllowsOnlyHTTPSGitHubAPI() {
+        #expect(UpdateChecker.RedirectPolicy.allows(URL(string: "https://api.github.com/repos/x/y/releases/latest")))
+        for bad in ["https://evil.example/x", "http://api.github.com/x", "https://api.github.com.evil.example/x",
+                    "https://user@api.github.com/x", "https://api.github.com:8443/x", "https://github.com/x"] {
+            #expect(!UpdateChecker.RedirectPolicy.allows(URL(string: bad)), "allowed \(bad)")
+        }
+        #expect(!UpdateChecker.RedirectPolicy.allows(nil))
+    }
+}
+
+/// Redirects the GitHub API request to another host, which serves a valid-looking release.
+final class RedirectingURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let url = request.url!
+        if url.host == UpdateChecker.apiHost {
+            let target = URL(string: "https://evil.example/latest")!
+            let redirect = HTTPURLResponse(url: url, statusCode: 302, httpVersion: "HTTP/1.1", headerFields: ["Location": target.absoluteString])!
+            client?.urlProtocol(self, wasRedirectedTo: URLRequest(url: target), redirectResponse: redirect)
+            client?.urlProtocol(self, didReceive: redirect, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
+        let body = Data(#"{"tag_name":"v99.0.0","html_url":"https://github.com/SeanPVera/1132-fixer/releases/tag/v99.0.0","draft":false,"prerelease":false}"#.utf8)
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }
 
 // MARK: - Release URL validation (swift-testing)

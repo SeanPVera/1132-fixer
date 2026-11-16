@@ -119,10 +119,60 @@ enum DiagnosticsCollector {
     /// Diagnostics are uploaded with bug reports, and several lines embed absolute
     /// paths (the backup destination, a custom Zoom location), each of which carries
     /// the local account name. The account name has no diagnostic value.
+    /// Characters that continue an account or folder name. A home path is only replaced
+    /// when it ends at a path boundary, so `/Users/jane` never rewrites `/Users/janet`.
+    private static let nameContinuation = #"(?![\p{L}\p{M}\p{N}._-])"#
+
+    /// Replaces the current home directory with `~`, matching case-insensitively (APFS is
+    /// case-insensitive by default, so `/users/JANE` names the same folder) and through the
+    /// `/System/Volumes/Data` firmlink and `/private` prefixes.
     static func redactingHomeDirectory(_ text: String, homeDirectory: String = NSHomeDirectory()) -> String {
-        let home = homeDirectory.hasSuffix("/") ? String(homeDirectory.dropLast()) : homeDirectory
+        var home = homeDirectory
+        while home.count > 1 && home.hasSuffix("/") { home.removeLast() }
         guard !home.isEmpty, home != "/" else { return text }
-        return text.replacingOccurrences(of: home, with: "~")
+        let pattern = "(?i)(?:/System/Volumes/Data|/private)?" + NSRegularExpression.escapedPattern(for: home) + nameContinuation
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return text.replacingOccurrences(of: home, with: "~")
+        }
+        return regex.stringByReplacingMatches(
+            in: text, range: NSRange(location: 0, length: (text as NSString).length), withTemplate: "~"
+        )
+    }
+
+    /// Redaction contract for shared text (exported diagnostics, bug reports, copied logs):
+    /// - the current home directory becomes `~` (any letter case, firmlinked or not);
+    /// - any other account folder under `/Users/<name>` becomes `/Users/[user]`
+    ///   (`/Users/Shared` is kept because it identifies no one), including paths on
+    ///   other volumes such as `/Volumes/Backup/Users/<name>`;
+    /// - MAC addresses and IPv4 addresses become per-report aliases (`[MAC#n]`, `[IPv4#n]`);
+    ///   loopback and unspecified addresses stay readable for diagnostics.
+    static func redactingOtherAccountPaths(_ text: String) -> String {
+        let pattern = #"(?i)(/Users/)(?!Shared(?![\p{L}\p{M}\p{N}._-]))(?!\[user\])[^/\s"'`:;,()\[\]<>]+"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        return regex.stringByReplacingMatches(
+            in: text, range: NSRange(location: 0, length: (text as NSString).length), withTemplate: "$1[user]"
+        )
+    }
+
+    /// Replaces IPv4 literals with per-report aliases. Loopback (`127.x`) and `0.0.0.0`
+    /// remain readable; aliases carry no persistent identifier.
+    static func sanitizingIPv4Addresses(_ text: String) -> String {
+        let octet = "(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])"
+        let pattern = "(?<![0-9.])\(octet)(?:\\.\(octet)){3}(?![0-9]|\\.[0-9])"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        let source = text as NSString
+        var aliases: [String: String] = [:]
+        var replacements: [(NSRange, String)] = []
+        for match in regex.matches(in: text, range: NSRange(location: 0, length: source.length)) {
+            let address = source.substring(with: match.range)
+            if address.hasPrefix("127.") || address == "0.0.0.0" { continue }
+            let alias = aliases[address] ?? "[IPv4#\(aliases.count + 1)]"
+            aliases[address] = alias
+            replacements.append((match.range, alias))
+        }
+        let result = NSMutableString(string: text)
+        for (range, alias) in replacements.reversed() { result.replaceCharacters(in: range, with: alias) }
+        return result as String
     }
 
     /// Aliases exist only within this report; they carry no persistent device identifier.
@@ -145,7 +195,7 @@ enum DiagnosticsCollector {
     }
 
     static func sanitizedForSharing(_ text: String, homeDirectory: String = NSHomeDirectory()) -> String {
-        sanitizingMACAddresses(redactingHomeDirectory(text, homeDirectory: homeDirectory))
+        sanitizingIPv4Addresses(sanitizingMACAddresses(redactingOtherAccountPaths(redactingHomeDirectory(text, homeDirectory: homeDirectory))))
     }
 
     static func yesNo(_ value: Bool) -> String {

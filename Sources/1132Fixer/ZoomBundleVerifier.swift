@@ -6,7 +6,8 @@ import Foundation
 /// process running as the user can rewrite. The launched binary runs as a child of this
 /// app and therefore inherits its camera and microphone grants, so the bundle is checked
 /// right before launch: its name, its resolved location, and its code signature (Zoom
-/// Video Communications' Developer ID Team ID).
+/// Video Communications' Developer ID Team ID and the `us.zoom.xos` signing identifier).
+/// No minimum-version policy is enforced here; see the audit notes (F-009).
 ///
 /// Everything runs through `Process` with an argument array, never through a shell.
 ///
@@ -17,6 +18,10 @@ enum ZoomBundleVerifier {
     /// Team ID of Zoom Video Communications, Inc.
     static let expectedTeamID = "BJ4HAAB9B3"
     static let requiredBundleName = "zoom.us.app"
+    /// Code-signing identifier of the Zoom desktop client (F-009). Both the requirement
+    /// check and the signature display check pin it, so a different Zoom-signed product
+    /// (or any other bundle signed by the same team) is refused.
+    static let expectedBundleIdentifier = "us.zoom.xos"
     static let codesignPath = "/usr/bin/codesign"
 
     struct CommandResult {
@@ -39,8 +44,8 @@ enum ZoomBundleVerifier {
     // MARK: - Pure helpers
 
     /// The code-signing requirement a genuine Zoom bundle must satisfy.
-    static func makeRequirement(teamID: String = expectedTeamID) -> String {
-        "anchor apple generic and certificate leaf[subject.OU] = \"\(teamID)\""
+    static func makeRequirement(teamID: String = expectedTeamID, identifier: String = expectedBundleIdentifier) -> String {
+        "identifier \"\(identifier)\" and anchor apple generic and certificate leaf[subject.OU] = \"\(teamID)\""
     }
 
     /// Whether the last path component is `zoom.us.app` (case-insensitive, as on default macOS volumes).
@@ -66,6 +71,17 @@ enum ZoomBundleVerifier {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             guard line.hasPrefix("TeamIdentifier=") else { continue }
             let value = line.dropFirst("TeamIdentifier=".count).trimmingCharacters(in: .whitespaces)
+            return value.isEmpty ? nil : value
+        }
+        return nil
+    }
+
+    /// Extracts the `Identifier=` value (the signing identifier) from `codesign -dv` output.
+    static func parseSigningIdentifier(from output: String) -> String? {
+        for rawLine in output.split(whereSeparator: \.isNewline) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard line.hasPrefix("Identifier=") else { continue }
+            let value = line.dropFirst("Identifier=".count).trimmingCharacters(in: .whitespaces)
             return value.isEmpty ? nil : value
         }
         return nil
@@ -113,6 +129,9 @@ enum ZoomBundleVerifier {
         guard displayResult.status == 0,
               parseTeamIdentifier(from: displayResult.output) == expectedTeamID else {
             throw failure("Refusing to launch '\(resolvedApp)': the signing Team ID is not \(expectedTeamID) (Zoom Video Communications).")
+        }
+        guard parseSigningIdentifier(from: displayResult.output) == expectedBundleIdentifier else {
+            throw failure("Refusing to launch '\(resolvedApp)': its signing identifier is not \(expectedBundleIdentifier) (the Zoom desktop client).")
         }
 
         return VerifiedBundle(appPath: resolvedApp, binaryPath: resolvedBinary)

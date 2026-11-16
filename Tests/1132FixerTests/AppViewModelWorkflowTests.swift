@@ -114,9 +114,112 @@ struct AppViewModelWorkflowTests {
         try await waitForCompletion(model)
         #expect(model.privilegedOperationNeedsSettlement)
         #expect(model.currentRunRecord?.outcome == .failed)
-        #expect(model.lastRunResults?.first { $0.id == "resetData" }?.outcome == .success)
+        // F-003: the DNS step now runs before the reset, so an unknown privileged result
+        // stops the repair before any Zoom data is deleted.
+        #expect(model.lastRunResults?.first { $0.id == "resetData" }?.outcome != .success)
         #expect(model.lastRunResults?.first { $0.id == "launch" }?.outcome == .unstarted)
+        #expect(!(await executor.recordedCommands()).contains { $0.contains("__1132_RESET_STATUS__") })
         #expect(await executor.privilegedTimeouts() == [PrivilegedTimeoutPolicy.dns.processTimeout])
+    }
+
+    @Test(arguments: [13, 15])
+    func administratorStepsFinishBeforeTheDestructiveReset(osMajor: Int) async throws {
+        let executor = WorkflowProcessFake()
+        let model = makeViewModel(executor: executor, osMajor: osMajor)
+        model.startZoom()
+        try await waitForCompletion(model)
+        let commands = await executor.recordedCommands()
+        let privileged = try #require(commands.lastIndex { $0.contains("with administrator privileges") })
+        let reset = try #require(commands.firstIndex { $0.contains("__1132_RESET_STATUS__") })
+        #expect(privileged < reset)
+        #expect(!model.privilegedOperationNeedsSettlement)
+    }
+
+    @Test func dnsCancellationStopsBeforeAnyZoomDataIsDeleted() async throws {
+        let executor = WorkflowProcessFake(privilegedBehavior: .cancelled)
+        let model = makeViewModel(executor: executor, osMajor: 15)
+        model.startZoom()
+        try await waitForCompletion(model)
+        #expect(model.currentRunRecord?.outcome == .cancelled)
+        #expect(!model.privilegedOperationNeedsSettlement)
+        #expect(!(await executor.recordedCommands()).contains { $0.contains("__1132_RESET_STATUS__") })
+    }
+
+    @Test func provenPreExecutionRejectionSettlesWithoutBlocking() async throws {
+        let executor = WorkflowProcessFake(privilegedBehavior: .authRejected)
+        let model = makeViewModel(executor: executor, osMajor: 15)
+        model.startZoom()
+        try await waitForCompletion(model)
+        #expect(!model.privilegedOperationNeedsSettlement)
+        #expect(model.lastRunResults?.first { $0.id == "dns" }?.outcome == .warning)
+        #expect(model.logs.contains { $0.contains("no administrator command ran") })
+    }
+
+    @Test(arguments: [WorkflowProcessFake.PrivilegedBehavior.legacyCompletion, .foreignCompletion, .forgedCompletion])
+    func completionWithoutThisRunsTokenIsIndeterminate(behavior: WorkflowProcessFake.PrivilegedBehavior) async throws {
+        let executor = WorkflowProcessFake(privilegedBehavior: behavior)
+        let model = makeViewModel(executor: executor, osMajor: 15)
+        model.startZoom()
+        try await waitForCompletion(model)
+        #expect(model.privilegedOperationNeedsSettlement)
+        #expect(model.currentRunRecord?.outcome == .failed)
+        #expect(!(await executor.recordedCommands()).contains { $0.contains("__1132_RESET_STATUS__") })
+    }
+
+    @Test func everyPrivilegedRunCarriesAFreshTokenAndPreauthorization() async throws {
+        let executor = WorkflowProcessFake()
+        for _ in 0..<2 {
+            let model = makeViewModel(executor: executor, osMajor: 15)
+            model.startZoom()
+            try await waitForCompletion(model)
+        }
+        let tokens = await executor.observedRunTokens()
+        #expect(tokens.count == 2 && Set(tokens).count == 2)
+        let privileged = await executor.recordedCommands().filter { $0.contains("with administrator privileges") }
+        #expect(privileged.allSatisfy { $0.contains("do shell script \"/usr/bin/true\" with administrator privileges") })
+    }
+
+    @Test func missingBootIdentityRefusesPrivilegedWorkBeforeItRuns() async throws {
+        let name = "1132-no-boot-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let noBoot = PrivilegedOperationGuard(defaults: defaults, bootIdentifier: nil,
+            ownershipLock: WorkflowOwnershipLock(directory: canonicalTemporaryDirectory().appendingPathComponent(name)))
+        let executor = WorkflowProcessFake()
+        let model = makeViewModel(executor: executor, osMajor: 15, operationGuard: noBoot)
+        model.startZoom()
+        try await waitForCompletion(model)
+        #expect(await executor.privilegedTimeouts().isEmpty)
+        #expect(!model.privilegedOperationNeedsSettlement)
+        #expect(!noBoot.requiresSettlement)
+        #expect(!(await executor.recordedCommands()).contains { $0.contains("with administrator privileges") })
+        #expect(model.lastRunResults?.first { $0.id == "dns" }?.outcome == .warning)
+    }
+
+    @Test func approvedPlanIsBoundToTheReviewedZoomBundle() async throws {
+        let executor = WorkflowProcessFake()
+        let model = makeViewModel(executor: executor)
+        model.prepareAndPresentRepairPlan()
+        #expect(model.activeRepairPlan != nil)
+        model.customZoomAppPath = "/Users/Shared/Other/zoom.us.app"
+        model.confirmRepairPlanAndStart()
+        #expect(!model.isRunning)
+        #expect(await executor.recordedCommands().isEmpty)
+        #expect(model.logs.contains { $0.contains("Zoom location changed after you reviewed the plan") })
+
+        model.customZoomAppPath = nil
+        model.prepareAndPresentRepairPlan()
+        model.confirmRepairPlanAndStart()
+        try await waitForCompletion(model)
+        #expect(!(await executor.recordedCommands()).isEmpty)
+    }
+
+    @Test func copiedLogsAreSanitizedForSharing() {
+        let model = makeViewModel(executor: WorkflowProcessFake())
+        model.logMessage("Path /Users/alice/Library and /users/ALICE/x, MAC 02:ab:cd:ef:12:34")
+        let copied = model.copyableLogText()
+        #expect(!copied.lowercased().contains("alice"))
+        #expect(!copied.contains("02:ab:cd:ef:12:34"))
     }
 
     @Test func ordinaryCancellationAwaitsPrivilegedCompletionAndRecordsDNS() async throws {
@@ -260,7 +363,12 @@ struct AppViewModelWorkflowTests {
 
 actor WorkflowProcessFake: ProcessExecuting {
     enum CloseBehavior: Equatable { case succeed, fail, waitForCancellation }
-    enum PrivilegedBehavior: Equatable, Sendable { case succeed, delayed, timeout, missingCompletion, missingMutation, cancelled }
+    enum PrivilegedBehavior: Equatable, Sendable {
+        case succeed, delayed, timeout, missingCompletion, missingMutation, cancelled, authRejected
+        /// Completion evidence that does not prove this run finished: the pre-token marker,
+        /// another run's token, or this run's marker printed twice (forged by the body).
+        case legacyCompletion, foreignCompletion, forgedCompletion
+    }
     private let closeBehavior: CloseBehavior
     private let resetOutput: String
     private let failReset: Bool
@@ -270,6 +378,7 @@ actor WorkflowProcessFake: ProcessExecuting {
     private var timeouts: [TimeInterval] = []
     private var closeStarted = false
     private var privilegedStarted = false
+    private var runTokens: [String] = []
 
     init(closeBehavior: CloseBehavior = .succeed, resetOutput: String = "__1132_RESET_STATUS__=0", failReset: Bool = false,
          failSafety: Bool = false, privilegedBehavior: PrivilegedBehavior = .succeed) {
@@ -287,7 +396,8 @@ actor WorkflowProcessFake: ProcessExecuting {
             privilegedStarted = true
             timeouts.append(timeout)
             if privilegedBehavior == .timeout { throw ProcessExecutionError.timedOut(seconds: Int(timeout)) }
-            if privilegedBehavior == .cancelled { return result("__1132_AUTH_CANCELLED__=0") }
+            if privilegedBehavior == .cancelled { return result(ShellCommands.authorizationCancelledSentinel) }
+            if privilegedBehavior == .authRejected { return result(ShellCommands.authorizationRejectedSentinel) }
             if privilegedBehavior == .delayed { try await Task.sleep(nanoseconds: 300_000_000) }
             guard let encoded = command.components(separatedBy: "/bin/echo '").dropFirst().first?.components(separatedBy: "'").first,
                   let data = Data(base64Encoded: encoded), let script = String(data: data, encoding: .utf8) else {
@@ -295,7 +405,18 @@ actor WorkflowProcessFake: ProcessExecuting {
             }
             var output = script.contains("__1132_DNS_STATUS__") ? "__1132_DNS_STATUS__=0\n" : ""
             if script.contains("__1132_SPOOF_STATUS__") && privilegedBehavior != .missingMutation { output += "__1132_SPOOF_STATUS__=0\n" }
-            if privilegedBehavior != .missingCompletion { output += "__1132_PRIVILEGED_COMPLETE__=0" }
+            guard let tokenRange = script.range(of: "__1132_PRIVILEGED_COMPLETE_[0-9A-F]{32}__", options: .regularExpression) else {
+                throw AppError.general("Fixture received a privileged command without a run token")
+            }
+            let marker = String(script[tokenRange])
+            runTokens.append(marker)
+            switch privilegedBehavior {
+            case .missingCompletion: break
+            case .legacyCompletion: output += "__1132_PRIVILEGED_COMPLETE__=0"
+            case .foreignCompletion: output += ShellCommands.privilegedCompletionMarker(runToken: ShellCommands.makePrivilegedRunToken()) + "=0"
+            case .forgedCompletion: output += "\(marker)=0\n\(marker)=0"
+            default: output += "\(marker)=0"
+            }
             return result(output)
         }
         if command == ShellCommands.stopZoom {
@@ -322,6 +443,7 @@ actor WorkflowProcessFake: ProcessExecuting {
     }
 
     func recordedCommands() -> [String] { commands }
+    func observedRunTokens() -> [String] { runTokens }
     func privilegedTimeouts() -> [TimeInterval] { timeouts }
     func hasStarted(privileged: Bool) -> Bool { privileged ? privilegedStarted : closeStarted }
     private func result(_ output: String = "", exitCode: Int32 = 0) -> ProcessExecutionResult {

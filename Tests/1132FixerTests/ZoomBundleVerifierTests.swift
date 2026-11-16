@@ -7,8 +7,27 @@ struct ZoomBundleVerifierTests {
 
     @Test func requirementPinsZoomTeamID() {
         #expect(ZoomBundleVerifier.makeRequirement()
-            == #"anchor apple generic and certificate leaf[subject.OU] = "BJ4HAAB9B3""#)
+            == #"identifier "us.zoom.xos" and anchor apple generic and certificate leaf[subject.OU] = "BJ4HAAB9B3""#)
         #expect(ZoomBundleVerifier.expectedTeamID == "BJ4HAAB9B3")
+        #expect(ZoomBundleVerifier.expectedBundleIdentifier == "us.zoom.xos")
+    }
+
+    @Test func parsesSigningIdentifierWithoutConfusingTeamIdentifier() {
+        #expect(ZoomBundleVerifier.parseSigningIdentifier(from: "Executable=/x\nIdentifier=us.zoom.xos\nTeamIdentifier=BJ4HAAB9B3") == "us.zoom.xos")
+        #expect(ZoomBundleVerifier.parseSigningIdentifier(from: "TeamIdentifier=BJ4HAAB9B3") == nil)
+        #expect(ZoomBundleVerifier.parseSigningIdentifier(from: "Identifier=") == nil)
+    }
+
+    @Test(arguments: ["Identifier=us.zoom.ZoomPresence\nTeamIdentifier=BJ4HAAB9B3", "TeamIdentifier=BJ4HAAB9B3", "Identifier=us.zoom.xos\nTeamIdentifier=AAAAAAAAAA"])
+    func verifyRejectsWrongSigningIdentity(display: String) async throws {
+        let root = try makeFakeBundle()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let app = root.appendingPathComponent("zoom.us.app").path
+        await #expect(throws: (any Error).self) {
+            try await ZoomBundleVerifier.verify(appPath: app) { _, arguments in
+                .init(status: 0, output: arguments.first == "--verify" ? "" : display)
+            }
+        }
     }
 
     @Test func bundleNameMustBeZoomUsApp() {
@@ -73,7 +92,7 @@ struct ZoomBundleVerifierTests {
         var calls: [[String]] = []
         let verified = try await ZoomBundleVerifier.verify(appPath: app) { _, arguments in
             calls.append(arguments)
-            return .init(status: 0, output: "TeamIdentifier=BJ4HAAB9B3\n")
+            return .init(status: 0, output: "Identifier=us.zoom.xos\nTeamIdentifier=BJ4HAAB9B3\n")
         }
         #expect(calls.count == 2)
         #expect(verified.appPath.hasSuffix("/zoom.us.app"))

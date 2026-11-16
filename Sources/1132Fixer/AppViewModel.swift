@@ -355,9 +355,15 @@ final class AppViewModel: ObservableObject {
         activeRepairPlan = nil
     }
 
+    /// Starts the repair bound to the Zoom bundle the user just reviewed. If the
+    /// effective Zoom location changed after the plan was built, nothing is started.
     func confirmRepairPlanAndStart() {
+        guard let plan = activeRepairPlan else {
+            appendLog("Repair was not started: there is no reviewed repair plan to confirm.")
+            return
+        }
         activeRepairPlan = nil
-        startZoom()
+        startZoom(approvedAppPath: plan.selectedAppPath)
     }
 
     func toggleStepExpansion(_ stepID: String) {
@@ -495,7 +501,7 @@ final class AppViewModel: ObservableObject {
                       FileManager.default.fileExists(atPath: home, isDirectory: &directory), directory.boolValue else {
                     throw self.appError("Sandbox launch requires a safe existing home directory.")
                 }
-                _ = try await self.verifiedZoomBundle()
+                _ = try await self.verifiedZoomBundle(expectedAppPath: selectedPath)
                 _ = try await self.runProcess(stepName: "Validate Zoom sandbox profile", executable: Constants.bashPath,
                     arguments: ["-c", ShellCommands.makeSandboxProfileValidationCommand(homeDirectory: home)], timeout: 15)
                 record("validate", .success, "Verified bundle and required sandbox profile.")
@@ -520,7 +526,7 @@ final class AppViewModel: ObservableObject {
                 activeID = "launch"
                 self.workflowState = .launchingZoom
                 record(activeID, .running, "Launching verified Zoom inside the required sandbox.")
-                let verified = try await self.verifiedZoomBundle()
+                let verified = try await self.verifiedZoomBundle(expectedAppPath: selectedPath)
                 let output = try await self.runProcess(stepName: "Launch Zoom", executable: Constants.bashPath,
                     arguments: ["-c", ShellCommands.makeLaunchZoomCommand(zoomBinaryPath: verified.binaryPath,
                         homeDirectory: home, verifiedAppPath: verified.appPath)], timeout: 120)
@@ -547,9 +553,13 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    func startZoom() {
+    func startZoom(approvedAppPath: String? = nil) {
         guard canStartZoom else {
             appendLog(hasUnsettledPrivilegedOperation ? PrivilegedOperationGuard.recoveryMessage : "Start Zoom is unavailable until required preflight checks pass.")
+            return
+        }
+        if let approvedAppPath, approvedAppPath != zoomAppPath {
+            appendLog("Repair was not started: the Zoom location changed after you reviewed the plan (reviewed '\(approvedAppPath)', now '\(zoomAppPath)'). Review the repair again.")
             return
         }
 
@@ -655,7 +665,7 @@ final class AppViewModel: ObservableObject {
                           isDirectory.boolValue else {
                         throw self.appError("Safety checks: refusing to continue because the home directory '\(requestedHomeDirectory)' is not a safe, existing directory.")
                     }
-                    _ = try await self.verifiedZoomBinaryPath()
+                    _ = try await self.verifiedZoomBundle(expectedAppPath: selectedPath)
                     let output = try await self.runProcess(
                         stepName: "Validate Zoom sandbox profile",
                         executable: Constants.bashPath,
@@ -785,38 +795,8 @@ final class AppViewModel: ObservableObject {
                     self.appendLog("Warning: Network identity was not changed: \(error.localizedDescription)")
                 }
 
-                // 5. Reset Zoom data
-                self.workflowState = .clearingState
-                beginStep("resetData")
-                self.appendLog("Step: Reset Zoom data")
-                do {
-                    guard ShellCommands.isSafeHomeDirectory(homeDirectory) else {
-                        throw self.appError("Reset Zoom data: refusing to delete files because the home directory '\(homeDirectory)' is not a safe absolute path.")
-                    }
-                    let output = try await self.runProcess(
-                        stepName: "Reset Zoom data",
-                        executable: Constants.bashPath,
-                        arguments: ["-c", ShellCommands.makeResetZoomDataWithStatusCommand(homeDirectory: homeDirectory)]
-                    )
-                    let lines = output.components(separatedBy: .newlines)
-                    try OperationStatus.requireSuccess(in: output, marker: "__1132_RESET_STATUS__")
-                    let detail = lines.filter { !$0.hasPrefix("__1132_") }.joined(separator: "\n")
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    self.markStepDone("resetData", succeeded: true)
-                    finishStep(.init(
-                        id: "resetData",
-                        name: "Clear Local State",
-                        outcome: .success,
-                        detail: detail.isEmpty ? "Cleared the listed Zoom state and local logs." : detail
-                    ))
-                } catch {
-                    try Task.checkCancellation()
-                    self.markStepDone("resetData", succeeded: false)
-                    finishStep(.init(id: "resetData", name: "Clear Local State", outcome: .failed, detail: error.localizedDescription))
-                    throw self.appError("Reset failed. Zoom was not launched. Earlier network/DNS changes may remain; no rollback was performed. Backup: \(runCreatedBackup ?? "unavailable"). \(error.localizedDescription)")
-                }
-
-                // 6. DNS flush.
+                // 5. DNS flush. Runs before the reset so that a refused administrator prompt
+                // or an unknown privileged result stops the repair before Zoom data is deleted.
                 self.workflowState = .flushingDNS
                 beginStep("dns")
                 if let precomputedDNSResult {
@@ -842,12 +822,10 @@ final class AppViewModel: ObservableObject {
                 } else {
                     self.appendLog("Step: Refresh DNS cache (admin prompt may appear)")
                     do {
-                        let script = ShellCommands.makePrivilegedCommand(ShellCommands.makeRefreshDNSCommand(), policy: .dns)
-                        let output = try await self.runProcess(
+                        let output = try await self.runPrivilegedScript(
                             stepName: "Refresh DNS cache",
-                            executable: Constants.osascriptPath,
-                            arguments: ["-e", script],
-                            timeout: PrivilegedTimeoutPolicy.dns.processTimeout
+                            command: ShellCommands.makeRefreshDNSCommand(),
+                            policy: .dns
                         )
                         let lines = output.components(separatedBy: .newlines)
                         let dnsSucceeded = OperationStatus.value(in: output, marker: "__1132_DNS_STATUS__") == 0
@@ -878,6 +856,37 @@ final class AppViewModel: ObservableObject {
                         finishStep(.init(id: "dns", name: "DNS Flush", outcome: .warning, detail: error.localizedDescription))
                         self.appendLog("Warning: \(error.localizedDescription)")
                     }
+                }
+
+                // 6. Reset Zoom data
+                self.workflowState = .clearingState
+                beginStep("resetData")
+                self.appendLog("Step: Reset Zoom data")
+                do {
+                    guard ShellCommands.isSafeHomeDirectory(homeDirectory) else {
+                        throw self.appError("Reset Zoom data: refusing to delete files because the home directory '\(homeDirectory)' is not a safe absolute path.")
+                    }
+                    let output = try await self.runProcess(
+                        stepName: "Reset Zoom data",
+                        executable: Constants.bashPath,
+                        arguments: ["-c", ShellCommands.makeResetZoomDataWithStatusCommand(homeDirectory: homeDirectory)]
+                    )
+                    let lines = output.components(separatedBy: .newlines)
+                    try OperationStatus.requireSuccess(in: output, marker: "__1132_RESET_STATUS__")
+                    let detail = lines.filter { !$0.hasPrefix("__1132_") }.joined(separator: "\n")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.markStepDone("resetData", succeeded: true)
+                    finishStep(.init(
+                        id: "resetData",
+                        name: "Clear Local State",
+                        outcome: .success,
+                        detail: detail.isEmpty ? "Cleared the listed Zoom state and local logs." : detail
+                    ))
+                } catch {
+                    try Task.checkCancellation()
+                    self.markStepDone("resetData", succeeded: false)
+                    finishStep(.init(id: "resetData", name: "Clear Local State", outcome: .failed, detail: error.localizedDescription))
+                    throw self.appError("Reset failed. Zoom was not launched. Earlier network/DNS changes may remain; no rollback was performed. Backup: \(runCreatedBackup ?? "unavailable"). \(error.localizedDescription)")
                 }
 
                 // 7. Stop updaters
@@ -925,7 +934,7 @@ final class AppViewModel: ObservableObject {
                 beginStep("launch")
                 self.appendLog("Step: Launch Zoom")
                 do {
-                    let verifiedBundle = try await self.verifiedZoomBundle()
+                    let verifiedBundle = try await self.verifiedZoomBundle(expectedAppPath: selectedPath)
                     let output = try await self.runProcess(
                         stepName: "Launch Zoom",
                         executable: Constants.bashPath,
@@ -1309,20 +1318,20 @@ final class AppViewModel: ObservableObject {
                 )
             }
 
-            self.workflowState = .clearingState
-            beginStep("resetData")
-            finishStep(
-                "resetData",
-                outcome: .skipped,
-                detail: "Read-only preview: would clear local Zoom state, saved window state, and logs."
-            )
-
             self.workflowState = .flushingDNS
             beginStep("dns")
             finishStep(
                 "dns",
                 outcome: .skipped,
                 detail: "Read-only preview: would flush system DNS cache (administrator prompt in live repair)."
+            )
+
+            self.workflowState = .clearingState
+            beginStep("resetData")
+            finishStep(
+                "resetData",
+                outcome: .skipped,
+                detail: "Read-only preview: would check every target can be removed, then clear the backed-up local Zoom state, saved window state, and Zoom logs."
             )
 
             self.workflowState = .stoppingUpdaters
@@ -1563,10 +1572,16 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    /// The text "Copy logs" puts on the clipboard: the same sharing sanitizer used for
+    /// exported diagnostics and bug reports (home paths, other accounts, MAC and IP addresses).
+    func copyableLogText() -> String {
+        DiagnosticsCollector.sanitizedForSharing(logs.joined(separator: "\n"))
+    }
+
     func copyLogs() {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(logs.joined(separator: "\n"), forType: .string)
+        pasteboard.setString(copyableLogText(), forType: .string)
     }
 
     func logMessage(_ text: String) {
@@ -1904,14 +1919,12 @@ Last action status: \(lastStatus)
 
         appendLog("Network recovery: commands to be attempted on \(interface.device) (service: \(interface.networkService))")
 
-        let appleScript = ShellCommands.makePrivilegedCommand(spoofScript, policy: .network)
         let commandOutput: String
         do {
-            commandOutput = try await runProcess(
+            commandOutput = try await runPrivilegedScript(
                 stepName: "Spoof MAC and reconnect \(interface.kind.rawValue)",
-                executable: Constants.osascriptPath,
-                arguments: ["-e", appleScript],
-                timeout: PrivilegedTimeoutPolicy.network.processTimeout
+                command: spoofScript,
+                policy: .network
             )
         } catch {
             if error is CancellationError { throw error }
@@ -2080,8 +2093,15 @@ Network recovery: Your network interface may be in an inconsistent state. To res
         return verified.binaryPath
     }
 
-    private func verifiedZoomBundle() async throws -> ZoomBundleVerifier.VerifiedBundle {
+    /// Verifies the effective Zoom bundle. During a run, `expectedAppPath` is the bundle
+    /// the run was started (and, for repairs, approved) with: if the effective location
+    /// has drifted since then, the run stops instead of launching a different bundle. The
+    /// signature is still checked freshly every time.
+    private func verifiedZoomBundle(expectedAppPath: String? = nil) async throws -> ZoomBundleVerifier.VerifiedBundle {
         let appPath = zoomAppPath
+        if let expectedAppPath, expectedAppPath != appPath {
+            throw appError("The Zoom location changed during this run (expected '\(expectedAppPath)', now '\(appPath)'). Nothing further was launched; review the repair again.")
+        }
         if let verifier = bundleVerifierOverride {
             let verified = try await Task.detached(priority: .userInitiated) {
                 try verifier(appPath)
@@ -2341,17 +2361,41 @@ Network recovery: Your network interface may be in an inconsistent state. To res
     /// Privileged AppleScript commands are awaited in a detached task so canceling the UI
     /// workflow cannot release the single-flight lock while a self-bounded root shell may
     /// still be finishing.
+    /// Runs one privileged command through AppleScript with a fresh per-run completion
+    /// token; only output carrying this run's marker can settle the operation guard.
+    private func runPrivilegedScript(
+        stepName: String,
+        command: String,
+        policy: PrivilegedTimeoutPolicy
+    ) async throws -> String {
+        let token = ShellCommands.makePrivilegedRunToken()
+        return try await runProcess(
+            stepName: stepName,
+            executable: Constants.osascriptPath,
+            arguments: ["-e", ShellCommands.makePrivilegedCommand(command, policy: policy, runToken: token)],
+            timeout: policy.processTimeout,
+            privilegedCompletionMarker: ShellCommands.privilegedCompletionMarker(runToken: token)
+        )
+    }
+
     private func runProcess(
         stepName: String,
         executable: String,
         arguments: [String],
-        timeout: TimeInterval = 60
+        timeout: TimeInterval = 60,
+        privilegedCompletionMarker: String? = nil
     ) async throws -> String {
         try Task.checkCancellation()
 
         let isPrivileged = (executable == Constants.osascriptPath)
         if isPrivileged {
+            guard let privilegedCompletionMarker, !privilegedCompletionMarker.isEmpty else {
+                throw appError("\(stepName): refusing to run an administrator command without a per-run completion token.")
+            }
             guard !privilegedGuard.requiresSettlement else { throw appError(PrivilegedOperationGuard.recoveryMessage) }
+            guard privilegedGuard.canBeginPrivilegedOperation else {
+                throw appError("\(stepName): this Mac's boot identity could not be read, so 1132 Fixer cannot safely track an administrator command. Nothing was run as administrator.")
+            }
             lastPrivilegedOutput = nil
             guard privilegedGuard.begin() else {
                 privilegedOperationNeedsSettlement = true
@@ -2399,11 +2443,18 @@ Network recovery: Your network interface may be in an inconsistent state. To res
             let output = result.combinedOutput
             if isPrivileged {
                 lastPrivilegedOutput = output
-                if OperationStatus.value(in: output, marker: "__1132_PRIVILEGED_COMPLETE__") != nil {
+                let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let privilegedCompletionMarker,
+                   OperationStatus.value(in: output, marker: privilegedCompletionMarker) != nil {
                     privilegedGuard.settle(.completed)
-                } else if result.exitCode == 0 && output.trimmingCharacters(in: .whitespacesAndNewlines) == "__1132_AUTH_CANCELLED__=0" {
+                } else if result.exitCode == 0 && trimmedOutput == ShellCommands.authorizationCancelledSentinel {
                     privilegedGuard.settle(.cancelled)
                     throw CancellationError()
+                } else if result.exitCode == 0 && trimmedOutput == ShellCommands.authorizationRejectedSentinel {
+                    // Authorization failed in the no-op step, before the privileged command
+                    // was invoked, so nothing ran as root.
+                    privilegedGuard.settle(.cancelled)
+                    throw appError("\(stepName): administrator authorization was not granted, so no administrator command ran.")
                 } else {
                     throw appError(PrivilegedOperationGuard.recoveryMessage)
                 }

@@ -7,6 +7,27 @@ struct BugReportServiceTests {
 
     // MARK: - Endpoint validation
 
+    /// F-018: there is no implicit fallback endpoint; a missing endpoint (with or without a
+    /// token) fails configuration validation, which runs before any request is built.
+    @Test(arguments: [("", "token"), ("   ", "token"), ("", ""), ("http://example.com/api", "token"), ("https://example.com/api", "")])
+    func missingOrInvalidConfigurationFailsBeforeAnyRequest(endpoint: String, token: String) {
+        #expect(throws: (any Error).self) { try BugReportService.validatedConfiguration(endpoint: endpoint, token: token) }
+    }
+
+    @Test func explicitConfigurationIsAccepted() throws {
+        let configured = try BugReportService.validatedConfiguration(endpoint: "https://reports.example.com/api", token: "abc")
+        #expect(configured.url.host == "reports.example.com")
+    }
+
+    @Test func sourceHasNoBuiltInThirdPartyEndpoint() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/1132Fixer/BugReportService.swift")
+        let text = try String(contentsOf: source, encoding: .utf8)
+        #expect(!text.contains("railway.app"))
+        #expect(!text.contains("defaultEndpoint"))
+    }
+
     @Test func acceptsHTTPSEndpoints() {
         #expect(BugReportService.validatedEndpointURL("https://example.com/api/bug-report") != nil)
         #expect(BugReportService.validatedEndpointURL("  https://example.com/api  ") != nil)

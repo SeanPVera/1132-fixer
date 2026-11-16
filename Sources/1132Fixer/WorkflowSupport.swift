@@ -203,7 +203,7 @@ struct RepairStepSpec: Identifiable, Equatable {
                 name: "Backup State",
                 scope: "~/Library/Application Support",
                 requiresAdmin: false,
-                plannedSummary: "Copy the four listed Zoom state paths to a private timestamped recovery snapshot before mutation.",
+                plannedSummary: "Copy the four listed Zoom state paths and the Zoom logs to a private timestamped recovery snapshot before mutation.",
                 commandSummary: "cp -a to ~/\(ZoomStateScope.backupRelativeRoot)/snapshot-… (atomic publication)"
             ),
             RepairStepSpec(
@@ -221,21 +221,21 @@ struct RepairStepSpec: Identifiable, Equatable {
             ),
             RepairStepSpec(
                 index: 5,
-                id: "resetData",
-                name: "Clear Local State",
-                scope: "User Library",
-                requiresAdmin: false,
-                plannedSummary: "Clear the four backed-up state paths and permanently remove the listed local logs. Containers and keychains are not reset.",
-                commandSummary: "rm on the listed state paths and log pattern; defaults delete us.zoom.xos (current user)"
-            ),
-            RepairStepSpec(
-                index: 6,
                 id: "dns",
                 name: "DNS Flush",
                 scope: "Administrator",
                 requiresAdmin: true,
-                plannedSummary: "Flush system DNS caches and send HUP to mDNSResponder. This may already run during Step 4 before the local reset.",
+                plannedSummary: "Flush system DNS caches and send HUP to mDNSResponder. This may already run during Step 4. It runs before the local reset so a declined or unknown administrator result stops the repair before any Zoom data is deleted.",
                 commandSummary: "dscacheutil -flushcache & killall -HUP mDNSResponder (Administrator)"
+            ),
+            RepairStepSpec(
+                index: 6,
+                id: "resetData",
+                name: "Clear Local State",
+                scope: "User Library",
+                requiresAdmin: false,
+                plannedSummary: "Runs only after every administrator step has finished with known results. Checks that every listed path can be removed, then clears the four backed-up state paths and the backed-up Zoom logs. Containers and keychains are not reset.",
+                commandSummary: "preflight, then rm on the listed state paths and \(ZoomStateScope.logBaseName) rotations; defaults delete us.zoom.xos (current user)"
             ),
             RepairStepSpec(
                 index: 7,
@@ -291,7 +291,7 @@ struct RepairPlan: Identifiable, Equatable {
         steps.filter(\.requiresAdmin).count
     }
 
-    /// Network identity reset (Step 4) and DNS cache flush (Step 6) are consolidated into a
+    /// Network identity reset (Step 4) and DNS cache flush (Step 5) are consolidated into a
     /// single privileged administrator session so the user is prompted at most once per run.
     var adminPromptCount: Int {
         steps.contains(where: \.requiresAdmin) ? 1 : 0
@@ -324,14 +324,14 @@ struct RepairPlan: Identifiable, Equatable {
                 id: "user-zoom-data",
                 label: "User Zoom State",
                 path: ZoomStateScope.consentPaths,
-                action: "Backed up first, then cleared in Step 5 (unprivileged)",
+                action: "Backed up first, then cleared in Step 6 (unprivileged)",
                 requiresAdmin: false
             ),
             AffectedLocation(
                 id: "user-zoom-logs",
                 label: "Zoom Local Logs",
-                path: "~/" + ZoomStateScope.removedLogPattern,
-                action: "Permanently removed in Step 5 (not included in backup)",
+                path: ZoomStateScope.removedLogsDescription,
+                action: "Backed up first (Logs/ in the snapshot), then removed in Step 6; other files in ~/Library/Logs are left alone",
                 requiresAdmin: false
             ),
             AffectedLocation(
@@ -345,7 +345,7 @@ struct RepairPlan: Identifiable, Equatable {
                 id: "network-dns",
                 label: "Network & DNS Cache",
                 path: "Active default-route interface & mDNSResponder",
-                action: "Updated in Steps 4 and 6 via a single macOS Administrator authorization prompt",
+                action: "Updated in Steps 4 and 5 via a single macOS Administrator authorization prompt",
                 requiresAdmin: true
             ),
         ]

@@ -28,6 +28,34 @@ enum UpdateChecker {
         }
     }
 
+    /// The only host the unauthenticated update request may talk to, including after redirects.
+    static let apiHost = "api.github.com"
+    /// Largest response body that is read. A GitHub "latest release" document is a few KB;
+    /// anything larger is refused rather than buffered (F-046).
+    static let maxResponseBytes = 256 * 1_024
+
+    /// Allows a redirect only to HTTPS on `api.github.com`; any other redirect is not
+    /// followed, so the redirect response itself becomes the (rejected) final response.
+    final class RedirectPolicy: NSObject, URLSessionTaskDelegate {
+        static func allows(_ url: URL?) -> Bool {
+            guard let url else { return false }
+            return url.scheme?.lowercased() == "https"
+                && url.host?.lowercased() == UpdateChecker.apiHost
+                && url.user == nil && url.password == nil
+                && (url.port == nil || url.port == 443)
+        }
+
+        func urlSession(
+            _ session: URLSession,
+            task: URLSessionTask,
+            willPerformHTTPRedirection response: HTTPURLResponse,
+            newRequest request: URLRequest,
+            completionHandler: @escaping (URLRequest?) -> Void
+        ) {
+            completionHandler(Self.allows(request.url) ? request : nil)
+        }
+    }
+
     static func fetchLatestRelease(session: URLSession = .shared) async throws -> ReleaseInfo {
         var request = URLRequest(url: AppConfiguration.latestReleaseAPIURL)
         request.httpMethod = "GET"
@@ -36,14 +64,24 @@ enum UpdateChecker {
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = 10
 
-        let (data, response) = try await session.data(for: request)
+        let (bytes, response) = try await session.bytes(for: request, delegate: RedirectPolicy())
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            bytes.task.cancel()
             throw NSError(
                 domain: errorDomain,
                 code: http.statusCode,
                 userInfo: [NSLocalizedDescriptionKey: "GitHub API returned HTTP \(http.statusCode)."]
             )
         }
+        guard RedirectPolicy.allows(response.url ?? request.url) else {
+            bytes.task.cancel()
+            throw NSError(
+                domain: errorDomain,
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "The update response did not come from \(apiHost)."]
+            )
+        }
+        let data = try await readBounded(bytes, expectedLength: response.expectedContentLength)
 
         let decoded = try JSONDecoder().decode(GitHubRelease.self, from: data)
 
@@ -57,8 +95,9 @@ enum UpdateChecker {
         }
 
         let version = normalizeVersion(decoded.tagName)
-        guard let htmlURL = URL(string: decoded.htmlURL),
-              isTrustedReleaseURL(htmlURL) else {
+        guard let reportedURL = URL(string: decoded.htmlURL),
+              isTrustedReleaseURL(reportedURL),
+              let canonicalURL = canonicalReleaseURL(forTag: decoded.tagName) else {
             throw NSError(
                 domain: errorDomain,
                 code: 2,
@@ -66,7 +105,44 @@ enum UpdateChecker {
             )
         }
 
-        return ReleaseInfo(version: version, htmlURL: htmlURL, releaseNotes: decoded.body)
+        // The link that is opened is built locally from the validated tag; the API's
+        // `html_url` is only checked, never used.
+        return ReleaseInfo(version: version, htmlURL: canonicalURL, releaseNotes: decoded.body)
+    }
+
+    private static func readBounded(_ bytes: URLSession.AsyncBytes, expectedLength: Int64) async throws -> Data {
+        let tooLarge = NSError(
+            domain: errorDomain,
+            code: 3,
+            userInfo: [NSLocalizedDescriptionKey: "The update response was larger than \(maxResponseBytes) bytes."]
+        )
+        if expectedLength > Int64(maxResponseBytes) {
+            bytes.task.cancel()
+            throw tooLarge
+        }
+        var data = Data()
+        data.reserveCapacity(min(maxResponseBytes, max(0, Int(clamping: expectedLength))))
+        for try await byte in bytes {
+            if data.count >= maxResponseBytes {
+                bytes.task.cancel()
+                throw tooLarge
+            }
+            data.append(byte)
+        }
+        return data
+    }
+
+    /// A release tag this app will link to: `v` optional, three numeric parts, and an
+    /// optional `-suffix` of letters, digits, dots and hyphens.
+    static func isValidReleaseTag(_ tag: String) -> Bool {
+        tag.count <= 64
+            && tag.range(of: #"^[vV]?[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}(-[0-9A-Za-z.-]{1,40})?$"#, options: .regularExpression) != nil
+    }
+
+    /// The canonical GitHub release page for a validated tag, constructed locally.
+    static func canonicalReleaseURL(forTag tag: String) -> URL? {
+        guard isValidReleaseTag(tag) else { return nil }
+        return URL(string: "https://github.com/\(owner)/\(repo)/releases/tag/\(tag)")
     }
 
     /// Release links are opened in the browser, so accept only this app's canonical
