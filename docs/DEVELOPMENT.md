@@ -73,19 +73,17 @@ Before enabling publication, the owner must verify:
 - A tag ruleset protects `v*` creation/update/deletion; release tags match VERSION
   and point to reviewed commits reachable from `main`.
 - `release-signing` permits only approved release refs, requires independent
-  reviewers, and scopes signing/notarization and write-only report credentials.
+  reviewers, and scopes signing/notarization credentials.
 - Fork and pull-request jobs cannot obtain that environment's credentials.
 - `release-signing` holds `APPLE_CERTIFICATE` (base64 Developer ID Application
   .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_PASSWORD` (app-specific
-  password), `APPLE_TEAM_ID`, `FIXER_BUG_REPORT_ENDPOINT` and
-  `FIXER_BUG_REPORT_TOKEN`. Developer ID builds fail without the bug-report pair.
+  password) and `APPLE_TEAM_ID`.
 
 The release workflow tests its exact checked-out commit before signing and
 checks the tested SHA and a clean tracked tree before publication. Workflow
 outputs enter shell commands through environment variables. Package validation
-requires valid resources in both flat and structured SwiftPM bundles. Developer
-ID distributions require endpoint/token resources and run the packaged lookup
-canary from the mounted app. Configuration values are never printed.
+requires a valid icon resource in both flat and structured SwiftPM bundles, and
+Developer ID distributions run the packaged lookup canary from the mounted app.
 
 Inspect packaging scripts before running them: they recreate `dist` and their
 build staging directory, can import certificates, and can notarize. They support
@@ -99,7 +97,7 @@ copy. Production signing/notarization credentials require separate authorization
 ## Outstanding native evidence
 
 Use a disposable macOS VM/account and fixture data. Do not reset real Zoom data
-or mutate a live network interface under the current authorization.
+under the current authorization.
 
 Hosted CI now covers parts of items 1, 3 and 5 on macOS 15 and 26 (Apple silicon
 and Intel): builds, the full suite, the sandbox, keychain and literal-name
@@ -108,14 +106,10 @@ The remaining parts below need owner hardware, a VM or credentials.
 
 1. Build debug/release, run the full suite and both explicit canaries, then start
    `swift run` and check immediate startup. Inspect narrow/regular window layouts,
-   warnings/failures, quick-launch wording, and accessibility with the existing
+   warnings/failures, button wording, and accessibility with the existing
    design tokens.
-2. Check ordinary and delayed authorization, actual authorization cancellation,
-   watchdog expiry, child cleanup/restoration, app cancellation, two app instances,
-   and crash/relaunch. Observe real root descendants. An outer timeout and a
-   completion marker alone do not establish process-tree settlement. Unknown
-   completion must block launch/repair; the unprivileged ownership file remains
-   locked while the app is alive and the pending boot marker survives relaunch.
+2. Check that Stop cancels a running action, that a failed wipe never launches
+   Zoom, and that a rejected sandbox profile stops before Zoom is closed.
 3. Verify BSD `pgrep`/`pkill` UID and literal-name behavior. A disposable
    `zoomXus` process must survive Zoom selectors; another user's Zoom cannot
    satisfy success. Prove that the tracked sandbox-exec child remains the actual
